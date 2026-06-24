@@ -611,7 +611,17 @@ function armHeroAutohide() {
   if (heroHideTimer) { clearTimeout(heroHideTimer); heroHideTimer = null; }
   heroHideTimer = setTimeout(() => {
     heroHideTimer = null;
-    if (isMobile() && state.screen === "guide" && !state.heroHidden) { state.heroHidden = true; render(); }
+    if (!isMobile() || state.screen !== "guide" || state.heroHidden) return;
+    // Fade the card out in place, then commit the hidden state (which keeps the
+    // space in ambient mode so the backdrop video shows through).
+    const el = document.getElementById("aerGuideHero");
+    if (el) {
+      el.style.transition = "opacity .45s ease";
+      el.style.opacity = "0";
+      setTimeout(() => { if (state.screen === "guide" && !state.heroHidden) { state.heroHidden = true; render(); } }, 440);
+    } else {
+      state.heroHidden = true; render();
+    }
   }, HERO_IDLE_MS);
 }
 function showGuideHero() { state.heroHidden = false; armHeroAutohide(); }
@@ -669,9 +679,14 @@ function guideScreen() {
     })());
 
   // rich detail pane (reflects the selected/highlighted program). On phones it
-  // auto-hides after a short idle to give the grid more room.
-  const heroHidden = mob && state.heroHidden;
-  const card = heroHidden ? null : detailPane(ambient);
+  // auto-hides after a short idle. In ambient mode we KEEP the card's space (fade
+  // the content out, leave the box) so the backdrop video shows through where the
+  // card was, instead of the grid sliding up over it. Without ambient there's no
+  // video to reveal, so it just collapses to give the grid the room.
+  const heroFaded = mob && state.heroHidden;
+  const card = heroFaded
+    ? (ambient ? h("div", { id: "aerGuideHero", style: "flex:none;opacity:0;pointer-events:none" }, detailPane(ambient)) : null)
+    : h("div", { id: "aerGuideHero", style: "flex:none" }, detailPane(ambient));
   if (mob && !state.heroHidden && !heroHideTimer) armHeroAutohide(); // start the idle countdown
   const sheet = guideOptionsSheet();
 
