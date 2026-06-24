@@ -797,6 +797,7 @@ function networkSelect(g, selected) {
 }
 
 function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
+  const mob = isMobile();
   const hc = ch.health === "live" ? "#2fae5c" : ch.health === "sd" ? "#f4b740" : "#ff5d52";
   const windowEnd = windowStart + (totalW / PXPM) * 60000;
   const cells = programsFor(ch).map((p, pi) => {
@@ -825,7 +826,9 @@ function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
         endsAfter ? h("div", { style: "position:absolute;right:4px;top:50%;transform:translateY(-50%);z-index:3;color:#9aa0a6;font-size:15px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,0.6)" }, "›") : null,
         h("div", { style: "position:relative;z-index:2" },
           h("div", { style: { fontSize: "13.5px", fontWeight: 600, color: onNow ? "#f5f7f9" : "#cfd3d8", lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: onNow ? "0 1px 6px rgba(0,0,0,0.5)" : "none" } }, p.title),
-          h("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: "10.5px", color: onNow ? "rgba(245,247,249,0.75)" : "#6b7178", marginTop: "2px" } }, p.filler ? "" : fmtClock(p.start) + " – " + fmtClock(p.end)))));
+          // The per-cell time line clips to noise ("180", ":80") in narrow phone
+          // cells and is redundant with the time axis — drop it on mobile.
+          mob ? null : h("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: "10.5px", color: onNow ? "rgba(245,247,249,0.75)" : "#6b7178", marginTop: "2px" } }, p.filler ? "" : fmtClock(p.start) + " – " + fmtClock(p.end)))));
   });
 
   const g = ch._group;
@@ -847,10 +850,12 @@ function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
     ? "linear-gradient(90deg, rgba(13,15,19,0.34) 0%, rgba(13,15,19,0.34) 46%, rgba(13,15,19,0.86) 100%)"
     : "#0c0d0e";
   return h("div", { style: { display: "flex", height: ROWH + "px", borderBottom: "1px solid rgba(255,255,255,0.045)" } },
-    h("div", { onClick: () => openPlayer(ch.id), title: g ? "Watch " + g.network : "Watch " + ch.name, style: { width: COLW + "px", flex: "none", position: "sticky", left: 0, zIndex: 6, background: colBg, backdropFilter: ambient ? "blur(18px)" : undefined, borderRight: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: "11px", padding: "0 16px", cursor: "pointer" } },
-      logoTile(ch, 42, 13),
+    h("div", { onClick: () => openPlayer(ch.id), title: g ? "Watch " + g.network : "Watch " + ch.name, style: { width: COLW + "px", flex: "none", position: "sticky", left: 0, zIndex: 6, background: colBg, backdropFilter: ambient ? "blur(18px)" : undefined, borderRight: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: mob ? "9px" : "11px", padding: mob ? "0 10px" : "0 16px", cursor: "pointer" } },
+      logoTile(ch, mob ? 30 : 42, mob ? 9 : 13),
       colInfo,
-      h("span", { style: { width: "8px", height: "8px", flex: "none", borderRadius: "50%", background: hc, boxShadow: "0 0 7px " + hc } }),
+      // The standalone health dot eats ~19px of a tight phone column — the row's
+      // own health is conveyed elsewhere; reclaim the space for the channel name.
+      mob ? null : h("span", { style: { width: "8px", height: "8px", flex: "none", borderRadius: "50%", background: hc, boxShadow: "0 0 7px " + hc } }),
       h("div", { style: "position:absolute;top:0;bottom:0;left:100%;width:44px;pointer-events:none;background:linear-gradient(90deg," + (ambient ? "rgba(13,15,19,0.86)" : "rgba(12,13,14,0.96)") + ",transparent)" })),
     h("div", { style: { width: totalW + "px", position: "relative", flex: "none" } }, ...cells));
 }
@@ -1586,7 +1591,7 @@ function render() {
   if (state.data) state.data.now = Date.now();
   usedTileKeys = new Set();
   const mob = isMobile();
-  COLW = mob ? 132 : 210; // narrow the guide's channel column on phones
+  COLW = mob ? 140 : 210; // narrow the guide's channel column on phones
   if (!mob && state.navOpen) state.navOpen = false; // drawer is phone-only
   // Fade the main area only when the screen actually changes (not every render).
   const screenChanged = state.screen !== lastRenderedScreen;
