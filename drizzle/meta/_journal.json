@@ -1,0 +1,69 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1782100002441,
+      "tag": "0000_daily_master_chief",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1782167099367,
+      "tag": "0001_lively_hemingway",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1782168075988,
+      "tag": "0002_supreme_marvel_zombies",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1782174094108,
+      "tag": "0003_lean_wild_pack",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1782177153386,
+      "tag": "0004_sour_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1782177556254,
+      "tag": "0005_flawless_robin_chapel",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1782267419381,
+      "tag": "0006_square_meteorite",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1782268881786,
+      "tag": "0007_adorable_impossible_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1782272213361,
+      "tag": "0008_nervous_mac_gargan",
+      "breakpoints": true
+    }
+  ]
+}

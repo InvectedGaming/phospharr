@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# secrets & local state — NEVER commit these
+.env
+.env.local
+*.db
+*.db-shm
+*.db-wal
+cathode.db*
+data/
+dvr/
+
+# agent / editor / OS cruft
+.claude/
+.design-import/
+.vscode/
+.idea/
+.DS_Store
+
+# build output / logs
+dist/
+*.log

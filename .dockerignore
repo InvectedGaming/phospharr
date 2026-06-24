@@ -1,0 +1,22 @@
+# Keep the image small and NEVER bake local state/secrets into it.
+node_modules
+.git
+.gitignore
+
+# Local database + WAL (would leak your accounts, provider creds, sessions!)
+*.db
+*.db-wal
+*.db-shm
+cathode.db*
+
+# Local env + recordings + editor/agent cruft
+.env
+dvr/
+.claude/
+*.log
+npm-debug.log*
+
+# Docker artifacts (don't recurse)
+Dockerfile
+.dockerignore
+docker-compose*.yml

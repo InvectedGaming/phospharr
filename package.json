@@ -1,0 +1,27 @@
+{
+  "name": "cathode",
+  "version": "0.1.0",
+  "description": "Self-hosted IPTV manager + viewer that feels like a real TV. Canonical channel layer, slot-pool scheduling across providers, multiplexing stream proxy, HDHR emulation, merged EPG.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun scripts/migrate.ts",
+    "db:studio": "drizzle-kit studio",
+    "seed": "bun scripts/seed.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.36.4",
+    "fast-xml-parser": "^4.5.1",
+    "hono": "^4.6.14",
+    "htmlparser2": "^12.0.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.28.1",
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,1 @@
+ALTER TABLE `channels` ADD `epg_channel_id` text;

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cathode · Aerial</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: #0c0d0e;
+      color: #eef0f2;
+      font-family: 'Schibsted Grotesk', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 8px; border: 2px solid #0c0d0e; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+    @keyframes aerNowPulse { 0%,100% { box-shadow: 0 0 10px var(--ac,#54b6ff), 0 0 1px var(--ac,#54b6ff); } 50% { box-shadow: 0 0 22px var(--ac,#54b6ff), 0 0 4px var(--ac,#54b6ff); } }
+    @keyframes aerBlink { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    @keyframes aerShimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    @keyframes aerFadeUp { 0% { opacity: 0; transform: translateY(14px); } 100% { opacity: 1; transform: translateY(0); } }
+    @keyframes aerPop { 0% { opacity: 0; transform: scale(.96); } 100% { opacity: 1; transform: scale(1); } }
+    @keyframes aerViewIn { 0% { opacity: 0; } 100% { opacity: 1; } }
+    @keyframes aerFadeIn { 0% { opacity: 0; transform: translateY(7px); } 100% { opacity: 1; transform: translateY(0); } }
+    @keyframes aerRise { 0% { opacity: 0; transform: translateY(12px) scale(.99); } 100% { opacity: 1; transform: none; } }
+    @keyframes aerPlayerIn { 0% { opacity: 0; transform: scale(.94); } 100% { opacity: 1; transform: scale(1); } }
+    @keyframes aerPlayerOut { 0% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(.94); } }
+    /* Micro-interactions: snappy, GPU-friendly. */
+    button { font-family: inherit; transition: transform .12s cubic-bezier(.2,.7,.3,1), background .16s ease, border-color .16s ease, box-shadow .16s ease, color .16s ease, opacity .16s ease; }
+    button:active { transform: scale(.955); }
+    .aer-cell { transition: transform .16s cubic-bezier(.2,.7,.3,1), box-shadow .16s ease, border-color .16s ease, filter .16s ease; }
+    .aer-cell:hover { transform: scale(1.02); filter: brightness(1.09); box-shadow: 0 10px 28px rgba(0,0,0,.5); z-index: 5; }
+    .aer-vol { accent-color: #54b6ff; }
+    /* Staggered list reveal (analytics / recents). */
+    .aer-stagger > * { animation: aerRise .42s cubic-bezier(.2,.7,.3,1) both; }
+    .aer-stagger > *:nth-child(1){animation-delay:.02s}.aer-stagger > *:nth-child(2){animation-delay:.05s}
+    .aer-stagger > *:nth-child(3){animation-delay:.08s}.aer-stagger > *:nth-child(4){animation-delay:.11s}
+    .aer-stagger > *:nth-child(5){animation-delay:.14s}.aer-stagger > *:nth-child(6){animation-delay:.17s}
+    .aer-stagger > *:nth-child(7){animation-delay:.2s}.aer-stagger > *:nth-child(n+8){animation-delay:.23s}
+    @media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <div id="root" style="height:100vh;width:100vw;display:flex;flex-direction:column;background:#0c0d0e;color:#eef0f2;overflow:hidden"></div>
+  <script src="/vendor/mpegts.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

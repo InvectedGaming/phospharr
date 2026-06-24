@@ -1,0 +1,67 @@
+# Cathode — self-hosted IPTV manager + viewer
+#
+#   Just Cathode:          docker compose up -d            →  http://localhost:7777
+#   Cathode + VPN (Gluetun): docker compose --profile vpn up -d
+#
+# For VPN: copy .env.example → .env, fill in the VPN_* values, then run with
+# --profile vpn. Cathode reaches Gluetun's proxy at http://gluetun:8888 — set
+# that in Settings → VPN (or via CATHODE_VPN_PROXY in .env), then flip the
+# "VPN" toggle on whichever Sources you want tunneled. Everything else stays direct.
+
+services:
+  cathode:
+    build: .
+    # image: ghcr.io/<you>/cathode:latest   # swap in once you publish an image
+    container_name: cathode
+    restart: unless-stopped
+    ports:
+      - "${CATHODE_PORT:-7777}:7777"
+    volumes:
+      - cathode-data:/data            # SQLite DB + DVR recordings persist here
+    environment:
+      # Public URL clients use (HDHR discovery advertises it). Blank = request host.
+      BASE_URL: ${BASE_URL:-}
+      # Proxy for VPN-flagged sources. Blank = configure it in the UI instead.
+      # With the gluetun service below, use:  http://gluetun:8888
+      CATHODE_VPN_PROXY: ${CATHODE_VPN_PROXY:-}
+      TZ: ${TZ:-UTC}
+    networks: [cathode]
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Optional VPN via Gluetun. Only starts with:  docker compose --profile vpn up
+  # Cathode runs OUTSIDE the tunnel and routes ONLY flagged sources through this
+  # proxy — so one instance serves both VPN and non-VPN providers.
+  # ──────────────────────────────────────────────────────────────────────────
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    profiles: ["vpn"]
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      # --- your VPN provider (see github.com/qdm12/gluetun-wiki) ---
+      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:-}
+      VPN_TYPE: ${VPN_TYPE:-wireguard}
+      # WireGuard:
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-}
+      # OpenVPN (if VPN_TYPE=openvpn):
+      OPENVPN_USER: ${OPENVPN_USER:-}
+      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
+      # Optional server selection:
+      SERVER_COUNTRIES: ${SERVER_COUNTRIES:-}
+      # Built-in HTTP proxy Cathode tunnels flagged sources through:
+      HTTPPROXY: "on"
+      HTTPPROXY_LISTENING_ADDRESS: ":8888"
+      TZ: ${TZ:-UTC}
+    networks: [cathode]
+
+networks:
+  cathode:
+    name: cathode
+
+volumes:
+  cathode-data:

@@ -1,0 +1,1 @@
+ALTER TABLE `view_events` ADD `program_title` text;

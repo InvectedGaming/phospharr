@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow, noarchive, noimageindex" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Live</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #000; color: #eef0f2;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+    #app { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+    video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+    .bar { position: fixed; top: 0; left: 0; right: 0; padding: 14px 18px; z-index: 2;
+      display: flex; align-items: center; gap: 10px; pointer-events: none;
+      background: linear-gradient(180deg, rgba(0,0,0,.6), transparent); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #ff5d52; box-shadow: 0 0 8px #ff5d52; }
+    .name { font-size: 15px; font-weight: 700; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+    .msg { max-width: 360px; text-align: center; padding: 0 24px; }
+    .msg h1 { font-size: 20px; margin: 0 0 8px; }
+    .msg p { font-size: 14px; color: #9aa0a6; margin: 0; line-height: 1.5; }
+    .spin { width: 30px; height: 30px; border: 3px solid rgba(255,255,255,.18); border-top-color: #54b6ff;
+      border-radius: 50%; animation: s 1s linear infinite; }
+    @keyframes s { to { transform: rotate(360deg); } }
+    .unmute { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 3;
+      display: flex; align-items: center; gap: 9px; padding: 11px 18px; border: none; cursor: pointer;
+      border-radius: 999px; background: rgba(255,255,255,.95); color: #06121c; font: 600 14px/1 inherit;
+      box-shadow: 0 8px 28px rgba(0,0,0,.5); animation: pop .25s ease; }
+    .unmute svg { width: 17px; height: 17px; }
+    @keyframes pop { from { opacity: 0; transform: translateX(-50%) translateY(8px); } }
+  </style>
+</head>
+<body>
+  <div id="app"><div class="spin"></div></div>
+  <script src="/vendor/mpegts.js"></script>
+  <script>
+    // Share token is the last path segment of /s/<token>.
+    const token = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop() || "");
+    const app = document.getElementById("app");
+    let player = null, transcode = false, retries = 0, dead = false;
+
+    function endNow(title, body) {
+      if (dead) return; dead = true;
+      if (player) { try { player.destroy(); } catch (e) {} }
+      const v = document.querySelector("video"); if (v) { try { v.pause(); } catch (e) {} }
+      message(title, body);
+    }
+
+    const message = (title, body) => {
+      app.innerHTML = "";
+      const d = document.createElement("div"); d.className = "msg";
+      d.innerHTML = "<h1></h1><p></p>";
+      d.querySelector("h1").textContent = title;
+      d.querySelector("p").textContent = body || "";
+      app.appendChild(d);
+    };
+
+    async function ticket() {
+      const r = await fetch("/share/" + token + "/ticket", { method: "POST" });
+      if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || "Unavailable"); }
+      return (await r.json()).ticket;
+    }
+
+    async function play() {
+      if (dead) return;
+      if (!window.mpegts || !mpegts.isSupported()) { message("Can't play here", "This browser doesn't support live playback. Try Chrome, Edge, or Safari."); return; }
+      let t;
+      try { t = await ticket(); } catch (e) { message("Unavailable", e.message); return; }
+      const url = location.origin + "/share/" + token + "/stream?t=" + encodeURIComponent(t) + (transcode ? "&mode=transcode" : "");
+
+      app.innerHTML = "";
+      const video = document.createElement("video");
+      // Muted autoplay is the only kind browsers allow without a click — start
+      // muted so it plays on load, then offer a one-tap unmute.
+      video.autoplay = true; video.controls = true; video.playsInline = true; video.muted = true;
+      app.appendChild(video);
+      const unmute = document.createElement("button");
+      unmute.className = "unmute";
+      unmute.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg><span>Tap to unmute</span>';
+      unmute.onclick = () => { video.muted = false; video.play().catch(function(){}); unmute.remove(); };
+      app.appendChild(unmute);
+      video.addEventListener("volumechange", () => { if (!video.muted && unmute.parentNode) unmute.remove(); });
+
+      if (player) { try { player.destroy(); } catch (e) {} }
+      player = mpegts.createPlayer({ type: "mpegts", isLive: true, url },
+        { enableWorker: true, liveBufferLatencyChasing: false, lazyLoad: false, autoCleanupSourceBuffer: true, stashInitialSize: 1024 * 1024 });
+      player.attachMediaElement(video);
+      player.on(mpegts.Events.ERROR, (type, detail, info) => {
+        const msg = (info && info.msg) || "";
+        const codec = String(detail).indexOf("MSE") >= 0 || /codec|unsupported|addSourceBuffer/i.test(msg);
+        if (!transcode && codec) { transcode = true; play(); return; }   // AC-3/HEVC → compatible-audio path
+        if (retries < 4) { retries++; setTimeout(play, 1500); return; }   // transient: re-ticket + reconnect
+        message("Stream stopped", "The source may be offline, or this link hit its viewer limit.");
+      });
+      player.load();
+      video.play().catch(() => {});
+      video.addEventListener("playing", () => { retries = 0; }, { once: true });
+    }
+
+    async function start() {
+      try {
+        const r = await fetch("/share/" + token + "/info");
+        if (!r.ok) { message("Link unavailable", "This share link has expired or been revoked."); return; }
+        const info = await r.json();
+        document.title = info.channel || "Live";
+        const bar = document.createElement("div"); bar.className = "bar";
+        bar.innerHTML = '<span class="dot"></span><span class="name"></span>';
+        bar.querySelector(".name").textContent = info.channel || "Live";
+        document.body.appendChild(bar);
+        play();
+        // Poll validity so a revoke (or expiry) ends playback within seconds,
+        // even if the video is still riding a buffer.
+        setInterval(async () => {
+          if (dead) return;
+          try {
+            const v = await fetch("/share/" + token + "/info", { cache: "no-store" });
+            if (!v.ok) endNow("Link ended", "This share link was revoked or has expired.");
+          } catch (e) { /* transient network blip — ignore */ }
+        }, 10000);
+      } catch (e) { message("Can't connect", "Couldn't reach the server."); }
+    }
+    start();
+  </script>
+</body>
+</html>

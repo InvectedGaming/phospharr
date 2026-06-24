@@ -1,0 +1,1 @@
+ALTER TABLE `providers` ADD `via_vpn` integer DEFAULT false NOT NULL;
