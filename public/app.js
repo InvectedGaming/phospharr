@@ -754,6 +754,20 @@ function guideScreen() {
 
   if (ambient) {
     const fc = focusSel.ch;
+    if (mob) {
+      // Phones are portrait, so covering the whole tall container zooms a 16:9
+      // feed to a tiny central sliver. Pin the video to a top preview BAND so
+      // cover scales it far less and you see most of the actual frame, full-bleed.
+      const previewH = 290;
+      return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0;position:relative;overflow:hidden" },
+        h("div", { style: "position:absolute;inset:0;z-index:0;overflow:hidden;background:" + fc.grad },
+          h("div", { style: "position:absolute;top:0;left:0;right:0;height:" + previewH + "px;overflow:hidden" },
+            tileVideo("detail", fc.id, state.detailMuted))),
+        // Darken only the top (header) and bottom (info) of the band; leave the
+        // middle clear so the preview reads.
+        h("div", { style: "position:absolute;top:0;left:0;right:0;height:" + previewH + "px;z-index:1;pointer-events:none;background:linear-gradient(180deg,rgba(9,10,11,0.72) 0%,rgba(9,10,11,0.12) 24%,rgba(9,10,11,0) 48%,rgba(9,10,11,0.88) 100%)" }),
+        header, card, scroller, sheet);
+    }
     return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0;position:relative;overflow:hidden" },
       // sharp full-screen background video (the grid frosts it via backdrop-filter)
       h("div", { style: "position:absolute;inset:0;z-index:0;overflow:hidden;background:" + fc.grad },
