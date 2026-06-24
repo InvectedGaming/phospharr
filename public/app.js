@@ -633,8 +633,11 @@ function guideScreen() {
   const ambient = state.ambient !== false && !!focusSel;
   // Frosted-glass framing in ambient mode: sticky time-header + channel column.
   // Low tint so the video shows through; backdrop-filter does the legibility work.
-  const stickyBg = ambient ? "rgba(14,16,20,0.28)" : "#0c0d0e";
+  // On phones the ambient video behind a dense grid washes everything out, so use
+  // a much heavier scrim (just a faint glow shows through) for legibility.
+  const stickyBg = ambient ? (mob ? "rgba(10,11,14,0.74)" : "rgba(14,16,20,0.28)") : "#0c0d0e";
   const frost = ambient ? ";backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)" : "";
+  const scrollerAmbientBg = mob ? "rgba(8,9,11,0.76)" : "rgba(11,12,15,0.3)";
 
   // header
   const header = h("div", { style: "flex:none;display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:" + (mob ? "14px 14px 10px" : "18px 24px 14px") + (ambient ? ";position:relative;z-index:2" : "") },
@@ -693,7 +696,7 @@ function guideScreen() {
   // Virtualized rows: only the rows in (and near) the viewport are in the DOM.
   // header/now-line/now-dot are the first 3 children and are kept across slices.
   const inner = h("div", { style: { width: COLW + totalW + "px", height: HEADH + rowsH + "px", position: "relative" } }, headerRow, nowLine, nowDot);
-  const scroller = h("div", { id: "aerGuideScroll", style: "flex:1;min-height:0;overflow:auto" + (ambient ? ";position:relative;z-index:2;background:rgba(11,12,15,0.3);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px)" : "") }, inner);
+  const scroller = h("div", { id: "aerGuideScroll", style: "flex:1;min-height:0;overflow:auto" + (ambient ? ";position:relative;z-index:2;background:" + scrollerAmbientBg + ";backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px)" : "") }, inner);
 
   let lastStart = -1, lastEnd = -1, scrollRaf = 0;
   const renderSlice = () => {
@@ -932,7 +935,9 @@ function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
   // right so program text scrolling under the sticky column can't bleed through,
   // plus a soft fade tail past the edge so cell titles don't butt the names.
   const colBg = ambient
-    ? "linear-gradient(90deg, rgba(13,15,19,0.34) 0%, rgba(13,15,19,0.34) 46%, rgba(13,15,19,0.86) 100%)"
+    ? (mob
+        ? "linear-gradient(90deg, rgba(9,10,13,0.84) 0%, rgba(9,10,13,0.84) 52%, rgba(9,10,13,0.97) 100%)"
+        : "linear-gradient(90deg, rgba(13,15,19,0.34) 0%, rgba(13,15,19,0.34) 46%, rgba(13,15,19,0.86) 100%)")
     : "#0c0d0e";
   return h("div", { style: { display: "flex", height: ROWH + "px", borderBottom: "1px solid rgba(255,255,255,0.045)" } },
     h("div", { onClick: () => openPlayer(ch.id), title: g ? "Watch " + g.network : "Watch " + ch.name, style: { width: COLW + "px", flex: "none", position: "sticky", left: 0, zIndex: 6, background: colBg, backdropFilter: ambient ? "blur(18px)" : undefined, borderRight: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: mob ? "9px" : "11px", padding: mob ? "0 10px" : "0 16px", cursor: "pointer" } },
