@@ -104,10 +104,17 @@ docker compose up -d          # → http://localhost:7777
 Open the UI and create your **admin account** (the first account is the admin).
 Everything else — providers, EPG, rules, users, share links — is in the UI.
 
-**Streaming is locked by default.** `/stream` and the HDHomeRun tuner require a
-session (the web player) or an auto-generated key. To connect Plex/Jellyfin/Emby,
-copy the tuner URL from **Settings → Access & Tuner** (looks like
-`http://<host>:7777/t/<key>`) and add it as the device.
+**Streaming is locked down by default.** Exports — the **HDHomeRun** tuner, an
+**M3U** playlist, an **XMLTV** guide, and `/stream` — require a session (the web
+player) or an auto-generated key, **and** are **LAN-only** unless you opt in. Grab
+the URLs from **Settings → Access & Tuner** (e.g. tuner `http://<host>:7777/t/<key>`,
+plus `…/playlist.m3u` and `…/epg.xml`) and add them to Plex / Jellyfin / Emby /
+TiviMate.
+
+To use them off your network, enable **Settings → Network Access → Allow external**
+(you'll get a warning). Running behind nginx/Traefik/Caddy? Turn on **trust proxy**
+so the LAN check sees the real client IP — with plain Docker port-publishing every
+client looks local, so the key stays your real lock.
 
 ### VPN passthrough (Gluetun) — one VPN per source
 
@@ -217,8 +224,10 @@ The whole UI is driven by one aggregated endpoint, `GET /api/view`.
   [Gluetun](https://github.com/qdm12/gluetun) regions) and pick one per source —
   Source A → Japan, Source B → UK, others direct. One instance, mixed VPN / non-VPN.
   See [Run with Docker](#run-with-docker).
-- **Locked streaming** — `/stream` and the HDHomeRun tuner require a session or an
-  auto-generated key, so the lineup and streams aren't open to anyone who finds the URL.
+- **Locked-down exports** — HDHomeRun, M3U, XMLTV, and `/stream` require a session
+  or auto-generated key **and** are LAN-only by default (off-network → `403`), with an
+  explicit opt-in + warning to expose them and reverse-proxy IP support. Modeled on
+  how [Dispatcharr](https://dispatcharr.github.io/Dispatcharr-Docs/advanced/) gates its outputs.
 
 ## Roadmap
 

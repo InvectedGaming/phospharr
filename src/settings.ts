@@ -30,6 +30,8 @@ export interface Settings {
   "stream.keepWarmSeconds": number; // hold a channel's upstream this long after the last viewer
   "vpn.endpoints": { name: string; url: string }[]; // named VPN/proxy endpoints sources can pick from
   "access.streamKey": string; // secret gating /stream, /watch, and HDHR (devices use ?key=)
+  "access.allowExternal": boolean; // allow tuner/M3U/EPG/stream exports off the local network (with key)
+  "access.trustProxy": boolean; // resolve client IP from X-Forwarded-For (set true behind a reverse proxy)
 }
 
 const DEFAULTS: Settings = {
@@ -48,6 +50,8 @@ const DEFAULTS: Settings = {
   "stream.keepWarmSeconds": 5,
   "vpn.endpoints": [],
   "access.streamKey": "", // auto-generated on first boot if unset
+  "access.allowExternal": false, // LAN-only by default
+  "access.trustProxy": false,
 };
 
 // Env overrides (ops/Docker). Present env value wins over DB + default.
@@ -65,6 +69,8 @@ const ENV_MAP: Partial<Record<keyof Settings, string>> = {
   "epg.refreshHours": "CATHODE_EPG_REFRESH_HOURS",
   "stream.keepWarmSeconds": "CATHODE_STREAM_KEEPWARM",
   "access.streamKey": "CATHODE_STREAM_KEY",
+  "access.allowExternal": "CATHODE_ALLOW_EXTERNAL",
+  "access.trustProxy": "CATHODE_TRUST_PROXY",
 };
 
 function coerce(key: keyof Settings, raw: string): boolean | number | string {

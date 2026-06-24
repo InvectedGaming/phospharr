@@ -9,6 +9,8 @@ import { muxer } from "../proxy/muxer.ts";
 import { transcoder } from "../proxy/transcode.ts";
 import { pool } from "../scheduler/pool.ts";
 import * as hdhr from "../tuner/hdhr.ts";
+import { clientIp, isLocalIp, externalAllowed } from "../net/access.ts";
+import { exportXmltv } from "../epg/export.ts";
 import { buildView } from "./view.ts";
 import { getGuideSnapshot } from "../epg/snapshot.ts";
 import { getSettings, getSetting, setSetting, cachedSetting, envLockedKeys, capabilities, type Settings } from "../settings.ts";
@@ -233,12 +235,15 @@ app.get("/api/guide", async (c) => {
 // keep the key on every call). The key is auto-generated on first boot.
 const STREAM_HEADERS = { "Content-Type": "video/mp2t", "Cache-Control": "no-cache, no-store", Connection: "keep-alive" } as const;
 function streamKey(): string { return String(cachedSetting("access.streamKey") || ""); }
-function streamAuth(c: Context<Env>): { ok: boolean; user?: User } {
+// The key is required; the LAN policy is an ADDITIONAL gate — off-network clients
+// are refused (403) unless the admin opted into external access.
+function streamAuth(c: Context<Env>): { ok: boolean; user?: User; status?: 401 | 403 } {
   const user = userForToken(getCookie(c, SESSION_COOKIE));
-  if (user) return { ok: true, user };
+  if (user) return { ok: true, user }; // signed-in web user, any network
   const k = streamKey();
-  if (k && c.req.query("key") === k) return { ok: true };
-  return { ok: false };
+  if (!k || c.req.query("key") !== k) return { ok: false, status: 401 };
+  if (isLocalIp(clientIp(c)) || externalAllowed()) return { ok: true };
+  return { ok: false, status: 403 }; // valid key but off-network and not opted in
 }
 async function serveStream(c: Context<Env>, channelId: number, transcode: boolean, user?: User) {
   // A restricted (non-admin) viewer can't stream a channel they aren't allowed to see.
@@ -258,7 +263,7 @@ app.get("/stream/:channelId", async (c) => {
   const channelId = Number(c.req.param("channelId"));
   if (!Number.isFinite(channelId)) return c.text("bad channel id", 400);
   const auth = streamAuth(c);
-  if (!auth.ok) return c.text("unauthorized — sign in, or append ?key=<stream key>", 401);
+  if (!auth.ok) return c.text(auth.status === 403 ? "off-network access is disabled" : "unauthorized — sign in, or append ?key=<stream key>", auth.status ?? 401);
   return serveStream(c, channelId, false, auth.user);
 });
 // Browser-friendly variant: video copy + audio→AAC (AC-3/HEVC channels).
@@ -266,30 +271,53 @@ app.get("/watch/:channelId", async (c) => {
   const channelId = Number(c.req.param("channelId"));
   if (!Number.isFinite(channelId)) return c.text("bad channel id", 400);
   const auth = streamAuth(c);
-  if (!auth.ok) return c.text("unauthorized", 401);
+  if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
   return serveStream(c, channelId, true, auth.user);
 });
 
-// ─── HDHomeRun emulation, served under /t/<stream key>/ so the key rides every
-// derived URL. Point Plex/Jellyfin at  http://<host>:7777/t/<key> ───
-function tunerOk(c: Context<Env>): boolean {
+// ─── Exports under /t/<stream key>/ so the key rides every derived URL. Point
+// Plex/Jellyfin at  http://<host>:7777/t/<key>  (HDHR), or use the M3U/XMLTV
+// URLs. All gated by the LAN policy: off-network → 403 unless external is on. ───
+function tunerKeyOk(c: Context<Env>): boolean {
   const k = streamKey();
   return !!k && c.req.param("key") === k;
 }
+// Returns a Response to short-circuit (404 bad key, 403 off-network), or null to proceed.
+function tunerDenied(c: Context<Env>): Response | null {
+  if (!tunerKeyOk(c)) return c.text("not found", 404);
+  if (!isLocalIp(clientIp(c)) && !externalAllowed()) return c.text("off-network access is disabled (Settings → Network Access)", 403);
+  return null;
+}
 app.get("/t/:key/discover.json", async (c) => {
-  if (!tunerOk(c) || !(await getSetting("features.hdhr"))) return c.notFound();
+  const d = tunerDenied(c); if (d) return d;
+  if (!(await getSetting("features.hdhr"))) return c.notFound();
   return c.json(hdhr.discover(`${baseUrl(c)}/t/${c.req.param("key")}`));
 });
-app.get("/t/:key/lineup_status.json", (c) => (tunerOk(c) ? c.json(hdhr.lineupStatus()) : c.notFound()));
+app.get("/t/:key/lineup_status.json", (c) => tunerDenied(c) ?? c.json(hdhr.lineupStatus()));
 app.get("/t/:key/lineup.json", async (c) => {
-  if (!tunerOk(c) || !(await getSetting("features.hdhr"))) return c.notFound();
+  const d = tunerDenied(c); if (d) return d;
+  if (!(await getSetting("features.hdhr"))) return c.notFound();
   return c.json(await hdhr.lineup(`${baseUrl(c)}/t/${c.req.param("key")}`));
 });
 app.get("/t/:key/stream/:channelId", async (c) => {
-  if (!tunerOk(c)) return c.notFound();
+  const d = tunerDenied(c); if (d) return d;
   const channelId = Number(c.req.param("channelId"));
   if (!Number.isFinite(channelId)) return c.text("bad channel id", 400);
   return serveStream(c, channelId, false); // a valid tuner key = full lineup access
+});
+// M3U playlist (Jellyfin M3U tuner, TiviMate, …) — stream URLs carry the key path.
+app.get("/t/:key/playlist.m3u", async (c) => {
+  const d = tunerDenied(c); if (d) return d;
+  return new Response(await hdhr.playlistM3U(`${baseUrl(c)}/t/${c.req.param("key")}`), {
+    headers: { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" },
+  });
+});
+// XMLTV guide export for the same consumers.
+app.get("/t/:key/epg.xml", async (c) => {
+  const d = tunerDenied(c); if (d) return d;
+  return new Response(await exportXmltv(), {
+    headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" },
+  });
 });
 
 // ─── Providers ───
