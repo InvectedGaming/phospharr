@@ -1450,14 +1450,17 @@ function analyticsScreen() {
 function mainArea() {
   if (state.loading) return centered("Loading lineup…");
   if (state.error) return centered("Couldn't reach the server: " + state.error);
-  if (!state.data || state.data.channels.length === 0) return centered("No channels yet — add a provider and sync.");
-  if (state.screen === "guide") return guideScreen();
-  if (state.screen === "mosaic") return mosaicScreen();
-  if (state.screen === "channels") return managerScreen();
+  // Management screens must work with an empty lineup — that's precisely when you
+  // need them: to add your first source, grab the stream key, or create users.
+  // Only the viewing screens below require synced channels.
   if (state.screen === "users") return usersScreen();
   if (state.screen === "sources") return sourcesScreen();
   if (state.screen === "rules") return rulesScreen();
   if (state.screen === "settings") return settingsScreen();
+  if (!state.data || state.data.channels.length === 0) return centered("No channels yet — add a provider and sync.");
+  if (state.screen === "guide") return guideScreen();
+  if (state.screen === "mosaic") return mosaicScreen();
+  if (state.screen === "channels") return managerScreen();
   if (state.screen === "analytics") return analyticsScreen();
   return stubScreen();
 }
