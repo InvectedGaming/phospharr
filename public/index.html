@@ -2,21 +2,47 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Phospharr</title>
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#0c0d0e" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="application-name" content="Phospharr" />
+  <meta name="description" content="Self-hosted IPTV manager + viewer." />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Phospharr" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; }
+    html, body { margin: 0; padding: 0; height: 100%; }
     body {
       background: #0c0d0e;
       color: #eef0f2;
       font-family: 'Schibsted Grotesk', system-ui, sans-serif;
       -webkit-font-smoothing: antialiased;
       text-rendering: optimizeLegibility;
+      -webkit-text-size-adjust: 100%;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior: none;
     }
+    /* Full dynamic-viewport height so mobile browser chrome doesn't clip the app. */
+    #root { height: 100vh; height: 100dvh; }
+    /* Top bar clears the notch/status bar in standalone PWA mode. */
+    .aer-topbar { min-height: 60px; padding-top: env(safe-area-inset-top, 0px); }
+    .aer-drawer { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+    @media (max-width: 720px) {
+      .aer-topbar { min-height: 54px; }
+      /* Touch scrolling: hide chunky scrollbars, keep momentum. */
+      ::-webkit-scrollbar { width: 0; height: 0; }
+    }
+    @keyframes aerDrawerIn { from { transform: translateX(-100%); } to { transform: none; } }
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 8px; border: 2px solid #0c0d0e; }
@@ -47,7 +73,7 @@
   </style>
 </head>
 <body>
-  <div id="root" style="height:100vh;width:100vw;display:flex;flex-direction:column;background:#0c0d0e;color:#eef0f2;overflow:hidden"></div>
+  <div id="root" style="width:100%;display:flex;flex-direction:column;background:#0c0d0e;color:#eef0f2;overflow:hidden"></div>
   <script src="/vendor/mpegts.js"></script>
   <script src="/app.js"></script>
 </body>

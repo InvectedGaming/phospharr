@@ -69,6 +69,27 @@ app.get("/vendor/mpegts.js", () =>
     headers: { "Content-Type": "text/javascript", "Cache-Control": "max-age=86400" },
   }),
 );
+
+// ─── PWA assets (manifest, service worker, icons) ───
+// Served public (no auth) so the app is installable and works offline-first.
+// The service worker must not be cached, so updates roll out; the manifest +
+// icons can cache for a day.
+const PWA_FILES: Record<string, { type: string; cache: string }> = {
+  "/manifest.webmanifest": { type: "application/manifest+json", cache: "max-age=86400" },
+  "/sw.js": { type: "text/javascript", cache: noStore },
+  "/icon.svg": { type: "image/svg+xml", cache: "max-age=86400" },
+  "/icon-192.png": { type: "image/png", cache: "max-age=86400" },
+  "/icon-512.png": { type: "image/png", cache: "max-age=86400" },
+  "/icon-maskable-512.png": { type: "image/png", cache: "max-age=86400" },
+};
+for (const [path, meta] of Object.entries(PWA_FILES)) {
+  app.get(path, () => {
+    const headers: Record<string, string> = { "Content-Type": meta.type, "Cache-Control": meta.cache };
+    // The SW is allowed to control the whole origin.
+    if (path === "/sw.js") headers["Service-Worker-Allowed"] = "/";
+    return new Response(Bun.file(`${publicDir}${path}`), { headers });
+  });
+}
 // ─── Public share links (login-free, scoped to ONE channel) ───
 // Keep crawlers away entirely; these live outside /api so the auth gate doesn't
 // touch them, but each is independently validated against the share token.

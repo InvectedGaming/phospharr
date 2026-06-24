@@ -33,11 +33,14 @@ const ICON = (n) => `https://cdn.jsdelivr.net/npm/lucide-static@latest/icons/${n
 
 // Layout constants. Row height is a density option: Comfortable (the design's
 // 88px) by default, Compact for fitting more channels on screen.
-const PXPM = 7, COLW = 210, HEADH = 48;
+const PXPM = 7, HEADH = 48;
+let COLW = 210; // channel-column width; recomputed each render (narrower on phones)
 const ROWH_COMFORTABLE = 88, ROWH_COMPACT = 56;
 function rowH() {
   return state.density === "compact" ? ROWH_COMPACT : ROWH_COMFORTABLE;
 }
+// Phone-width breakpoint: collapses the side rail into a drawer and slims chrome.
+function isMobile() { return (state.vw || (typeof window !== "undefined" ? window.innerWidth : 1200)) <= 720; }
 
 // ---- category → genre mapping (our backend uses free-form categories) ----
 function toGenre(category) {
@@ -124,6 +127,8 @@ function logoTile(ch, size, fontSize, radius) {
 const state = {
   mode: "watch",
   screen: "guide",
+  vw: typeof window !== "undefined" ? window.innerWidth : 1200, // viewport width → responsive layout
+  navOpen: false, // mobile nav drawer open?
   selectedCellId: null,
   selectedProgram: null, // full detail of the focused program (from /api/program)
   detailMuted: true, // detail-pane preview audio
@@ -306,35 +311,53 @@ function fmtClock(ms) {
 }
 
 // ===== shell pieces =====
-function topBar() {
+// Watch is for everyone; Manage is admin-only. Lives in the top bar on desktop,
+// in the nav drawer on phones.
+function modeSwitch() {
   const seg = (on) => ({
     display: "flex", alignItems: "center", gap: "7px", height: "30px", padding: "0 14px",
     borderRadius: "8px", border: "none", background: on ? AC : "transparent",
     color: on ? "#06121c" : "#aeb4ba", fontSize: "13px", fontWeight: 600, cursor: "pointer", transition: "all .15s",
   });
-  const segIcon = (on) => ({
-    width: "15px", height: "15px",
-    filter: on ? "brightness(0) invert(.05)" : "brightness(0) invert(.65)",
-  });
+  const segIcon = (on) => ({ width: "15px", height: "15px", filter: on ? "brightness(0) invert(.05)" : "brightness(0) invert(.65)" });
+  const isAdmin = state.auth.user && state.auth.user.role === "admin";
+  return h("div", { style: "display:flex;padding:3px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:11px;gap:2px" },
+    h("button", { style: seg(state.mode === "watch"), onClick: () => setMode("watch") },
+      h("img", { src: ICON("tv"), style: segIcon(state.mode === "watch") }), "Watch"),
+    isAdmin ? h("button", { style: seg(state.mode === "manage"), onClick: () => setMode("manage") },
+      h("img", { src: ICON("sliders-horizontal"), style: segIcon(state.mode === "manage") }), "Manage") : null);
+}
+
+function topBar() {
   const d = state.data;
   const clock = d ? fmtClock(d.now) : "--:--";
   const u = state.auth.user;
   const isAdmin = u && u.role === "admin";
+  const mob = isMobile();
+  const brandGlyph = h("div", { style: "width:30px;height:30px;flex:none;border-radius:9px;background:linear-gradient(140deg,#54b6ff,#2a78c2);display:flex;align-items:center;justify-content:center;box-shadow:0 0 16px rgba(84,182,255,0.35)" },
+    h("div", { style: "width:11px;height:11px;border:2.5px solid #07121c;border-radius:50%;border-bottom-color:transparent;border-right-color:transparent;transform:rotate(45deg)" }));
+  const avatar = h("div", { title: u ? u.username + (isAdmin ? " · admin" : "") : "", style: "width:34px;height:34px;flex:none;border-radius:50%;background:linear-gradient(135deg," + (isAdmin ? "#2a78c2,#143c63" : "#3a3f47,#1a1d21") + ");border:1px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#eef0f2;text-transform:uppercase" }, u ? u.username.slice(0, 2) : "?");
+  const signOut = h("button", { title: "Sign out", onClick: logoutUser, style: "width:34px;height:34px;flex:none;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" },
+    h("img", { src: ICON("log-out"), style: "width:15px;height:15px;filter:brightness(0) invert(.65)" }));
 
-  return h("div", {
-    style: "height:60px;flex:none;display:flex;align-items:center;gap:20px;padding:0 18px;border-bottom:1px solid rgba(255,255,255,0.07);background:rgba(18,20,22,0.6);backdrop-filter:blur(20px);position:relative;z-index:30",
+  if (mob) {
+    const burger = h("button", { title: "Menu", onClick: () => set({ navOpen: !state.navOpen }), style: "width:38px;height:38px;flex:none;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer" },
+      h("span", { style: "width:16px;height:2px;border-radius:2px;background:#cfd3d8" }),
+      h("span", { style: "width:16px;height:2px;border-radius:2px;background:#cfd3d8" }),
+      h("span", { style: "width:16px;height:2px;border-radius:2px;background:#cfd3d8" }));
+    return h("div", { class: "aer-topbar",
+      style: "flex:none;display:flex;align-items:center;gap:11px;padding:0 12px;border-bottom:1px solid rgba(255,255,255,0.07);background:rgba(18,20,22,0.85);backdrop-filter:blur(20px);position:relative;z-index:30" },
+      burger, brandGlyph,
+      h("div", { style: "font-weight:700;font-size:15px;letter-spacing:.1em;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, "PHOSPHARR"),
+      avatar, signOut);
+  }
+
+  return h("div", { class: "aer-topbar",
+    style: "flex:none;display:flex;align-items:center;gap:20px;padding:0 18px;border-bottom:1px solid rgba(255,255,255,0.07);background:rgba(18,20,22,0.6);backdrop-filter:blur(20px);position:relative;z-index:30",
   },
-    h("div", { style: "display:flex;align-items:center;gap:11px;width:210px" },
-      h("div", { style: "width:30px;height:30px;border-radius:9px;background:linear-gradient(140deg,#54b6ff,#2a78c2);display:flex;align-items:center;justify-content:center;box-shadow:0 0 16px rgba(84,182,255,0.35)" },
-        h("div", { style: "width:11px;height:11px;border:2.5px solid #07121c;border-radius:50%;border-bottom-color:transparent;border-right-color:transparent;transform:rotate(45deg)" })),
+    h("div", { style: "display:flex;align-items:center;gap:11px;width:210px" }, brandGlyph,
       h("div", { style: "font-weight:700;font-size:17px;letter-spacing:.16em" }, "PHOSPHARR")),
-    // mode switch
-    // Watch is for everyone; Manage is admin-only.
-    h("div", { style: "display:flex;padding:3px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:11px;gap:2px" },
-      h("button", { style: seg(state.mode === "watch"), onClick: () => setMode("watch") },
-        h("img", { src: ICON("tv"), style: segIcon(state.mode === "watch") }), "Watch"),
-      isAdmin ? h("button", { style: seg(state.mode === "manage"), onClick: () => setMode("manage") },
-        h("img", { src: ICON("sliders-horizontal"), style: segIcon(state.mode === "manage") }), "Manage") : null),
+    modeSwitch(),
     h("div", { style: "flex:1" }),
     h("div", { style: "display:flex;align-items:center;gap:9px;height:36px;padding:0 13px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px;min-width:230px;color:#7e858c" },
       h("img", { src: ICON("search"), style: "width:15px;height:15px;filter:brightness(0) invert(.55)" }),
@@ -342,10 +365,7 @@ function topBar() {
     h("div", { style: "display:flex;align-items:center;gap:7px;padding:0 12px;height:36px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px" },
       h("span", { style: "width:7px;height:7px;border-radius:50%;background:#2fae5c;box-shadow:0 0 8px #2fae5c;animation:aerBlink 2.4s infinite" }),
       h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:13.5px;font-weight:500;letter-spacing:.02em" }, clock)),
-    h("div", { style: "display:flex;align-items:center;gap:9px" },
-      h("div", { title: u ? u.username + (isAdmin ? " · admin" : "") : "", style: "width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg," + (isAdmin ? "#2a78c2,#143c63" : "#3a3f47,#1a1d21") + ");border:1px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#eef0f2;text-transform:uppercase" }, u ? u.username.slice(0, 2) : "?"),
-      h("button", { title: "Sign out", onClick: logoutUser, style: "width:34px;height:34px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" },
-        h("img", { src: ICON("log-out"), style: "width:15px;height:15px;filter:brightness(0) invert(.65)" }))));
+    h("div", { style: "display:flex;align-items:center;gap:9px" }, avatar, signOut));
 }
 
 function leftRail() {
@@ -373,7 +393,8 @@ function leftRail() {
       ? `${d.serverHealth.channels} channels · ${d.serverHealth.streams} streams`
       : `${d.channels.length} channels · ${d.serverHealth.sources} sources`;
 
-  return h("div", { style: "width:210px;flex:none;border-right:1px solid rgba(255,255,255,0.07);background:rgba(14,16,18,0.5);display:flex;flex-direction:column;padding:14px 12px;gap:3px" },
+  const mob = isMobile();
+  return h("div", { style: (mob ? "width:100%;flex:1;min-height:0;" : "width:210px;flex:none;border-right:1px solid rgba(255,255,255,0.07);") + "background:rgba(14,16,18,0.5);display:flex;flex-direction:column;padding:14px 12px;gap:3px;overflow:auto" },
     h("div", { style: "font-size:10.5px;font-weight:600;letter-spacing:.16em;color:#5c6166;padding:6px 10px 8px" }, state.mode === "watch" ? "WATCH" : "MANAGE"),
     ...navSrc.map((n) => {
       const active = state.screen === n.id;
@@ -401,6 +422,17 @@ function leftRail() {
         h("span", { style: "width:7px;height:7px;border-radius:50%;background:#2fae5c;box-shadow:0 0 8px #2fae5c" }),
         h("span", { style: "font-size:11.5px;font-weight:600;color:#aeb4ba" }, "Server healthy")),
       h("div", { style: "font-size:11px;color:#6b7178;line-height:1.5" }, healthLine)));
+}
+
+// Mobile nav: the side rail as a slide-in drawer (the rail itself is hidden on
+// phones). Reuses leftRail() wholesale and hosts the Watch/Manage switch.
+function navDrawer() {
+  if (!state.navOpen) return null;
+  const isAdmin = state.auth.user && state.auth.user.role === "admin";
+  return h("div", { class: "aer-drawer-scrim", style: "position:fixed;inset:0;z-index:45;background:rgba(6,7,8,0.6);backdrop-filter:blur(3px);animation:aerViewIn .18s ease", onClick: () => set({ navOpen: false }) },
+    h("div", { class: "aer-drawer", style: "position:absolute;top:0;bottom:0;left:0;width:min(264px,82vw);display:flex;flex-direction:column;background:#0e1012;border-right:1px solid rgba(255,255,255,0.08);box-shadow:0 0 60px rgba(0,0,0,0.6);animation:aerDrawerIn .22s cubic-bezier(.2,.8,.3,1)", onClick: (e) => e.stopPropagation() },
+      isAdmin ? h("div", { style: "flex:none;padding:14px 12px 2px" }, modeSwitch()) : null,
+      leftRail()));
 }
 
 // ===== GUIDE =====
@@ -505,6 +537,7 @@ function guideFilterToggle() {
 
 function guideScreen() {
   const d = state.data;
+  const mob = isMobile();
   const visible = guideVisible();
   const totalVisible = d.channels.filter((c) => !c.isHidden).length;
   const { windowStart, windowEnd, now } = d;
@@ -522,13 +555,13 @@ function guideScreen() {
   const frost = ambient ? ";backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)" : "";
 
   // header
-  const header = h("div", { style: "flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:18px 24px 14px" + (ambient ? ";position:relative;z-index:2" : "") },
+  const header = h("div", { style: "flex:none;display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:" + (mob ? "14px 14px 10px" : "18px 24px 14px") + (ambient ? ";position:relative;z-index:2" : "") },
     h("div", null,
       h("div", { style: "font-size:23px;font-weight:700;letter-spacing:-.01em" + (ambient ? ";" + "text-shadow:0 2px 8px rgba(0,0,0,0.7)" : "") }, "Guide"),
       h("div", { style: "font-size:13px;color:#9aa0a6;margin-top:3px" }, state.guideOnlyWithEpg !== false
         ? `${visible.length} channels with guide · ${totalVisible} total · ${new Date(now).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`
         : `Live across ${visible.length} channels · ${new Date(now).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`)),
-    h("div", { style: "display:flex;gap:8px;align-items:center" },
+    h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end" },
       h("button", { onClick: () => { const next = state.previews === false; try { localStorage.setItem("phospharr.previews", next ? "on" : "off"); } catch { /* private */ } set({ previews: next }); }, title: state.previews !== false ? "Live preview on — click to stop background video" : "Live preview off — click to enable", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.previews !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.previews !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
         icon(state.previews !== false ? "monitor-play" : "monitor-off", 16, state.previews !== false ? 0.85 : 0.55)),
       h("button", { onClick: () => { const next = state.networkGroup === false; try { localStorage.setItem("phospharr.netgroup", next ? "on" : "off"); } catch { /* private */ } set({ networkGroup: next, selectedCellId: null }); }, title: "Group network affiliates (collapse local stations into one row)", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.networkGroup !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.networkGroup !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
@@ -539,7 +572,7 @@ function guideScreen() {
       densityToggle(),
       h("button", { style: "height:36px;padding:0 15px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px;cursor:pointer", onClick: () => { guideScrollLeft = null; render(); } },
         h("span", { style: "width:7px;height:7px;border-radius:50%;background:#54b6ff;box-shadow:0 0 8px #54b6ff" }), "Jump to now"),
-      h("button", { style: "height:36px;padding:0 15px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;cursor:pointer" }, "All genres")));
+      mob ? null : h("button", { style: "height:36px;padding:0 15px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;cursor:pointer" }, "All genres")));
 
   // rich detail pane (reflects the selected/highlighted program)
   const card = detailPane(ambient);
@@ -553,7 +586,7 @@ function guideScreen() {
   }
 
   const headerRow = h("div", { style: "display:flex;height:48px;position:sticky;top:0;z-index:6" },
-    h("div", { style: "width:210px;flex:none;position:sticky;left:0;z-index:7;background:" + stickyBg + frost + ";border-bottom:1px solid rgba(255,255,255,0.08);border-right:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;padding:0 18px;font-size:11px;font-weight:600;letter-spacing:.12em;color:#5c6166" }, "CHANNEL"),
+    h("div", { style: "width:" + COLW + "px;flex:none;position:sticky;left:0;z-index:7;background:" + stickyBg + frost + ";border-bottom:1px solid rgba(255,255,255,0.08);border-right:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;padding:0 16px;font-size:11px;font-weight:600;letter-spacing:.12em;color:#5c6166" }, "CHANNEL"),
     h("div", { style: { width: totalW + "px", position: "relative", borderBottom: "1px solid rgba(255,255,255,0.08)", background: stickyBg, backdropFilter: ambient ? "blur(16px)" : undefined } }, ...labels));
 
   // Static glow — animating box-shadow on a full-height (~100k px) line repaints
@@ -653,6 +686,7 @@ function detailPane(ambient) {
   const sel = focusedGuideSelection();
   if (!sel) return h("div", { style: "display:none" });
   const { ch, p } = sel;
+  const mob = isMobile();
   ensureProgramDetail(ch, p);
   const now = Date.now();
   const onNow = !p.filler && p.start <= now && p.end > now;
@@ -713,14 +747,15 @@ function detailPane(ambient) {
 
   // AMBIENT: just the floating info (the background video lives in guideScreen)
   if (ambient) {
-    return h("div", { style: "flex:none;position:relative;z-index:3;padding:16px 28px 20px;display:flex;align-items:flex-end;justify-content:space-between;gap:16px" },
-      h("div", { style: infoAnim + "display:flex;flex-direction:column;gap:10px;max-width:64%;pointer-events:auto" },
+    return h("div", { style: "flex:none;position:relative;z-index:3;padding:" + (mob ? "12px 16px 16px" : "16px 28px 20px") + ";display:flex;align-items:flex-end;justify-content:space-between;gap:16px" },
+      h("div", { style: infoAnim + "display:flex;flex-direction:column;gap:10px;max-width:" + (mob ? "88%" : "64%") + ";pointer-events:auto" },
         channelRow, titleEl, metaEl, descEl, watchBtn),
       muteToggle());
   }
 
-  // BOXED hero (resizable video card)
-  return h("div", { onClick: () => { if (detailDragged) { detailDragged = false; return; } openPlayer(ch.id); }, style: "position:relative;flex:none;margin:0 24px 14px;height:" + state.detailHeight + "px;border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,0.09);box-shadow:0 12px 34px rgba(0,0,0,0.4);cursor:pointer;background:" + ch.grad },
+  // BOXED hero (resizable video card). On phones, cap the height and tighten margins.
+  const heroH = mob ? Math.min(state.detailHeight, 200) : state.detailHeight;
+  return h("div", { onClick: () => { if (detailDragged) { detailDragged = false; return; } openPlayer(ch.id); }, style: "position:relative;flex:none;margin:0 " + (mob ? "14px" : "24px") + " 14px;height:" + heroH + "px;border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,0.09);box-shadow:0 12px 34px rgba(0,0,0,0.4);cursor:pointer;background:" + ch.grad },
     ch.logoUrl ? h("img", { src: ch.logoUrl, loading: "lazy", style: "position:absolute;top:50%;left:66%;transform:translate(-50%,-50%);max-width:26%;max-height:50%;object-fit:contain;opacity:.55;z-index:0;filter:drop-shadow(0 2px 10px rgba(0,0,0,0.5))", onError: (e) => e.target.remove() }) : null,
     tileVideo("detail", ch.id, state.detailMuted),
     h("div", { style: "position:absolute;inset:0;z-index:2;background:linear-gradient(100deg,rgba(9,10,11,0.94) 0%,rgba(9,10,11,0.82) 24%,rgba(9,10,11,0.42) 44%,rgba(9,10,11,0) 62%)" }),
@@ -1344,6 +1379,8 @@ function panel(title, body, right) {
 function analyticsScreen() {
   const a = state.analytics;
   if (!a) return centered("Loading analytics…");
+  const mob = isMobile();
+  const twoCol = mob ? "1fr" : "1fr 1fr";
   const live = state.statusLive;
   const activeStreams = live ? live.active : [];
   const cbi = (state.data && state.data.channelsById) || {};
@@ -1431,17 +1468,17 @@ function analyticsScreen() {
         h("div", { style: "font-size:13px;color:#7e858c;margin-top:3px" }, fmtDuration(a.all.secs) + " watched all-time · " + a.all.sessions + " sessions")),
       h("button", { style: "height:34px;padding:0 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:12.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:7px", onClick: loadAnalytics },
         icon("refresh-cw", 14, 0.7), "Refresh")),
-    h("div", { style: "flex:1;min-height:0;overflow:auto;padding:0 24px 24px" },
-      h("div", { style: "display:flex;gap:14px;margin-bottom:16px" },
+    h("div", { style: "flex:1;min-height:0;overflow:auto;padding:0 " + (mob ? "14px" : "24px") + " 24px" },
+      h("div", { style: "display:grid;grid-template-columns:" + (mob ? "1fr 1fr" : "repeat(4,1fr)") + ";gap:14px;margin-bottom:16px" },
         kpiCard("WATCH TIME TODAY", fmtDuration(a.today.secs), a.today.sessions + " sessions"),
         kpiCard("WATCH TIME · 7 DAYS", fmtDuration(a.week.secs), a.week.sessions + " sessions"),
         kpiCard("CHANNELS WATCHED · 7D", String(a.week.channels), "distinct channels"),
         kpiCard("NOW STREAMING", String(activeStreams.length), live ? live.totalFree + " tuner slots free" : "")),
       h("div", { style: "margin-bottom:16px" }, panel("WATCH TIME · LAST 14 DAYS", chart)),
-      h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px" },
+      h("div", { style: "display:grid;grid-template-columns:" + twoCol + ";gap:16px;margin-bottom:16px" },
         panel("MOST WATCHED CHANNELS · 7 DAYS", topList),
         panel("MOST WATCHED SHOWS · 7 DAYS", showsList)),
-      h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:16px" },
+      h("div", { style: "display:grid;grid-template-columns:" + twoCol + ";gap:16px" },
         panel("NOW STREAMING", nowStreaming),
         panel("RECENT ACTIVITY", recentList))));
 }
@@ -1512,7 +1549,7 @@ function authScreen() {
       onKeydown: (e) => { if (e.key === "Enter") submitAuth(); },
       style: "height:42px;padding:0 13px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#eef0f2;font-size:14px;font-family:inherit;outline:none" }));
   return h("div", { style: "height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(1200px 600px at 50% -10%,rgba(84,182,255,0.10),transparent),#0c0d0e" },
-    h("div", { style: "width:360px;display:flex;flex-direction:column;gap:18px;padding:34px 30px;background:rgba(20,22,26,0.8);border:1px solid rgba(255,255,255,0.08);border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,0.5);backdrop-filter:blur(20px)" },
+    h("div", { style: "width:min(360px,92vw);display:flex;flex-direction:column;gap:18px;padding:34px 30px;background:rgba(20,22,26,0.8);border:1px solid rgba(255,255,255,0.08);border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,0.5);backdrop-filter:blur(20px)" },
       h("div", { style: "display:flex;align-items:center;gap:11px" },
         h("div", { style: "width:34px;height:34px;border-radius:10px;background:linear-gradient(140deg,#54b6ff,#2a78c2);display:flex;align-items:center;justify-content:center;box-shadow:0 0 18px rgba(84,182,255,0.4)" },
           h("div", { style: "width:12px;height:12px;border:2.5px solid #07121c;border-radius:50%;border-bottom-color:transparent;border-right-color:transparent;transform:rotate(45deg)" })),
@@ -1538,13 +1575,18 @@ function render() {
   // when the cached guide snapshot is a few minutes old.
   if (state.data) state.data.now = Date.now();
   usedTileKeys = new Set();
+  const mob = isMobile();
+  COLW = mob ? 132 : 210; // narrow the guide's channel column on phones
+  if (!mob && state.navOpen) state.navOpen = false; // drawer is phone-only
   // Fade the main area only when the screen actually changes (not every render).
   const screenChanged = state.screen !== lastRenderedScreen;
   lastRenderedScreen = state.screen;
   const main = h("div", { style: "flex:1;min-width:0;display:flex;flex-direction:column;position:relative" + (screenChanged ? ";animation:aerViewIn .3s ease" : "") }, mainArea());
+  const body = mob ? main : h("div", { style: "flex:1;display:flex;min-height:0" }, leftRail(), main);
   root.replaceChildren(
     topBar(),
-    h("div", { style: "flex:1;display:flex;min-height:0" }, leftRail(), main),
+    body,
+    mob ? (navDrawer() || h("div", { style: "display:none" })) : h("div", { style: "display:none" }),
     promoteOverlay() || h("div", { style: "display:none" }),
     sourceModal() || h("div", { style: "display:none" }),
     shareModal() || h("div", { style: "display:none" }),
@@ -1556,10 +1598,10 @@ function render() {
 function setMode(mode) {
   const isAdmin = state.auth.user && state.auth.user.role === "admin";
   if (mode === "manage" && !isAdmin) mode = "watch"; // Manage is admin-only
-  set({ mode, screen: mode === "watch" ? "guide" : "channels", selectedCellId: null });
+  set({ mode, screen: mode === "watch" ? "guide" : "channels", selectedCellId: null, navOpen: false });
 }
 function setScreen(screen) {
-  set({ screen });
+  set({ screen, navOpen: false });
   if (screen === "analytics") loadAnalytics();
   if (screen === "users") loadUsers();
   if (screen === "sources") loadSources();
@@ -2484,3 +2526,16 @@ function toggleDetailMute() {
 render(); // shows the "…" splash until checkAuth resolves
 checkAuth(); // → login/setup screen, or loadView() if already signed in
 setInterval(() => { if (state.auth.user) loadView(); }, 60000); // keep clock/guide fresh
+
+// Re-render when the viewport width changes (crossing the mobile breakpoint
+// swaps the side rail for the drawer and resizes the guide column).
+let _rzRaf = 0;
+window.addEventListener("resize", () => {
+  if (_rzRaf) return;
+  _rzRaf = requestAnimationFrame(() => { _rzRaf = 0; const w = window.innerWidth; if (w !== state.vw) { state.vw = w; render(); } });
+}, { passive: true });
+
+// PWA: register the service worker (offline app shell + installability).
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => { /* SW optional */ }));
+}
