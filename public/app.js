@@ -134,13 +134,13 @@ const state = {
   detailMuted: true, // detail-pane preview audio
   detailVolume: 1, // preview volume (0–1), via the hover rocker
   detailHeight: loadDetailHeight(), // resizable hero height, persisted
-  ambient: localStorage.getItem("phospharr.ambient") !== "off", // focused video as guide backdrop
+  ambient: prefDefault("phospharr.ambient"), // focused video as guide backdrop (off by default on phones)
   mosaicLayout: "2x2",
   density: "comfortable", // guide row density: 'comfortable' | 'compact'
   guideOnlyWithEpg: true, // guide shows only channels that have program data
   networkGroup: localStorage.getItem("phospharr.netgroup") !== "off", // collapse affiliate clusters into one row
   networkSelection: loadNetSel(), // per-network: which affiliate/market is active
-  previews: localStorage.getItem("phospharr.previews") !== "off", // auto-play live preview in the guide
+  previews: prefDefault("phospharr.previews"), // auto-play live preview in the guide (off by default on phones)
   activeTileId: "t0",
   promotedTileId: null,
   selectedRows: {},
@@ -194,6 +194,16 @@ function loadDetailHeight() {
 }
 function loadNetSel() {
   try { return JSON.parse(localStorage.getItem("phospharr.netsel") || "{}") || {}; } catch { return {}; }
+}
+// Default for a video-heavy preference (ambient backdrop, live previews): honor an
+// explicit on/off the user set, otherwise default ON for desktop but OFF on phones
+// — autoplaying live video behind a dense grid looks cluttered and is a battery/
+// data/decoder drain on mobile.
+function prefDefault(key) {
+  const v = localStorage.getItem(key);
+  if (v === "on") return true;
+  if (v === "off") return false;
+  return (typeof window !== "undefined" ? window.innerWidth : 1200) > 720;
 }
 function saveNetSel() {
   try { localStorage.setItem("phospharr.netsel", JSON.stringify(state.networkSelection)); } catch { /* private mode */ }
@@ -1581,7 +1591,7 @@ function render() {
   // Fade the main area only when the screen actually changes (not every render).
   const screenChanged = state.screen !== lastRenderedScreen;
   lastRenderedScreen = state.screen;
-  const main = h("div", { style: "flex:1;min-width:0;display:flex;flex-direction:column;position:relative" + (screenChanged ? ";animation:aerViewIn .3s ease" : "") }, mainArea());
+  const main = h("div", { style: "flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;position:relative" + (screenChanged ? ";animation:aerViewIn .3s ease" : "") }, mainArea());
   const body = mob ? main : h("div", { style: "flex:1;display:flex;min-height:0" }, leftRail(), main);
   root.replaceChildren(
     topBar(),
