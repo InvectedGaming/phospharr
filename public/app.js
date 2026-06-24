@@ -129,6 +129,8 @@ const state = {
   screen: "guide",
   vw: typeof window !== "undefined" ? window.innerWidth : 1200, // viewport width → responsive layout
   navOpen: false, // mobile nav drawer open?
+  guideOptionsOpen: false, // mobile "Guide options" bottom sheet open?
+  heroHidden: false, // guide hero/detail card auto-hidden after idle (mobile)
   selectedCellId: null,
   selectedProgram: null, // full detail of the focused program (from /api/program)
   detailMuted: true, // detail-pane preview audio
@@ -545,6 +547,62 @@ function guideFilterToggle() {
     h("button", { style: seg(!only), onClick: () => set({ guideOnlyWithEpg: false, selectedCellId: null }), title: "All channels" }, "All"));
 }
 
+// Shared toggle handlers (used by both the desktop inline buttons and the mobile
+// Guide-options sheet) so the two stay in sync and persist the same prefs.
+function togglePreviews() { const next = state.previews === false; try { localStorage.setItem("phospharr.previews", next ? "on" : "off"); } catch { /* private */ } set({ previews: next }); }
+function toggleNetGroup() { const next = state.networkGroup === false; try { localStorage.setItem("phospharr.netgroup", next ? "on" : "off"); } catch { /* private */ } set({ networkGroup: next, selectedCellId: null }); }
+function toggleAmbient() { const next = !(state.ambient !== false); try { localStorage.setItem("phospharr.ambient", next ? "on" : "off"); } catch { /* private */ } set({ ambient: next }); }
+
+// iOS-style on/off pill used in the Guide-options sheet.
+function pillSwitch(on) {
+  return h("div", { style: "flex:none;width:44px;height:26px;border-radius:13px;background:" + (on ? AC : "rgba(255,255,255,0.16)") + ";position:relative;transition:background .18s" },
+    h("div", { style: "position:absolute;top:3px;left:" + (on ? "21px" : "3px") + ";width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);transition:left .18s" }));
+}
+
+// Mobile "Guide options" bottom sheet — folds the header's toggle cluster into
+// one labeled, self-explanatory panel (no hover tooltips on touch).
+function guideOptionsSheet() {
+  if (!state.guideOptionsOpen) return null;
+  const close = () => set({ guideOptionsOpen: false });
+  const divider = () => h("div", { style: "height:1px;background:rgba(255,255,255,0.06)" });
+  const labelBlock = (label, desc) => h("div", { style: "flex:1;min-width:0" },
+    h("div", { style: "font-size:14.5px;font-weight:600;color:#e6e9ec" }, label),
+    h("div", { style: "font-size:12px;color:#7e858c;margin-top:2px;line-height:1.35" }, desc));
+  const segRow = (label, desc, control) => h("div", { style: "display:flex;align-items:center;gap:12px;padding:13px 2px" }, labelBlock(label, desc), control);
+  const toggleRow = (label, desc, on, onClick) => h("div", { onClick, style: "display:flex;align-items:center;gap:12px;padding:13px 2px;cursor:pointer" }, labelBlock(label, desc), pillSwitch(on));
+  return h("div", { style: "position:fixed;inset:0;z-index:55;background:rgba(6,7,8,0.62);backdrop-filter:blur(3px);display:flex;flex-direction:column;justify-content:flex-end;animation:aerViewIn .16s ease", onClick: close },
+    h("div", { class: "aer-sheet", style: "background:#141619;border-top-left-radius:18px;border-top-right-radius:18px;border-top:1px solid rgba(255,255,255,0.1);box-shadow:0 -20px 60px rgba(0,0,0,0.6);padding:6px 18px 16px;animation:aerSheetUp .24s cubic-bezier(.2,.8,.3,1)", onClick: (e) => e.stopPropagation() },
+      h("div", { style: "display:flex;justify-content:center;padding:8px 0 4px" }, h("div", { style: "width:38px;height:4px;border-radius:2px;background:rgba(255,255,255,0.22)" })),
+      h("div", { style: "display:flex;align-items:center;justify-content:space-between;margin:2px 0 4px" },
+        h("div", { style: "font-size:16px;font-weight:700" }, "Guide options"),
+        h("button", { onClick: close, style: "width:30px;height:30px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("x", 15, 0.7))),
+      segRow("Channels", "Show only channels with guide data, or all of them.", guideFilterToggle()),
+      divider(),
+      segRow("Row density", "Comfortable spacing, or fit more rows.", densityToggle()),
+      divider(),
+      toggleRow("Network grouping", "Collapse local affiliates into one row.", state.networkGroup !== false, toggleNetGroup),
+      divider(),
+      toggleRow("Live previews", "Play the focused channel as a live preview.", state.previews !== false, togglePreviews),
+      divider(),
+      toggleRow("Ambient backdrop", "Play the focused channel behind the grid.", state.ambient !== false, toggleAmbient)));
+}
+
+// The guide hero/detail card auto-hides on phones after a short idle so the grid
+// gets the screen back. Tapping a program brings it back and restarts the timer.
+// We only arm when not already counting, so data-refresh re-renders don't keep
+// resetting it (it would otherwise never fire).
+let heroHideTimer = null;
+const HERO_IDLE_MS = 15000;
+function armHeroAutohide() {
+  if (heroHideTimer) { clearTimeout(heroHideTimer); heroHideTimer = null; }
+  heroHideTimer = setTimeout(() => {
+    heroHideTimer = null;
+    if (isMobile() && state.screen === "guide" && !state.heroHidden) { state.heroHidden = true; render(); }
+  }, HERO_IDLE_MS);
+}
+function showGuideHero() { state.heroHidden = false; armHeroAutohide(); }
+function resetGuideHero() { if (heroHideTimer) { clearTimeout(heroHideTimer); heroHideTimer = null; } state.heroHidden = false; }
+
 function guideScreen() {
   const d = state.data;
   const mob = isMobile();
@@ -571,21 +629,34 @@ function guideScreen() {
       h("div", { style: "font-size:13px;color:#9aa0a6;margin-top:3px" }, state.guideOnlyWithEpg !== false
         ? `${visible.length} channels with guide · ${totalVisible} total · ${new Date(now).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`
         : `Live across ${visible.length} channels · ${new Date(now).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`)),
-    h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end" },
-      h("button", { onClick: () => { const next = state.previews === false; try { localStorage.setItem("phospharr.previews", next ? "on" : "off"); } catch { /* private */ } set({ previews: next }); }, title: state.previews !== false ? "Live preview on — click to stop background video" : "Live preview off — click to enable", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.previews !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.previews !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
-        icon(state.previews !== false ? "monitor-play" : "monitor-off", 16, state.previews !== false ? 0.85 : 0.55)),
-      h("button", { onClick: () => { const next = state.networkGroup === false; try { localStorage.setItem("phospharr.netgroup", next ? "on" : "off"); } catch { /* private */ } set({ networkGroup: next, selectedCellId: null }); }, title: "Group network affiliates (collapse local stations into one row)", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.networkGroup !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.networkGroup !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
-        icon("layers", 16, state.networkGroup !== false ? 0.85 : 0.55)),
-      h("button", { onClick: () => { const next = !(state.ambient !== false); try { localStorage.setItem("phospharr.ambient", next ? "on" : "off"); } catch { /* private */ } set({ ambient: next }); }, title: "Ambient backdrop", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.ambient !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.ambient !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
-        icon("clapperboard", 16, state.ambient !== false ? 0.85 : 0.55)),
-      guideFilterToggle(),
-      densityToggle(),
-      h("button", { style: "height:36px;padding:0 15px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px;cursor:pointer", onClick: () => { guideScrollLeft = null; render(); } },
-        h("span", { style: "width:7px;height:7px;border-radius:50%;background:#54b6ff;box-shadow:0 0 8px #54b6ff" }), "Jump to now"),
-      mob ? null : h("button", { style: "height:36px;padding:0 15px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;cursor:pointer" }, "All genres")));
+    (() => {
+      const jumpBtn = h("button", { style: "height:36px;padding:0 15px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px;cursor:pointer", onClick: () => { guideScrollLeft = null; render(); } },
+        h("span", { style: "width:7px;height:7px;border-radius:50%;background:#54b6ff;box-shadow:0 0 8px #54b6ff" }), "Jump to now");
+      if (mob) {
+        // Phones: fold the toggle cluster into a single labeled Options sheet.
+        return h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end" },
+          h("button", { onClick: () => set({ guideOptionsOpen: true }), style: "height:36px;padding:0 14px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer" },
+            icon("sliders-horizontal", 15, 0.8), "Options"),
+          jumpBtn);
+      }
+      const iconBtn = (on, iconName, title, onClick) => h("button", { onClick, title, style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (on ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (on ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
+        icon(iconName, 16, on ? 0.85 : 0.55));
+      return h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end" },
+        iconBtn(state.previews !== false, state.previews !== false ? "monitor-play" : "monitor-off", state.previews !== false ? "Live preview on — click to stop background video" : "Live preview off — click to enable", togglePreviews),
+        iconBtn(state.networkGroup !== false, "layers", "Group network affiliates (collapse local stations into one row)", toggleNetGroup),
+        iconBtn(state.ambient !== false, "clapperboard", "Ambient backdrop", toggleAmbient),
+        guideFilterToggle(),
+        densityToggle(),
+        jumpBtn,
+        h("button", { style: "height:36px;padding:0 15px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;cursor:pointer" }, "All genres"));
+    })());
 
-  // rich detail pane (reflects the selected/highlighted program)
-  const card = detailPane(ambient);
+  // rich detail pane (reflects the selected/highlighted program). On phones it
+  // auto-hides after a short idle to give the grid more room.
+  const heroHidden = mob && state.heroHidden;
+  const card = heroHidden ? null : detailPane(ambient);
+  if (mob && !state.heroHidden && !heroHideTimer) armHeroAutohide(); // start the idle countdown
+  const sheet = guideOptionsSheet();
 
   // time axis labels every 30 min
   const labels = [];
@@ -657,9 +728,9 @@ function guideScreen() {
         tileVideo("detail", fc.id, state.detailMuted)),
       // subtle left fade so the hero text reads over the sharp video
       h("div", { style: "position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(100deg,rgba(9,10,11,0.86) 0%,rgba(9,10,11,0.5) 26%,rgba(9,10,11,0) 56%)" }),
-      header, card, scroller);
+      header, card, scroller, sheet);
   }
-  return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0" }, header, card, scroller);
+  return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0" }, header, card, scroller, sheet);
 }
 
 // The focused program drives the detail pane: the selected guide cell, else the
@@ -809,7 +880,7 @@ function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
     const left = Math.max(0, ((p.start - windowStart) / 60000) * PXPM);
     const rawW = ((p.end - windowStart) / 60000) * PXPM - left;
     const width = Math.max(54, rawW - 5);
-    return h("div", { style: { position: "absolute", top: "6px", bottom: "6px", left: left + "px", width: width + "px" }, onClick: () => set({ selectedCellId: id }) },
+    return h("div", { style: { position: "absolute", top: "6px", bottom: "6px", left: left + "px", width: width + "px" }, onClick: () => { if (mob) showGuideHero(); set({ selectedCellId: id }); } },
       h("div", { class: "aer-cell", style: {
         height: "100%", borderRadius: "9px", overflow: "hidden", position: "relative", display: "flex", flexDirection: "column", justifyContent: "flex-end",
         padding: "9px 11px", cursor: "pointer", transition: "transform .14s, box-shadow .14s, border-color .14s",
@@ -1613,9 +1684,11 @@ function render() {
 function setMode(mode) {
   const isAdmin = state.auth.user && state.auth.user.role === "admin";
   if (mode === "manage" && !isAdmin) mode = "watch"; // Manage is admin-only
+  resetGuideHero(); // re-entering the guide should show the hero again
   set({ mode, screen: mode === "watch" ? "guide" : "channels", selectedCellId: null, navOpen: false });
 }
 function setScreen(screen) {
+  resetGuideHero();
   set({ screen, navOpen: false });
   if (screen === "analytics") loadAnalytics();
   if (screen === "users") loadUsers();
@@ -2226,6 +2299,7 @@ function disarmPlayerAutohide() {
 
 function closePlayer() {
   disarmPlayerAutohide();
+  resetGuideHero(); // returning to the guide shows the hero again, then re-times
   if (!playerEl || !morphState) { if (playerEl) { playerEl.remove(); playerEl = null; } return; }
   const ms = morphState;
   const channelId = playerChannelId;
