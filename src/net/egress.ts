@@ -3,7 +3,7 @@ import { sqlite } from "../db/index.ts";
 /**
  * Per-source VPN passthrough. Each provider can carry its OWN `proxy_url` (a
  * Gluetun/HTTP/SOCKS endpoint), so different sources can exit through different
- * VPNs — source A → Japan, source B → UK — all on one Cathode instance.
+ * VPNs — source A → Japan, source B → UK — all on one Phospharr instance.
  * Providers with no proxy_url go out the host's normal connection.
  *
  * Bun's fetch honors `{ proxy }` for http(s):// and socks5:// proxies.

@@ -1,7 +1,7 @@
 import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
- * Cathode schema — the canonical channel layer is the spine.
+ * Phospharr schema — the canonical channel layer is the spine.
  *
  * providers ──< streams >── channels ──< multiviewTiles >── multiviews
  *                  │            │

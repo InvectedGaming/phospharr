@@ -3,7 +3,7 @@ import { db } from "../db/index.ts";
 import { channels } from "../db/schema.ts";
 
 /**
- * HDHomeRun emulation. Makes Cathode look like an HDHR tuner so Plex, Jellyfin,
+ * HDHomeRun emulation. Makes Phospharr look like an HDHR tuner so Plex, Jellyfin,
  * Emby, and TVs can consume the lineup natively.
  *
  *   /discover.json   device identity + tuner count
@@ -11,18 +11,18 @@ import { channels } from "../db/schema.ts";
  *   /lineup_status.json
  */
 
-const DEVICE_ID = "CATHODE1";
+const DEVICE_ID = "PHOSPHARR1";
 const TUNER_COUNT = Number(process.env.HDHR_TUNER_COUNT ?? 8);
 
 export function discover(baseUrl: string) {
   return {
-    FriendlyName: "Cathode",
-    Manufacturer: "Cathode",
+    FriendlyName: "Phospharr",
+    Manufacturer: "Phospharr",
     ModelNumber: "HDTC-2US",
-    FirmwareName: "cathode_atsc",
+    FirmwareName: "phospharr_atsc",
     FirmwareVersion: "0.1.0",
     DeviceID: DEVICE_ID,
-    DeviceAuth: "cathode",
+    DeviceAuth: "phospharr",
     BaseURL: baseUrl,
     LineupURL: `${baseUrl}/lineup.json`,
     TunerCount: TUNER_COUNT,

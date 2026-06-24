@@ -1,26 +1,26 @@
-# Cathode
+# Phospharr
 
 **Free, open-source, self-hosted IPTV manager + viewer that feels like a real TV — not an admin panel.**
 
-Cathode is **software only** — it ships with **no channels, no streams, and no
+Phospharr is **software only** — it ships with **no channels, no streams, and no
 providers**. You bring your own legally-obtained IPTV subscription or sources, and
-Cathode organizes and plays them. See [Legal & responsible use](#legal--responsible-use).
+Phospharr organizes and plays them. See [Legal & responsible use](#legal--responsible-use).
 
-Cathode collapses messy provider channels into a **canonical channel layer**, pools
+Phospharr collapses messy provider channels into a **canonical channel layer**, pools
 provider connection slots so two 4-stream providers genuinely give you **8 concurrent
 streams**, multiplexes one upstream connection out to many viewers, merges EPG from
 multiple sources, and emulates an HDHomeRun tuner so Plex/Jellyfin/Emby and TVs can
 consume it natively.
 
-> Status: **0.1 — runnable backend + Aerial UI.** The control plane, ingest,
+> Status: **0.1 — runnable backend + Phospharr UI.** The control plane, ingest,
 > canonical matching, EPG merge, slot-pool scheduler, multiplexing proxy, and HDHR
-> emulator are implemented in TypeScript/Bun. The **Aerial** Watch + Manage UI
+> emulator are implemented in TypeScript/Bun. The **Phospharr** Watch + Manage UI
 > (guide grid, mosaic, channel manager) is built and wired to the live API. The Go
 > data-plane hot path is the next milestone (see Roadmap).
 
 ## Why it's different
 
-| Capability | How Cathode does it |
+| Capability | How Phospharr does it |
 |---|---|
 | **One logical channel, N sources** | Canonical matcher normalizes names (`US\| ESPN HD [1080]` → `ESPN`) and collapses duplicates across providers into one channel with ranked sources. |
 | **8 streams from 2×4 providers** | Slot pool tracks live usage per provider; the scheduler routes each tune-in to whichever provider has a free slot. |
@@ -93,7 +93,7 @@ Point Plex/Jellyfin Live TV at `http://<host>:7777` as an HDHomeRun device.
 
 ## Run with Docker
 
-The image bundles Bun + ffmpeg; the DB and DVR recordings persist in a `cathode-data`
+The image bundles Bun + ffmpeg; the DB and DVR recordings persist in a `phospharr-data`
 volume. First run creates the schema automatically.
 
 ```bash
@@ -119,7 +119,7 @@ client looks local, so the key stays your real lock.
 ### VPN passthrough (Gluetun) — one VPN per source
 
 Run **one Gluetun per region**; each Source picks which VPN it uses — Source A →
-Japan, Source B → UK, others direct. Cathode runs *outside* the tunnels, so one
+Japan, Source B → UK, others direct. Phospharr runs *outside* the tunnels, so one
 instance mixes VPN and non-VPN providers.
 
 1. Put your region's VPN details in `.env` (the compose ships a `gluetun-jp`
@@ -142,28 +142,28 @@ its chosen VPN; everything else stays on your normal connection.
 
 ### Adding to an existing stack
 
-Cathode is a plain container — drop the `cathode` service into your compose and put
+Phospharr is a plain container — drop the `phospharr` service into your compose and put
 it on whatever network reaches the internet:
 
 ```yaml
 services:
-  cathode:
-    image: ghcr.io/<you>/cathode:latest   # or  build: ./cathode
+  phospharr:
+    image: ghcr.io/<you>/phospharr:latest   # or  build: ./phospharr
     restart: unless-stopped
     ports: ["7777:7777"]
-    volumes: ["cathode-data:/data"]
-volumes: { cathode-data: }
+    volumes: ["phospharr-data:/data"]
+volumes: { phospharr-data: }
 ```
 
-Already run **Gluetun** (or any HTTP/SOCKS proxy)? Don't network Cathode *through*
+Already run **Gluetun** (or any HTTP/SOCKS proxy)? Don't network Phospharr *through*
 it — just share a Docker network and add that proxy as an endpoint in
 **Settings → VPN** (e.g. `http://gluetun:8888` or `socks5://gluetun:1080`). The
 per-source dropdown does the rest, and you can register several proxies for
 several regions.
 
-## The Aerial UI
+## The Phospharr UI
 
-Open `http://localhost:7777` for **Aerial** — the Watch + Manage face, one design
+Open `http://localhost:7777` for **Phospharr** — the Watch + Manage face, one design
 system in two densities (ported from the Claude Design handoff, served static from
 the same server, no build step):
 
@@ -195,7 +195,7 @@ The whole UI is driven by one aggregated endpoint, `GET /api/view`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/` · `/app.js` | The Aerial UI (static) |
+| GET | `/` · `/app.js` | The Phospharr UI (static) |
 | GET | `/api/view` | Channels + health + source counts |
 | GET | `/api/guide` | Full EPG — precomputed gzip snapshot, ETag/304 |
 | GET | `/discover.json`, `/lineup.json`, `/lineup_status.json` | HDHR emulation |
@@ -231,7 +231,7 @@ The whole UI is driven by one aggregated endpoint, `GET /api/view`.
 
 ## Roadmap
 
-- **Aerial UI polish** — Home / Now-Playing / EPG-Matcher screens (the last stub in
+- **Phospharr UI polish** — Home / Now-Playing / EPG-Matcher screens (the last stub in
   the rail), real `<video>` playback via HLS, instant-zap surf.
 - **Go data plane** — move the byte pump to Go: zero-copy fan-out, MPEG-TS PID
   continuity, ffmpeg pool (passthrough default, transcode on demand), HLS/fMP4 out.
@@ -244,12 +244,12 @@ The whole UI is driven by one aggregated endpoint, `GET /api/view`.
 
 ## Legal & responsible use
 
-Cathode is a **general-purpose media tool**, like a web browser or a media player.
+Phospharr is a **general-purpose media tool**, like a web browser or a media player.
 It is **software only** and is distributed with **no channels, no streams, no
 playlists, and no provider accounts**. It does not host, provide, resell, or include
 any media content of any kind.
 
-Cathode is intended **solely** for organizing and viewing content you are **legally
+Phospharr is intended **solely** for organizing and viewing content you are **legally
 entitled to access** — for example:
 
 - An IPTV subscription you pay for, used within that provider's terms of service.

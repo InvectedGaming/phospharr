@@ -1,5 +1,5 @@
 {
-  "name": "cathode",
+  "name": "phospharr",
   "version": "0.1.0",
   "description": "Self-hosted IPTV manager + viewer that feels like a real TV. Canonical channel layer, slot-pool scheduling across providers, multiplexing stream proxy, HDHR emulation, merged EPG.",
   "type": "module",

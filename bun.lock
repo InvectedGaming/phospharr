@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "cathode",
+      "name": "phospharr",
       "dependencies": {
         "drizzle-orm": "^0.36.4",
         "fast-xml-parser": "^4.5.1",

@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 
-const url = process.env.DATABASE_URL ?? "./cathode.db";
+const url = process.env.DATABASE_URL ?? "./phospharr.db";
 const sqlite = new Database(url, { create: true });
 sqlite.exec("PRAGMA foreign_keys = ON;");
 const db = drizzle(sqlite);

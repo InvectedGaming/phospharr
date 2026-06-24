@@ -1,4 +1,4 @@
-# Cathode — self-hosted IPTV manager + viewer (Bun + ffmpeg)
+# Phospharr — self-hosted IPTV manager + viewer (Bun + ffmpeg)
 FROM oven/bun:1-alpine
 
 # ffmpeg powers the browser audio-transcode fallback (AC-3/HEVC channels).
@@ -14,8 +14,8 @@ RUN bun install --frozen-lockfile --production
 COPY . .
 
 # DB + DVR live on a mounted volume so they survive container rebuilds.
-ENV DATABASE_URL=/data/cathode.db \
-    CATHODE_DVR_PATH=/data/dvr \
+ENV DATABASE_URL=/data/phospharr.db \
+    PHOSPHARR_DVR_PATH=/data/dvr \
     PORT=7777 \
     NODE_ENV=production
 VOLUME /data

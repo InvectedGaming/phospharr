@@ -3,7 +3,7 @@ import { providers, channels, streams, type User } from "../db/schema.ts";
 import { channelVisible } from "../auth.ts";
 
 /**
- * One aggregated payload that powers the entire Aerial UI in a single fetch:
+ * One aggregated payload that powers the entire Phospharr UI in a single fetch:
  * channels enriched with health + source count, the guide window of programs,
  * and server-health counters. Keeps the frontend to one round-trip.
  */

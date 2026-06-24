@@ -56,7 +56,7 @@ function ensureAdmin(c: Context<Env>) {
   return u && u.role === "admin" ? null : c.json({ error: "admin only" }, 403);
 }
 
-// ─── Aerial UI (the Watch + Manage face, served static) ───
+// ─── Phospharr UI (the Watch + Manage face, served static) ───
 // Resolve ./public relative to this file so the server runs from any cwd.
 const publicDir = new URL("../../public", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 // The app shell + script must never be cached — otherwise a browser keeps
@@ -173,7 +173,7 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
-app.get("/api/health", (c) => c.json({ name: "Cathode", version: "0.1.0", status: "ok" }));
+app.get("/api/health", (c) => c.json({ name: "Phospharr", version: "0.1.0", status: "ok" }));
 
 // ─── Analytics ───
 app.get("/api/analytics", (c) => ensureAdmin(c) ?? c.json(getAnalytics()));

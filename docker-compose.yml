@@ -1,7 +1,7 @@
-# Cathode — self-hosted IPTV manager + viewer
+# Phospharr — self-hosted IPTV manager + viewer
 #
-#   Just Cathode:            docker compose up -d            →  http://localhost:7777
-#   Cathode + VPN (Gluetun): docker compose --profile vpn up -d
+#   Just Phospharr:            docker compose up -d            →  http://localhost:7777
+#   Phospharr + VPN (Gluetun): docker compose --profile vpn up -d
 #
 # Create your admin account in the UI on first run. Streaming + the HDHomeRun
 # tuner are locked behind an auto-generated key — grab the tuner URL from
@@ -9,24 +9,24 @@
 #
 # VPN: run one Gluetun per region (each exposes an HTTP proxy on :8888). Add each
 # as a named endpoint in Settings → VPN, then per Source pick which VPN it uses —
-# Source A → Japan, Source B → UK, etc. Cathode runs OUTSIDE the tunnels and only
+# Source A → Japan, Source B → UK, etc. Phospharr runs OUTSIDE the tunnels and only
 # routes the sources you choose, so one instance mixes VPN and non-VPN providers.
 
 services:
-  cathode:
+  phospharr:
     build: .
-    # image: ghcr.io/<you>/cathode:latest   # swap in once you publish an image
-    container_name: cathode
+    # image: ghcr.io/<you>/phospharr:latest   # swap in once you publish an image
+    container_name: phospharr
     restart: unless-stopped
     ports:
-      - "${CATHODE_PORT:-7777}:7777"
+      - "${PHOSPHARR_PORT:-7777}:7777"
     volumes:
-      - cathode-data:/data            # SQLite DB + DVR recordings persist here
+      - phospharr-data:/data            # SQLite DB + DVR recordings persist here
     environment:
       BASE_URL: ${BASE_URL:-}         # public URL for HDHR discovery; blank = request host
-      CATHODE_STREAM_KEY: ${CATHODE_STREAM_KEY:-}   # pin the tuner/stream key; blank = auto-generated
+      PHOSPHARR_STREAM_KEY: ${PHOSPHARR_STREAM_KEY:-}   # pin the tuner/stream key; blank = auto-generated
       TZ: ${TZ:-UTC}
-    networks: [cathode]
+    networks: [phospharr]
 
   # ──────────────────────────────────────────────────────────────────────────
   # Optional VPN via Gluetun. Starts with:  docker compose --profile vpn up -d
@@ -56,15 +56,15 @@ services:
       OPENVPN_USER: ${OPENVPN_USER:-}
       OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
       SERVER_COUNTRIES: ${JP_SERVER_COUNTRIES:-Japan}
-      # Built-in HTTP proxy Cathode routes chosen sources through:
+      # Built-in HTTP proxy Phospharr routes chosen sources through:
       HTTPPROXY: "on"
       HTTPPROXY_LISTENING_ADDRESS: ":8888"
       TZ: ${TZ:-UTC}
-    networks: [cathode]
+    networks: [phospharr]
 
 networks:
-  cathode:
-    name: cathode
+  phospharr:
+    name: phospharr
 
 volumes:
-  cathode-data:
+  phospharr-data:

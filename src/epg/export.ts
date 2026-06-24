@@ -33,7 +33,7 @@ export async function exportXmltv(): Promise<string> {
     .all();
 
   const seen = new Set<string>();
-  const parts: string[] = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Cathode">'];
+  const parts: string[] = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Phospharr">'];
   for (const ch of chans) {
     if (!ch.canonicalId || seen.has(ch.canonicalId)) continue;
     seen.add(ch.canonicalId);

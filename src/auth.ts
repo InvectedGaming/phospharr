@@ -14,7 +14,7 @@ import { users, sessions, type User, type UserRestrictions } from "./db/schema.t
  *   reaches a restricted user), not just hidden in the UI.
  */
 
-export const SESSION_COOKIE = "cathode_session";
+export const SESSION_COOKIE = "phospharr_session";
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days
 
 export async function hashPassword(pw: string): Promise<string> {

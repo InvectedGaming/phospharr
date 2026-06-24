@@ -3,7 +3,7 @@ import { db } from "./db/index.ts";
 import { settings as settingsTable } from "./db/schema.ts";
 
 /**
- * Settings + feature flags. Lets Cathode run lean (live-only) or full (DVR) on
+ * Settings + feature flags. Lets Phospharr run lean (live-only) or full (DVR) on
  * the same codebase. Precedence: env var → DB (UI-editable) → code default.
  *
  * Heavy/disk features default OFF so a fresh install is light and "just works";
@@ -56,21 +56,21 @@ const DEFAULTS: Settings = {
 
 // Env overrides (ops/Docker). Present env value wins over DB + default.
 const ENV_MAP: Partial<Record<keyof Settings, string>> = {
-  "features.hdhr": "CATHODE_HDHR",
-  "features.transcode": "CATHODE_TRANSCODE",
-  "features.epgAutoRefresh": "CATHODE_EPG_AUTOREFRESH",
-  "features.healthProbe": "CATHODE_HEALTH_PROBE",
-  "features.timeshift": "CATHODE_TIMESHIFT",
-  "features.dvr": "CATHODE_DVR",
-  "dvr.storagePath": "CATHODE_DVR_PATH",
-  "dvr.retentionDays": "CATHODE_DVR_RETENTION_DAYS",
-  "dvr.maxGB": "CATHODE_DVR_MAX_GB",
-  "timeshift.windowMinutes": "CATHODE_TIMESHIFT_MINUTES",
-  "epg.refreshHours": "CATHODE_EPG_REFRESH_HOURS",
-  "stream.keepWarmSeconds": "CATHODE_STREAM_KEEPWARM",
-  "access.streamKey": "CATHODE_STREAM_KEY",
-  "access.allowExternal": "CATHODE_ALLOW_EXTERNAL",
-  "access.trustProxy": "CATHODE_TRUST_PROXY",
+  "features.hdhr": "PHOSPHARR_HDHR",
+  "features.transcode": "PHOSPHARR_TRANSCODE",
+  "features.epgAutoRefresh": "PHOSPHARR_EPG_AUTOREFRESH",
+  "features.healthProbe": "PHOSPHARR_HEALTH_PROBE",
+  "features.timeshift": "PHOSPHARR_TIMESHIFT",
+  "features.dvr": "PHOSPHARR_DVR",
+  "dvr.storagePath": "PHOSPHARR_DVR_PATH",
+  "dvr.retentionDays": "PHOSPHARR_DVR_RETENTION_DAYS",
+  "dvr.maxGB": "PHOSPHARR_DVR_MAX_GB",
+  "timeshift.windowMinutes": "PHOSPHARR_TIMESHIFT_MINUTES",
+  "epg.refreshHours": "PHOSPHARR_EPG_REFRESH_HOURS",
+  "stream.keepWarmSeconds": "PHOSPHARR_STREAM_KEEPWARM",
+  "access.streamKey": "PHOSPHARR_STREAM_KEY",
+  "access.allowExternal": "PHOSPHARR_ALLOW_EXTERNAL",
+  "access.trustProxy": "PHOSPHARR_TRUST_PROXY",
 };
 
 function coerce(key: keyof Settings, raw: string): boolean | number | string {

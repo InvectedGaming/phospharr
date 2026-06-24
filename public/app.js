@@ -1,7 +1,7 @@
-/* Cathode · Aerial UI
+/* Phospharr UI
  *
- * Faithful port of the Aerial.dc.html design handoff, recreated in vanilla JS
- * and wired to the live Cathode API (/api/view, PATCH /api/channels/:id).
+ * Faithful port of the Phospharr.dc.html design handoff, recreated in vanilla JS
+ * and wired to the live Phospharr API (/api/view, PATCH /api/channels/:id).
  * No build step — served straight from the Bun/Hono server.
  */
 
@@ -129,13 +129,13 @@ const state = {
   detailMuted: true, // detail-pane preview audio
   detailVolume: 1, // preview volume (0–1), via the hover rocker
   detailHeight: loadDetailHeight(), // resizable hero height, persisted
-  ambient: localStorage.getItem("cathode.ambient") !== "off", // focused video as guide backdrop
+  ambient: localStorage.getItem("phospharr.ambient") !== "off", // focused video as guide backdrop
   mosaicLayout: "2x2",
   density: "comfortable", // guide row density: 'comfortable' | 'compact'
   guideOnlyWithEpg: true, // guide shows only channels that have program data
-  networkGroup: localStorage.getItem("cathode.netgroup") !== "off", // collapse affiliate clusters into one row
+  networkGroup: localStorage.getItem("phospharr.netgroup") !== "off", // collapse affiliate clusters into one row
   networkSelection: loadNetSel(), // per-network: which affiliate/market is active
-  previews: localStorage.getItem("cathode.previews") !== "off", // auto-play live preview in the guide
+  previews: localStorage.getItem("phospharr.previews") !== "off", // auto-play live preview in the guide
   activeTileId: "t0",
   promotedTileId: null,
   selectedRows: {},
@@ -184,14 +184,14 @@ let detailDragged = false; // suppress the pane's click after a resize drag
 // Bounds inlined (not module consts) so this can run during the `state` literal
 // without a temporal-dead-zone error.
 function loadDetailHeight() {
-  const v = parseInt(localStorage.getItem("cathode.detailHeight") || "", 10);
+  const v = parseInt(localStorage.getItem("phospharr.detailHeight") || "", 10);
   return Number.isFinite(v) ? Math.max(150, Math.min(600, v)) : 300;
 }
 function loadNetSel() {
-  try { return JSON.parse(localStorage.getItem("cathode.netsel") || "{}") || {}; } catch { return {}; }
+  try { return JSON.parse(localStorage.getItem("phospharr.netsel") || "{}") || {}; } catch { return {}; }
 }
 function saveNetSel() {
-  try { localStorage.setItem("cathode.netsel", JSON.stringify(state.networkSelection)); } catch { /* private mode */ }
+  try { localStorage.setItem("phospharr.netsel", JSON.stringify(state.networkSelection)); } catch { /* private mode */ }
 }
 function startDetailResize(e) {
   e.preventDefault();
@@ -210,7 +210,7 @@ function startDetailResize(e) {
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
     document.body.style.userSelect = "";
-    try { localStorage.setItem("cathode.detailHeight", String(state.detailHeight)); } catch { /* private mode */ }
+    try { localStorage.setItem("phospharr.detailHeight", String(state.detailHeight)); } catch { /* private mode */ }
     render(); // re-sync the virtualized grid to the new height
   };
   document.body.style.userSelect = "none";
@@ -327,7 +327,7 @@ function topBar() {
     h("div", { style: "display:flex;align-items:center;gap:11px;width:210px" },
       h("div", { style: "width:30px;height:30px;border-radius:9px;background:linear-gradient(140deg,#54b6ff,#2a78c2);display:flex;align-items:center;justify-content:center;box-shadow:0 0 16px rgba(84,182,255,0.35)" },
         h("div", { style: "width:11px;height:11px;border:2.5px solid #07121c;border-radius:50%;border-bottom-color:transparent;border-right-color:transparent;transform:rotate(45deg)" })),
-      h("div", { style: "font-weight:700;font-size:17px;letter-spacing:.16em" }, "AERIAL")),
+      h("div", { style: "font-weight:700;font-size:17px;letter-spacing:.16em" }, "PHOSPHARR")),
     // mode switch
     // Watch is for everyone; Manage is admin-only.
     h("div", { style: "display:flex;padding:3px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:11px;gap:2px" },
@@ -529,11 +529,11 @@ function guideScreen() {
         ? `${visible.length} channels with guide · ${totalVisible} total · ${new Date(now).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`
         : `Live across ${visible.length} channels · ${new Date(now).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`)),
     h("div", { style: "display:flex;gap:8px;align-items:center" },
-      h("button", { onClick: () => { const next = state.previews === false; try { localStorage.setItem("cathode.previews", next ? "on" : "off"); } catch { /* private */ } set({ previews: next }); }, title: state.previews !== false ? "Live preview on — click to stop background video" : "Live preview off — click to enable", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.previews !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.previews !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
+      h("button", { onClick: () => { const next = state.previews === false; try { localStorage.setItem("phospharr.previews", next ? "on" : "off"); } catch { /* private */ } set({ previews: next }); }, title: state.previews !== false ? "Live preview on — click to stop background video" : "Live preview off — click to enable", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.previews !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.previews !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
         icon(state.previews !== false ? "monitor-play" : "monitor-off", 16, state.previews !== false ? 0.85 : 0.55)),
-      h("button", { onClick: () => { const next = state.networkGroup === false; try { localStorage.setItem("cathode.netgroup", next ? "on" : "off"); } catch { /* private */ } set({ networkGroup: next, selectedCellId: null }); }, title: "Group network affiliates (collapse local stations into one row)", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.networkGroup !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.networkGroup !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
+      h("button", { onClick: () => { const next = state.networkGroup === false; try { localStorage.setItem("phospharr.netgroup", next ? "on" : "off"); } catch { /* private */ } set({ networkGroup: next, selectedCellId: null }); }, title: "Group network affiliates (collapse local stations into one row)", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.networkGroup !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.networkGroup !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
         icon("layers", 16, state.networkGroup !== false ? 0.85 : 0.55)),
-      h("button", { onClick: () => { const next = !(state.ambient !== false); try { localStorage.setItem("cathode.ambient", next ? "on" : "off"); } catch { /* private */ } set({ ambient: next }); }, title: "Ambient backdrop", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.ambient !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.ambient !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
+      h("button", { onClick: () => { const next = !(state.ambient !== false); try { localStorage.setItem("phospharr.ambient", next ? "on" : "off"); } catch { /* private */ } set({ ambient: next }); }, title: "Ambient backdrop", style: "width:36px;height:36px;border-radius:9px;border:1px solid " + (state.ambient !== false ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (state.ambient !== false ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";display:flex;align-items:center;justify-content:center;cursor:pointer" },
         icon("clapperboard", 16, state.ambient !== false ? 0.85 : 0.55)),
       guideFilterToggle(),
       densityToggle(),
@@ -1159,7 +1159,7 @@ function settingsScreen() {
     h("div", { style: "flex:1;min-height:0;overflow:auto;padding:0 24px 24px" },
       h("div", { style: "max-width:760px" },
         settingsSection("FEATURES",
-          settingRow({ title: "HDHomeRun tuner", desc: "Expose Cathode as a tuner for Plex / Emby / Jellyfin.", key: "features.hdhr", type: "toggle" }),
+          settingRow({ title: "HDHomeRun tuner", desc: "Expose Phospharr as a tuner for Plex / Emby / Jellyfin.", key: "features.hdhr", type: "toggle" }),
           settingRow({ title: "Browser audio transcode", desc: "Convert AC-3 → AAC so those channels play in-browser (needs ffmpeg).", key: "features.transcode", type: "toggle" }),
           settingRow({ title: "EPG auto-refresh", desc: "Pull the guide on a schedule so it stays current.", key: "features.epgAutoRefresh", type: "toggle" }),
           settingRow({ title: "Health probing", desc: "Probe streams to show real Live / SD / Dead badges.", key: "features.healthProbe", type: "toggle" }),
@@ -1176,8 +1176,8 @@ function settingsScreen() {
         settingsSection("ACCESS & TUNER", accessRow()),
         settingsSection("NETWORK ACCESS",
           settingRow({ title: "Allow access from outside your network", desc: "Off by default — tuner / M3U / EPG / stream exports are refused (403) for clients that aren't on your local network. Turn on to use them remotely; the stream key is still required.", key: "access.allowExternal", type: "toggle" }),
-          s["access.allowExternal"] ? h("div", { style: "margin:0 16px 14px;padding:11px 13px;border-radius:9px;background:rgba(244,183,64,0.1);border:1px solid rgba(244,183,64,0.35);color:#f4cd76;font-size:12.5px;line-height:1.5" }, "⚠ Your exports are now reachable from outside your network. Anyone with the key or tuner URL can stream — keep the key secret, and prefer fronting Cathode with a reverse proxy or VPN. Rotate the key in Access & Tuner if it leaks.") : null,
-          settingRow({ title: "Behind a reverse proxy", desc: "Resolve the real client IP from X-Forwarded-For. Enable if Cathode runs behind nginx / Traefik / Caddy. Note: with plain Docker port-publishing every client looks local, so the key remains your real lock.", key: "access.trustProxy", type: "toggle" })),
+          s["access.allowExternal"] ? h("div", { style: "margin:0 16px 14px;padding:11px 13px;border-radius:9px;background:rgba(244,183,64,0.1);border:1px solid rgba(244,183,64,0.35);color:#f4cd76;font-size:12.5px;line-height:1.5" }, "⚠ Your exports are now reachable from outside your network. Anyone with the key or tuner URL can stream — keep the key secret, and prefer fronting Phospharr with a reverse proxy or VPN. Rotate the key in Access & Tuner if it leaks.") : null,
+          settingRow({ title: "Behind a reverse proxy", desc: "Resolve the real client IP from X-Forwarded-For. Enable if Phospharr runs behind nginx / Traefik / Caddy. Note: with plain Docker port-publishing every client looks local, so the key remains your real lock.", key: "access.trustProxy", type: "toggle" })),
         settingsSection("STREAMING",
           settingRow({ title: "Keep stream warm", desc: "Hold a channel's upstream this long after the last viewer leaves, so re-tuning is instant. Higher values keep a tuner slot in use longer.", key: "stream.keepWarmSeconds", type: "number", suffix: "sec" })),
         settingsSection("VPN ENDPOINTS", vpnEndpointsRow()),
@@ -1513,7 +1513,7 @@ function authScreen() {
       h("div", { style: "display:flex;align-items:center;gap:11px" },
         h("div", { style: "width:34px;height:34px;border-radius:10px;background:linear-gradient(140deg,#54b6ff,#2a78c2);display:flex;align-items:center;justify-content:center;box-shadow:0 0 18px rgba(84,182,255,0.4)" },
           h("div", { style: "width:12px;height:12px;border:2.5px solid #07121c;border-radius:50%;border-bottom-color:transparent;border-right-color:transparent;transform:rotate(45deg)" })),
-        h("div", { style: "font-weight:800;font-size:19px;letter-spacing:.16em" }, "AERIAL")),
+        h("div", { style: "font-weight:800;font-size:19px;letter-spacing:.16em" }, "PHOSPHARR")),
       h("div", null,
         h("div", { style: "font-size:19px;font-weight:700;color:#fff" }, setup ? "Create your admin account" : "Sign in"),
         h("div", { style: "font-size:13px;color:#9aa0a6;margin-top:4px" }, setup ? "This first account is the administrator." : "Welcome back.")),

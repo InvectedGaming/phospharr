@@ -22,7 +22,7 @@ startEpgScheduler(); // periodic XMLTV pulls per features.epgAutoRefresh / epg.r
 
 console.log(`
   ╔══════════════════════════════════════╗
-  ║   Cathode  ·  IPTV manager + viewer   ║
+  ║   Phospharr  ·  IPTV manager + viewer   ║
   ╚══════════════════════════════════════╝
   → http://localhost:${port}
   → HDHR discovery: http://localhost:${port}/discover.json

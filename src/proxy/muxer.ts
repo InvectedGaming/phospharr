@@ -5,7 +5,7 @@ import { egress, providerProxy } from "../net/egress.ts";
 import type { Stream } from "../db/schema.ts";
 
 /**
- * The multiplexing proxy — Cathode's hot core.
+ * The multiplexing proxy — Phospharr's hot core.
  *
  * One upstream connection per live source, fanned out to N local viewers. This
  * is what beats provider connection caps: 8 slots serve unlimited viewers as
@@ -61,7 +61,7 @@ class ChannelMux {
     const res = await fetch(this.stream.url, {
       signal: this.abort.signal,
       redirect: "follow",
-      headers: { "User-Agent": "Cathode/0.1" },
+      headers: { "User-Agent": "Phospharr/0.1" },
       ...egress(providerProxy(this.stream.providerId)), // VPN passthrough for flagged providers
     });
     if (!res.ok || !res.body) throw new Error(`upstream ${res.status}`);

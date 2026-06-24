@@ -4,7 +4,7 @@ import * as schema from "./schema.ts";
 
 // Resolve the DB next to the project root so the server runs from any cwd.
 const projectRoot = new URL("../..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
-const url = process.env.DATABASE_URL ?? `${projectRoot}/cathode.db`;
+const url = process.env.DATABASE_URL ?? `${projectRoot}/phospharr.db`;
 
 const sqlite = new Database(url, { create: true });
 // Pragmas for a streaming server: WAL for concurrent reads while writing,
