@@ -821,18 +821,20 @@ function detailPane(ambient) {
     h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:" + ch.color + ";" + ts }, "#" + (ch.num ?? "—")),
     h("span", { style: "font-size:13.5px;font-weight:700;color:#e6e9ec;" + ts }, ch.name),
     onNow ? h("span", { style: "font-size:9.5px;font-weight:700;letter-spacing:.12em;color:#ff9d95;border:1px solid rgba(255,93,82,0.5);border-radius:5px;padding:2px 6px;background:rgba(8,10,12,0.35)" }, "ON NOW") : null);
-  const titleEl = h("div", { style: "font-size:28px;font-weight:800;color:#fff;letter-spacing:-.015em;line-height:1.12;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;" + ts }, p.title);
+  const titleEl = h("div", { style: "font-size:" + (mob ? "20px" : "28px") + ";font-weight:800;color:#fff;letter-spacing:-.015em;line-height:1.14;overflow:hidden;display:-webkit-box;-webkit-line-clamp:" + (mob ? "1" : "2") + ";-webkit-box-orient:vertical;" + ts }, p.title);
   const metaEl = h("div", { style: "display:flex;align-items:center;gap:9px;flex-wrap:wrap" },
     h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#cfd3d8;" + ts }, p.filler ? "No guide data" : fmtClock(p.start) + " – " + fmtClock(p.end)),
     ...badges.map((b) => h("span", { style: "font-size:11px;font-weight:600;color:#dfe3e7;border:1px solid rgba(255,255,255,0.2);border-radius:5px;padding:2px 7px;background:rgba(8,10,12,0.3)" }, b)));
-  const descEl = desc ? h("div", { style: "font-size:13.5px;color:#c3c8cd;line-height:1.5;max-width:600px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;" + ts }, desc) : null;
-  const fsBtn = h("button", { title: "Fullscreen", style: "pointer-events:auto;width:46px;height:46px;border-radius:12px;border:none;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,0.45)", onClick: (e) => { e.stopPropagation(); openPlayer(ch.id); } },
-    icon("maximize-2", 19, 0.05));
+  // Description eats two lines — drop it on phones to keep the hero compact.
+  const descEl = (desc && !mob) ? h("div", { style: "font-size:13.5px;color:#c3c8cd;line-height:1.5;max-width:600px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;" + ts }, desc) : null;
+  const btnSize = mob ? 40 : 46;
+  const fsBtn = h("button", { title: "Fullscreen", style: "pointer-events:auto;width:" + btnSize + "px;height:" + btnSize + "px;border-radius:12px;border:none;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,0.45)", onClick: (e) => { e.stopPropagation(); openPlayer(ch.id); } },
+    icon("maximize-2", mob ? 17 : 19, 0.05));
   // Admins can mint a login-free share link for this channel.
   const shareBtn = (state.auth.user && state.auth.user.role === "admin")
-    ? h("button", { title: "Create a share link", style: "pointer-events:auto;width:46px;height:46px;border-radius:12px;border:1px solid rgba(255,255,255,0.18);background:rgba(8,10,12,0.55);cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)", onClick: (e) => { e.stopPropagation(); openShareDialog(ch.id); } }, icon("share-2", 18, 0.9))
+    ? h("button", { title: "Create a share link", style: "pointer-events:auto;width:" + btnSize + "px;height:" + btnSize + "px;border-radius:12px;border:1px solid rgba(255,255,255,0.18);background:rgba(8,10,12,0.55);cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)", onClick: (e) => { e.stopPropagation(); openShareDialog(ch.id); } }, icon("share-2", mob ? 16 : 18, 0.9))
     : null;
-  const watchBtn = h("div", { style: "display:flex;gap:10px;align-self:flex-start;margin-top:6px;pointer-events:auto" }, fsBtn, shareBtn);
+  const watchBtn = h("div", { style: "display:flex;gap:10px;align-self:flex-start;margin-top:" + (mob ? "2px" : "6px") + ";pointer-events:auto" }, fsBtn, shareBtn);
   // Mute button with a hover-reveal vertical volume rocker (popup to its left).
   const muteToggle = (extra) => {
     const muted = state.detailMuted;
@@ -860,8 +862,8 @@ function detailPane(ambient) {
 
   // AMBIENT: just the floating info (the background video lives in guideScreen)
   if (ambient) {
-    return h("div", { style: "flex:none;position:relative;z-index:3;padding:" + (mob ? "12px 16px 16px" : "16px 28px 20px") + ";display:flex;align-items:flex-end;justify-content:space-between;gap:16px" },
-      h("div", { style: infoAnim + "display:flex;flex-direction:column;gap:10px;max-width:" + (mob ? "88%" : "64%") + ";pointer-events:auto" },
+    return h("div", { style: "flex:none;position:relative;z-index:3;padding:" + (mob ? "8px 14px 12px" : "16px 28px 20px") + ";display:flex;align-items:flex-end;justify-content:space-between;gap:16px" },
+      h("div", { style: infoAnim + "display:flex;flex-direction:column;gap:" + (mob ? "6px" : "10px") + ";max-width:" + (mob ? "90%" : "64%") + ";pointer-events:auto" },
         channelRow, titleEl, metaEl, descEl, watchBtn),
       muteToggle());
   }
