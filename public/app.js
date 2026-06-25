@@ -138,6 +138,9 @@ const state = {
   detailHeight: loadDetailHeight(), // resizable hero height, persisted
   ambient: prefDefault("phospharr.ambient"), // focused video as guide backdrop (off by default on phones)
   mosaicLayout: "2x2",
+  mosaicChannels: loadMosaicChannels(), // per-slot channel ids (user-chosen)
+  mosaicPick: null, // slot index whose channel-picker is open (null = closed)
+  mosaicPickQ: "", // picker search query
   density: "comfortable", // guide row density: 'comfortable' | 'compact'
   guideOnlyWithEpg: true, // guide shows only channels that have program data
   networkGroup: localStorage.getItem("phospharr.netgroup") !== "off", // collapse affiliate clusters into one row
@@ -208,6 +211,12 @@ function loadDetailHeight() {
 }
 function loadNetSel() {
   try { return JSON.parse(localStorage.getItem("phospharr.netsel") || "{}") || {}; } catch { return {}; }
+}
+function loadMosaicChannels() {
+  try { const a = JSON.parse(localStorage.getItem("phospharr.mosaic") || "[]"); return Array.isArray(a) ? a : []; } catch { return []; }
+}
+function saveMosaicChannels() {
+  try { localStorage.setItem("phospharr.mosaic", JSON.stringify(state.mosaicChannels)); } catch { /* private mode */ }
 }
 // Default for a video-heavy preference (ambient backdrop, live previews): honor an
 // explicit on/off the user set, otherwise default ON for desktop but OFF on phones
@@ -569,6 +578,8 @@ function favoriteCount() {
 
 // ===== global search =====
 let searchFocused = false; // has the input grabbed focus since this open? (autofocus is unreliable for dynamically-inserted nodes)
+let mosaicPickFocused = false; // same, for the mosaic channel picker
+function openMosaicPick(i) { mosaicPickFocused = false; set({ mosaicPick: i, mosaicPickQ: "" }); }
 function openSearch() { searchFocused = false; set({ searchOpen: true, searchQ: "" }); }
 function closeSearch() { searchFocused = false; set({ searchOpen: false }); }
 
@@ -1156,42 +1167,74 @@ function miniPlayer() {
 }
 
 // ===== MOSAIC =====
+// Resolve the n mosaic slots to channel objects (or null for an empty slot).
+// Slots the user hasn't set fall back to the first unused visible channels, so a
+// fresh mosaic still shows something; explicit picks are stable per slot.
+function mosaicSlotChannels(n) {
+  const d = state.data, byId = d.channelsById;
+  const ids = (state.mosaicChannels || []).slice(0, n);
+  const used = new Set(ids.filter((x) => x != null));
+  for (const c of d.channels) { if (ids.length >= n) break; if (!c.isHidden && !used.has(c.id)) { ids.push(c.id); used.add(c.id); } }
+  while (ids.length < n) ids.push(null);
+  return ids.slice(0, n).map((id) => (id != null ? byId[id] || null : null));
+}
+function setMosaicChannel(slot, channelId) {
+  const arr = (state.mosaicChannels || []).slice();
+  while (arr.length <= slot) arr.push(null);
+  arr[slot] = channelId;
+  state.mosaicChannels = arr;
+  saveMosaicChannels();
+  set({ mosaicPick: null, mosaicPickQ: "" });
+}
+
 function mosaicScreen() {
-  const d = state.data;
-  const visible = d.channels.filter((c) => !c.isHidden);
   const n = state.mosaicLayout === "2x2" ? 4 : 9;
   const cols = state.mosaicLayout === "2x2" ? 2 : 3;
-  const tiles = visible.slice(0, n);
+  const slots = mosaicSlotChannels(n);
+  const liveN = slots.filter(Boolean).length;
   const seg = (on) => ({ display: "flex", alignItems: "center", height: "30px", padding: "0 14px", borderRadius: "8px", border: "none", background: on ? AC : "transparent", color: on ? "#06121c" : "#aeb4ba", fontSize: "13px", fontWeight: 600, cursor: "pointer", transition: "all .15s" });
 
   return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0" },
-    h("div", { style: "flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:18px 24px 14px" },
+    h("div", { style: "flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:18px 24px 14px;gap:12px;flex-wrap:wrap" },
       h("div", null,
         h("div", { style: "font-size:23px;font-weight:700;letter-spacing:-.01em" }, "Mosaic"),
-        h("div", { style: "font-size:13px;color:#7e858c;margin-top:3px" }, `${tiles.length} live tiles · one audio-active`)),
+        h("div", { style: "font-size:13px;color:#7e858c;margin-top:3px" }, `${liveN} live tiles · one audio-active · click a tile's ⤡ to swap channel`)),
       h("div", { style: "display:flex;padding:3px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:10px;gap:2px" },
         h("button", { style: seg(state.mosaicLayout === "2x2"), onClick: () => set({ mosaicLayout: "2x2" }) }, "2×2"),
         h("button", { style: seg(state.mosaicLayout === "3x3"), onClick: () => set({ mosaicLayout: "3x3" }) }, "3×3"))),
     h("div", { style: "flex:1;min-height:0;padding:6px 24px 24px" },
       h("div", { style: { display: "grid", gridTemplateColumns: `repeat(${cols},1fr)`, gap: "14px", width: "100%", height: "100%" } },
-        ...tiles.map((c, i) => mosaicTile(c, i)))));
+        ...slots.map((c, i) => mosaicTile(c, i)))));
+}
+
+// Small round control used in a tile's top-right cluster.
+function tileBtn(iconName, title, onClick, on) {
+  return h("button", { title, onClick: (e) => { e.stopPropagation(); onClick(); }, style: { width: "34px", height: "34px", borderRadius: "9px", border: "1px solid " + (on ? AC : "rgba(255,255,255,0.14)"), background: on ? AC : "rgba(8,10,12,0.55)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 3 } },
+    h("div", { style: { width: "16px", height: "16px", backgroundImage: `url(${ICON(iconName)})`, backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center", filter: on ? "brightness(0) invert(.05)" : "brightness(0) invert(.85)" } }));
 }
 
 function mosaicTile(c, i) {
   const id = "t" + i;
+  const big = state.mosaicLayout === "2x2" ? 72 : 48;
+  // Empty slot → a tap target to pick a channel.
+  if (!c) {
+    return h("div", { onClick: () => openMosaicPick(i), style: "position:relative;border-radius:14px;cursor:pointer;border:1px dashed rgba(255,255,255,0.16);background:rgba(255,255,255,0.02);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:0;color:#8c9298" },
+      h("div", { style: "width:46px;height:46px;border-radius:12px;border:1px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center" }, icon("plus", 22, 0.6)),
+      h("div", { style: "font-size:13px;font-weight:600" }, "Pick a channel"));
+  }
   const active = state.activeTileId === id;
   const on = onNowProgram(c);
-  const big = state.mosaicLayout === "2x2" ? 72 : 48;
   return h("div", { style: { position: "relative", borderRadius: "14px", overflow: "hidden", cursor: "pointer", border: "1px solid " + (active ? AC : "rgba(255,255,255,0.09)"), boxShadow: active ? "0 0 0 1px " + AC + ", 0 0 30px rgba(84,182,255,0.28)" : "0 8px 24px rgba(0,0,0,0.35)", minHeight: 0, transition: "border-color .15s, box-shadow .15s" }, onClick: () => openPlayer(c.id) },
     h("div", { style: { position: "absolute", inset: 0, background: c.grad } }),
     h("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: big + "px", fontWeight: 800, color: "rgba(255,255,255,0.14)", letterSpacing: ".04em" } }, c.mono),
     c.logoUrl ? h("img", { src: c.logoUrl, loading: "lazy", style: "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);max-width:42%;max-height:42%;object-fit:contain;z-index:1;filter:drop-shadow(0 2px 10px rgba(0,0,0,0.6))", onError: (e) => e.target.remove() }) : null,
-    tileVideo("mosaic:" + i, c.id, !active), // live video; only the active tile has audio
+    tileVideo("mosaic:" + c.id, c.id, !active), // live video; only the active tile has audio
     h("div", { style: "position:absolute;top:10px;left:11px;z-index:2;display:flex;align-items:center;gap:5px;padding:3px 8px;background:rgba(8,10,12,0.6);border-radius:7px;backdrop-filter:blur(4px)" },
       h("span", { style: "width:6px;height:6px;border-radius:50%;background:#ff5d52;box-shadow:0 0 7px #ff5d52;animation:aerBlink 2s infinite" }),
       h("span", { style: "font-size:9.5px;font-weight:700;letter-spacing:.12em" }, "LIVE")),
-    h("button", { style: { position: "absolute", top: "10px", right: "11px", width: "34px", height: "34px", borderRadius: "9px", border: "1px solid " + (active ? AC : "rgba(255,255,255,0.14)"), background: active ? AC : "rgba(8,10,12,0.55)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 3 }, onClick: (e) => { e.stopPropagation(); set({ activeTileId: id }); } },
-      h("div", { style: { width: "16px", height: "16px", backgroundImage: `url(${ICON(active ? "volume-2" : "volume-x")})`, backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center", filter: active ? "brightness(0) invert(.05)" : "brightness(0) invert(.85)" } })),
+    h("div", { style: "position:absolute;top:10px;right:11px;z-index:3;display:flex;gap:7px" },
+      tileBtn("repeat", "Change channel", () => openMosaicPick(i), false),
+      tileBtn(active ? "volume-2" : "volume-x", active ? "Audio on" : "Make this the audio tile", () => set({ activeTileId: id }), active)),
     h("div", { style: "position:absolute;left:0;right:0;bottom:0;z-index:2;padding:14px 13px 12px;background:linear-gradient(180deg,rgba(8,10,12,0),rgba(8,10,12,0.88));display:flex;align-items:flex-end;gap:10px" },
       h("div", { style: "min-width:0;flex:1" },
         h("div", { style: "display:flex;align-items:center;gap:7px;margin-bottom:2px" },
@@ -1199,6 +1242,37 @@ function mosaicTile(c, i) {
           h("span", { style: "font-size:13px;font-weight:600;color:#eef0f2" }, c.name)),
         h("div", { style: "font-size:13px;color:#b4bac0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, on.title)),
       h("div", { style: "width:30px;height:30px;flex:none;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:rgba(8,10,12,0.5);display:flex;align-items:center;justify-content:center" }, icon("maximize-2", 13, 0.85))));
+}
+
+// Channel picker for a mosaic slot — reuses the global search ranking, browses
+// all visible channels when the query is empty.
+function mosaicPickerOverlay() {
+  if (state.mosaicPick == null) return null;
+  const slot = state.mosaicPick;
+  const q = state.mosaicPickQ || "";
+  const d = state.data;
+  const results = q.trim()
+    ? searchResults(q).map((r) => r.ch)
+    : d.channels.filter((c) => !c.isHidden).slice(0, 80);
+  const close = () => set({ mosaicPick: null, mosaicPickQ: "" });
+  if (!mosaicPickFocused) { mosaicPickFocused = true; requestAnimationFrame(() => { const el = document.querySelector('[data-focus-key="mosaicpick"]'); if (el) el.focus(); }); }
+  const row = (ch) => h("button", { onClick: () => setMosaicChannel(slot, ch.id), style: "display:flex;align-items:center;gap:12px;width:100%;padding:9px 14px;border:none;border-bottom:1px solid rgba(255,255,255,0.04);background:transparent;cursor:pointer;text-align:left;color:inherit" },
+    logoTile(ch, 32, 11, 8),
+    h("div", { style: "flex:1;min-width:0" },
+      h("div", { style: "display:flex;align-items:center;gap:7px" },
+        h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:11px;color:#6b7178;flex:none" }, "#" + (ch.num ?? "—")),
+        h("span", { style: "font-size:14px;font-weight:600;color:#e6e9ec;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, ch.name),
+        ch.isFavorite ? h("span", { style: "color:#f5c446;font-size:12px;flex:none" }, "★") : null),
+      h("div", { style: "font-size:12px;color:#8c9298;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px" }, (onNowProgram(ch) || {}).title || "Live")));
+  const panel = h("div", { onClick: (e) => e.stopPropagation(), style: "width:min(560px,94vw);max-height:74vh;margin:84px auto 0;background:rgba(20,22,26,0.97);border:1px solid rgba(255,255,255,0.1);border-radius:16px;box-shadow:0 30px 80px rgba(0,0,0,0.62);overflow:hidden;display:flex;flex-direction:column;backdrop-filter:blur(20px);animation:aerFadeUp .2s ease" },
+    h("div", { style: "display:flex;align-items:center;gap:11px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.07)" },
+      h("span", { style: "font-size:13px;font-weight:700;color:#9aa0a6;letter-spacing:.04em" }, "TILE " + (slot + 1)),
+      icon("search", 16, 0.6),
+      h("input", { value: q, placeholder: "Search channels…", "data-focus-key": "mosaicpick", onInput: (e) => { state.mosaicPickQ = e.target.value; render(); }, onKeydown: (e) => { if (e.key === "Escape") close(); else if (e.key === "Enter" && results[0]) setMosaicChannel(slot, results[0].id); },
+        style: "flex:1;background:transparent;border:none;outline:none;color:#fff;font-size:15px;font-family:inherit;min-width:0" }),
+      h("button", { onClick: close, title: "Close (Esc)", style: "flex:none;width:30px;height:30px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("x", 15, 0.7))),
+    h("div", { "data-keep-scroll": "mosaicpick", style: "overflow-y:auto;flex:1;min-height:0" }, results.length ? h("div", null, ...results.map(row)) : h("div", { style: "padding:30px;text-align:center;color:#7e858c;font-size:13.5px" }, "No channels match")));
+  return h("div", { onClick: close, style: "position:fixed;inset:0;z-index:60;background:rgba(6,7,9,0.62);backdrop-filter:blur(3px);animation:aerFadeIn .15s ease" }, panel);
 }
 
 function promoteOverlay() {
@@ -2006,6 +2080,7 @@ function render() {
     sourceModal() || h("div", { style: "display:none" }),
     shareModal() || h("div", { style: "display:none" }),
     searchOverlay() || h("div", { style: "display:none" }),
+    mosaicPickerOverlay() || h("div", { style: "display:none" }),
   );
   for (const el of root.querySelectorAll("[data-keep-scroll]")) {
     const s = scrollSnap[el.getAttribute("data-keep-scroll")];
