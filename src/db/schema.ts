@@ -29,6 +29,21 @@ export const providers = sqliteTable("providers", {
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" }),
 });
 
+// ─── VPNs: a tunnel Phospharr dials itself (no Gluetun). Each row is a pasted
+// WireGuard .conf or OpenVPN .ovpn; the tunnel manager runs it in userspace and
+// exposes a local SOCKS5 proxy. A provider routes through one via proxy_url =
+// "vpn:<id>". Configs/keys live here only (never returned to the client). ───
+export const vpns = sqliteTable("vpns", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  kind: text("kind", { enum: ["wireguard", "openvpn"] }).notNull(),
+  config: text("config").notNull(), // the raw WireGuard .conf / OpenVPN .ovpn
+  username: text("username"), // OpenVPN auth, when the .ovpn needs it
+  password: text("password"),
+  autostart: integer("autostart", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
 // ─── CANONICAL CHANNELS: the logical channel. ONE ESPN, N sources. ───
 export const channels = sqliteTable(
   "channels",
@@ -239,3 +254,4 @@ export type Rule = typeof rules.$inferSelect;
 export type Multiview = typeof multiviews.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Share = typeof shares.$inferSelect;
+export type Vpn = typeof vpns.$inferSelect;

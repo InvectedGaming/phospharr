@@ -1,7 +1,7 @@
 import { pool } from "../scheduler/pool.ts";
 import { selectStream, markLive, markDead } from "../scheduler/selector.ts";
 import { cachedSetting } from "../settings.ts";
-import { egress, providerProxy } from "../net/egress.ts";
+import { providerEgress } from "../net/egress.ts";
 import type { Stream } from "../db/schema.ts";
 
 /**
@@ -58,11 +58,14 @@ class ChannelMux {
   }
 
   private async pump() {
+    const eg = providerEgress(this.stream.providerId); // per-source VPN / proxy
+    // Fail closed: a source pinned to a VPN that's down must not leak out direct.
+    if (eg.blocked) throw new Error(`egress blocked: ${eg.reason}`);
     const res = await fetch(this.stream.url, {
       signal: this.abort.signal,
       redirect: "follow",
       headers: { "User-Agent": "Phospharr/0.1" },
-      ...egress(providerProxy(this.stream.providerId)), // VPN passthrough for flagged providers
+      ...(eg.proxy ? { proxy: eg.proxy } : {}),
     });
     if (!res.ok || !res.body) throw new Error(`upstream ${res.status}`);
 

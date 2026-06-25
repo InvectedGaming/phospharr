@@ -3,6 +3,7 @@ import app from "./api/server.ts";
 import { primePool } from "./ingest/sync.ts";
 import { getSettings, setSetting } from "./settings.ts";
 import { startEpgScheduler } from "./epg/scheduler.ts";
+import { reconcileTunnels } from "./net/tunnel.ts";
 
 const port = Number(process.env.PORT ?? 7777);
 
@@ -19,6 +20,7 @@ if (!settings["access.streamKey"]) {
   await getSettings(); // re-prime cache with the new key
 }
 startEpgScheduler(); // periodic XMLTV pulls per features.epgAutoRefresh / epg.refreshHours
+reconcileTunnels().catch((e) => console.error("[vpn] reconcile failed", e)); // dial autostart VPNs
 
 console.log(`
   ╔══════════════════════════════════════╗

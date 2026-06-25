@@ -11,6 +11,7 @@
     "db:migrate": "bun scripts/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "seed": "bun scripts/seed.ts",
+    "vpn:helpers": "bun scripts/get-vpn-helpers.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

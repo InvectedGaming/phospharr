@@ -176,6 +176,10 @@ const state = {
   providerBusyId: null, // id currently syncing
   rules: null,
   vpnDraft: null, // working copy of vpn.endpoints while editing
+  vpns: null, // native VPN tunnels (from /api/vpns)
+  vpnNew: null, // add-VPN form draft, or null when closed
+  vpnBusy: false,
+  vpnError: null,
   ruleNew: null, // create-rule draft, or null
   ruleBusy: false,
   ruleError: null,
@@ -1375,7 +1379,8 @@ function settingsScreen() {
           settingRow({ title: "Behind a reverse proxy", desc: "Resolve the real client IP from X-Forwarded-For. Enable if Phospharr runs behind nginx / Traefik / Caddy. Note: with plain Docker port-publishing every client looks local, so the key remains your real lock.", key: "access.trustProxy", type: "toggle" })),
         settingsSection("STREAMING",
           settingRow({ title: "Keep stream warm", desc: "Hold a channel's upstream this long after the last viewer leaves, so re-tuning is instant. Higher values keep a tuner slot in use longer.", key: "stream.keepWarmSeconds", type: "number", suffix: "sec" })),
-        settingsSection("VPN ENDPOINTS", vpnEndpointsRow()),
+        settingsSection("VPN TUNNELS", vpnsRow()),
+        settingsSection("VPN ENDPOINTS (external proxies)", vpnEndpointsRow()),
         settingsSection("GUIDE",
           settingRow({ title: "EPG refresh interval", desc: "How often auto-refresh pulls new EPG.", key: "epg.refreshHours", type: "number", suffix: "hours" })))));
 }
@@ -1768,6 +1773,7 @@ function setScreen(screen) {
   if (screen === "users") loadUsers();
   if (screen === "sources") loadSources();
   if (screen === "rules") loadRules();
+  if (screen === "settings") loadVpns(); // the VPN tunnels section
 }
 // ===== users (admin) =====
 async function loadUsers() {
@@ -1822,6 +1828,7 @@ async function saveRestrictEditor() {
 
 // ===== sources (providers) =====
 async function loadSources() {
+  loadVpns(); // the per-source VPN picker needs the tunnel list + status
   try { const r = await fetch("/api/providers"); if (r.ok) { state.providers = await r.json(); render(); } } catch { /* ignore */ }
 }
 async function syncProviderAction(id) {
@@ -1835,7 +1842,13 @@ async function toggleProvider(p) {
   await loadSources();
 }
 function vpnEndpoints() { return (state.settings && state.settings["vpn.endpoints"]) || []; }
-function vpnNameFor(url) { if (!url) return null; const e = vpnEndpoints().find((x) => x.url === url); return e ? (e.name || e.url) : "Custom"; }
+function vpnNameFor(url) {
+  if (!url) return null;
+  const m = String(url).match(/^vpn:(\d+)$/);
+  if (m) { const v = vpnById(Number(m[1])); return v ? v.name : "VPN #" + m[1]; }
+  const e = vpnEndpoints().find((x) => x.url === url);
+  return e ? (e.name || e.url) : "Custom";
+}
 async function setProviderProxy(p, proxyUrl) {
   await fetch("/api/providers/" + p.id, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ proxyUrl: proxyUrl || null }) }).catch(() => {});
   await loadSources();
@@ -1843,17 +1856,89 @@ async function setProviderProxy(p, proxyUrl) {
 // A dropdown of Direct / named endpoints / Custom. onPick(url) gets the chosen proxy URL.
 function vpnSelect(current, onPick) {
   const eps = vpnEndpoints();
+  const tunnels = state.vpns || [];
   const cur = current || "";
-  const known = cur === "" || eps.some((e) => e.url === cur);
+  const known = cur === "" || eps.some((e) => e.url === cur) || tunnels.some((v) => "vpn:" + v.id === cur);
   const stop = (e) => e.stopPropagation();
   const sel = h("select", { onClick: stop, onMousedown: stop,
     onChange: (e) => { const v = e.target.value; if (v === "__custom__") { const u = prompt("Proxy URL for this source (http://… or socks5://…):", cur); if (u != null) onPick(u.trim()); else render(); } else onPick(v); },
     style: "appearance:none;-webkit-appearance:none;height:34px;padding:0 26px 0 11px;border-radius:8px;border:1px solid " + (cur ? "rgba(127,220,160,0.4)" : "rgba(255,255,255,0.12)") + ";background:" + (cur ? "rgba(127,220,160,0.1)" : "rgba(255,255,255,0.04)") + ";color:" + (cur ? "#7fdca0" : "#dfe3e7") + ";font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer" },
     h("option", { value: "", selected: cur === "", style: "background:#16181c;color:#dfe3e7" }, "Direct (no VPN)"),
+    ...tunnels.map((v) => h("option", { value: "vpn:" + v.id, selected: "vpn:" + v.id === cur, style: "background:#16181c;color:#dfe3e7" }, v.name + (v.status === "up" ? "" : " (" + v.status + ")"))),
     ...eps.map((e) => h("option", { value: e.url, selected: e.url === cur, style: "background:#16181c;color:#dfe3e7" }, e.name || e.url)),
     h("option", { value: "__custom__", selected: !known, style: "background:#16181c;color:#dfe3e7" }, known ? "Custom…" : "Custom: " + cur));
   return h("div", { style: "position:relative;display:inline-flex", onClick: stop }, sel,
     h("span", { style: "position:absolute;right:9px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:8px;color:#9aa0a6" }, "▾"));
+}
+
+// ===== native VPN tunnels =====
+async function loadVpns() {
+  try { const r = await fetch("/api/vpns"); if (r.ok) { state.vpns = await r.json(); render(); } } catch { /* ignore */ }
+}
+function vpnById(id) { return (state.vpns || []).find((v) => v.id === id) || null; }
+async function createVpn() {
+  const f = state.vpnNew;
+  if (!f || state.vpnBusy) return;
+  if (!f.name.trim() || !f.config.trim()) { set({ vpnError: "Name and config are required." }); return; }
+  state.vpnBusy = true; state.vpnError = null; render();
+  try {
+    const r = await fetch("/api/vpns", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(f) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { state.vpnError = d.error || "Couldn't add VPN"; state.vpnBusy = false; render(); return; }
+    state.vpnBusy = false; state.vpnNew = null;
+    await loadVpns();
+  } catch (e) { state.vpnError = String(e); state.vpnBusy = false; render(); }
+}
+async function deleteVpn(v) {
+  if (!confirm("Remove VPN “" + v.name + "”? Any source set to it will stop streaming until you pick another.")) return;
+  await fetch("/api/vpns/" + v.id, { method: "DELETE" }).catch(() => {});
+  await loadVpns(); await loadSources();
+}
+async function restartVpn(v) {
+  await fetch("/api/vpns/" + v.id + "/restart", { method: "POST" }).catch(() => {});
+  await loadVpns();
+}
+
+// Settings section: list tunnels with live status + an add form.
+function vpnsRow() {
+  const list = state.vpns || [];
+  const f = state.vpnNew;
+  const stColor = (s) => s === "up" ? "#2fae5c" : s === "starting" ? "#f4b740" : s === "error" ? "#ff5d52" : "#6b7178";
+  const stLabel = (s) => s === "up" ? "Connected" : s === "starting" ? "Connecting…" : s === "error" ? "Error" : "Stopped";
+  const inputStyle = "width:100%;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:9px;padding:9px 11px;color:#e6e9ec;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box";
+  const rows = list.map((v) => h("div", { style: "display:flex;align-items:flex-start;gap:11px;padding:12px 16px;border-top:1px solid rgba(255,255,255,0.05)" },
+    h("span", { title: stLabel(v.status), style: "width:9px;height:9px;margin-top:5px;flex:none;border-radius:50%;background:" + stColor(v.status) + ";box-shadow:0 0 7px " + stColor(v.status) }),
+    h("div", { style: "flex:1;min-width:0" },
+      h("div", { style: "display:flex;align-items:center;gap:8px" },
+        h("span", { style: "font-size:14px;font-weight:600;color:#e6e9ec" }, v.name),
+        h("span", { style: "font-size:10px;font-weight:600;letter-spacing:.08em;color:#9aa0a6;border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:1px 6px;text-transform:uppercase" }, v.kind === "openvpn" ? "OpenVPN" : "WireGuard")),
+      h("div", { style: "font-size:12px;color:" + stColor(v.status) + ";margin-top:2px" }, stLabel(v.status) + (v.error ? " · " + v.error : ""))),
+    h("button", { onClick: () => restartVpn(v), title: "Reconnect", style: "height:30px;padding:0 11px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:12px;font-weight:600;cursor:pointer;flex:none" }, "Reconnect"),
+    h("button", { onClick: () => deleteVpn(v), title: "Remove", style: "width:30px;height:30px;border-radius:8px;border:1px solid rgba(255,93,82,0.3);background:rgba(255,93,82,0.1);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none" }, icon("trash-2", 14, 0.7))));
+
+  const addForm = f ? h("div", { style: "padding:14px 16px;border-top:1px solid rgba(255,255,255,0.05);display:flex;flex-direction:column;gap:10px" },
+    h("div", { style: "display:flex;gap:10px" },
+      h("input", { value: f.name, placeholder: "Name (e.g. Japan)", onInput: (e) => { f.name = e.target.value; }, style: inputStyle + ";flex:1" }),
+      h("div", { style: "position:relative" },
+        h("select", { onChange: (e) => set({ vpnNew: { ...f, kind: e.target.value } }), style: "appearance:none;-webkit-appearance:none;height:38px;padding:0 30px 0 11px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#e6e9ec;font-size:13px;font-family:inherit;cursor:pointer" },
+          h("option", { value: "wireguard", selected: f.kind !== "openvpn", style: "background:#16181c" }, "WireGuard"),
+          h("option", { value: "openvpn", selected: f.kind === "openvpn", style: "background:#16181c" }, "OpenVPN")),
+        h("span", { style: "position:absolute;right:11px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:8px;color:#9aa0a6" }, "▾"))),
+    h("textarea", { placeholder: f.kind === "openvpn" ? "Paste your .ovpn config…" : "Paste your WireGuard .conf ([Interface] / [Peer])…", onInput: (e) => { f.config = e.target.value; }, style: inputStyle + ";min-height:120px;resize:vertical;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.5" }, f.config),
+    f.kind === "openvpn" ? h("div", { style: "display:flex;gap:10px" },
+      h("input", { value: f.username || "", placeholder: "Username (if required)", onInput: (e) => { f.username = e.target.value; }, style: inputStyle + ";flex:1" }),
+      h("input", { type: "password", value: f.password || "", placeholder: "Password", onInput: (e) => { f.password = e.target.value; }, style: inputStyle + ";flex:1" })) : null,
+    state.vpnError ? h("div", { style: "font-size:12.5px;color:#ff8d85" }, state.vpnError) : null,
+    h("div", { style: "display:flex;gap:9px;justify-content:flex-end" },
+      h("button", { onClick: () => set({ vpnNew: null, vpnError: null }), style: "height:34px;padding:0 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:12.5px;font-weight:600;cursor:pointer" }, "Cancel"),
+      h("button", { onClick: createVpn, style: "height:34px;padding:0 16px;border-radius:8px;border:none;background:" + AC + ";color:#06121c;font-size:12.5px;font-weight:700;cursor:pointer;opacity:" + (state.vpnBusy ? 0.7 : 1) }, state.vpnBusy ? "Connecting…" : "Add VPN")))
+    : h("div", { style: "padding:13px 16px;border-top:1px solid rgba(255,255,255,0.05)" },
+      h("button", { onClick: () => set({ vpnNew: { name: "", kind: "wireguard", config: "", username: "", password: "" }, vpnError: null }), style: "height:34px;padding:0 14px;border-radius:8px;border:1px solid rgba(84,182,255,0.4);background:rgba(84,182,255,0.12);color:#9bd0ff;font-size:12.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:7px" }, icon("plus", 14, 0.6), "Add VPN"));
+
+  return h("div", null,
+    list.length ? null : h("div", { style: "padding:13px 16px;font-size:12.5px;color:#7e858c;line-height:1.5" }, "Phospharr dials VPNs itself — no Gluetun. Paste a WireGuard config and pick it per source. Needs the wireproxy helper (run ", h("code", { style: "color:#aeb4ba" }, "bun run vpn:helpers"), ")."),
+    ...rows,
+    addForm);
 }
 async function deleteProvider(p) {
   if (!confirm("Remove “" + p.name + "”? Its channels/streams go with it (your other providers are untouched).")) return;

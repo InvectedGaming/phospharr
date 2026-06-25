@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { and, eq, gt, lte, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { providers, channels, streams, rules, programs } from "../db/schema.ts";
+import { providers, channels, streams, rules, programs, vpns } from "../db/schema.ts";
+import { startVpn, stopVpn, vpnStatus } from "../net/tunnel.ts";
 import { syncProvider } from "../ingest/sync.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
 import { applyRules } from "../rules/engine.ts";
@@ -401,6 +402,68 @@ app.post("/api/providers", async (c) => {
     .returning();
   pool.setBudget(row.id, row.maxConnections);
   return c.json(row, 201);
+});
+
+// ─── VPNs (admin) — Phospharr dials these itself; no Gluetun. Configs/keys are
+// write-only: they go in but never come back out to the client. ───
+function safeVpn(v: typeof vpns.$inferSelect) {
+  return { id: v.id, name: v.name, kind: v.kind, autostart: v.autostart, createdAt: v.createdAt, ...vpnStatus(v.id) };
+}
+app.get("/api/vpns", (c) =>
+  ensureAdmin(c) ?? c.json(db.select().from(vpns).orderBy(vpns.id).all().map(safeVpn)));
+
+app.post("/api/vpns", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+  const name = String(body.name ?? "").trim();
+  const kind = body.kind === "openvpn" ? "openvpn" : "wireguard";
+  const config = String(body.config ?? "").trim();
+  if (!name || !config) return c.json({ error: "name and config are required" }, 400);
+  const [row] = await db.insert(vpns).values({
+    name, kind, config,
+    username: body.username ? String(body.username) : null,
+    password: body.password ? String(body.password) : null,
+    autostart: body.autostart !== false,
+    createdAt: new Date(),
+  }).returning();
+  if (row.autostart) await startVpn(row.id);
+  return c.json(safeVpn(row), 201);
+});
+
+app.patch("/api/vpns/:id", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+  const updates: Record<string, unknown> = {};
+  if (typeof body.name === "string" && body.name.trim()) updates.name = body.name.trim();
+  if (typeof body.config === "string" && body.config.trim()) updates.config = body.config.trim();
+  if ("username" in body) updates.username = body.username ? String(body.username) : null;
+  if ("password" in body) updates.password = body.password ? String(body.password) : null;
+  if (typeof body.autostart === "boolean") updates.autostart = body.autostart;
+  if (!Object.keys(updates).length) return c.json({ error: "nothing to update" }, 400);
+  const [row] = await db.update(vpns).set(updates).where(eq(vpns.id, id)).returning();
+  if (!row) return c.json({ error: "not found" }, 404);
+  // Re-dial so config/credential changes take effect; honor autostart.
+  stopVpn(id);
+  if (row.autostart) await startVpn(id);
+  return c.json(safeVpn(row));
+});
+
+app.delete("/api/vpns/:id", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const id = Number(c.req.param("id"));
+  stopVpn(id);
+  await db.delete(vpns).where(eq(vpns.id, id));
+  // Any provider pinned to this VPN now resolves to blocked (fail-closed), not direct.
+  return c.json({ ok: true });
+});
+
+app.post("/api/vpns/:id/restart", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const id = Number(c.req.param("id"));
+  stopVpn(id);
+  await startVpn(id);
+  return c.json(vpnStatus(id));
 });
 
 app.post("/api/providers/:id/sync", async (c) => {

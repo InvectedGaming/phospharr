@@ -10,6 +10,8 @@ node_modules/
 phospharr.db*
 data/
 dvr/
+.vpn/
+bin/
 
 # agent / editor / OS cruft
 .claude/

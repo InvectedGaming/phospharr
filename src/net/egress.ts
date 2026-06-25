@@ -1,22 +1,49 @@
 import { sqlite } from "../db/index.ts";
+import { vpnSocksUrl } from "./tunnel.ts";
 
 /**
- * Per-source VPN passthrough. Each provider can carry its OWN `proxy_url` (a
- * Gluetun/HTTP/SOCKS endpoint), so different sources can exit through different
- * VPNs — source A → Japan, source B → UK — all on one Phospharr instance.
- * Providers with no proxy_url go out the host's normal connection.
+ * Per-source egress. Each provider can carry its OWN `proxy_url`, so different
+ * sources can exit through different VPNs/proxies — source A → Japan, source B →
+ * UK — all on one Phospharr instance. Providers with none go out the host's
+ * normal connection.
+ *
+ *   proxy_url = ""                → direct
+ *   proxy_url = "http://…"/"socks5://…" → that proxy (e.g. your own Gluetun)
+ *   proxy_url = "vpn:<id>"        → a VPN Phospharr dials itself (see tunnel.ts)
  *
  * Bun's fetch honors `{ proxy }` for http(s):// and socks5:// proxies.
  */
 
 const proxyStmt = sqlite.prepare("SELECT proxy_url FROM providers WHERE id = ?");
 
-/** The proxy a provider's upstream traffic should use, or undefined for direct. */
-export function providerProxy(providerId: number | null | undefined): string | undefined {
-  if (providerId == null) return undefined;
+export type Egress =
+  | { proxy?: string; blocked?: false }
+  | { blocked: true; reason: string }; // must NOT connect (would leak the real IP)
+
+/** Resolve how a provider's upstream traffic should exit. */
+export function providerEgress(providerId: number | null | undefined): Egress {
+  if (providerId == null) return {};
   const row = proxyStmt.get(providerId) as { proxy_url: string | null } | undefined;
-  const url = row?.proxy_url?.trim();
-  return url || undefined;
+  const raw = row?.proxy_url?.trim();
+  if (!raw) return {}; // direct
+
+  const vpnMatch = raw.match(/^vpn:(\d+)$/);
+  if (vpnMatch) {
+    const url = vpnSocksUrl(Number(vpnMatch[1]));
+    // Fail CLOSED: a source pinned to a VPN must never silently fall back to a
+    // direct connection when the tunnel is down — that would expose the host IP.
+    if (!url) return { blocked: true, reason: "VPN tunnel is not up" };
+    return { proxy: url };
+  }
+  return { proxy: raw }; // a plain proxy URL the user supplied
+}
+
+/** Back-compat: just the proxy URL for a provider, or undefined for direct.
+ *  (Returns undefined when blocked too — callers needing fail-closed semantics
+ *  should use providerEgress and check `.blocked`.) */
+export function providerProxy(providerId: number | null | undefined): string | undefined {
+  const eg = providerEgress(providerId);
+  return "proxy" in eg ? eg.proxy : undefined;
 }
 
 /** fetch() options carrying the proxy when one applies (spread into the init). */

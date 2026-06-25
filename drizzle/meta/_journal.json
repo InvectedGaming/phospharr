@@ -71,6 +71,13 @@
       "when": 1782309792921,
       "tag": "0009_right_terror",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1782346873766,
+      "tag": "0010_add_vpns",
+      "breakpoints": true
     }
   ]
 }
