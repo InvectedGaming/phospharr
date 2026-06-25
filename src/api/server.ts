@@ -225,7 +225,7 @@ app.patch("/api/settings", async (c) => {
     }
   }
   // Content-filter changes (adult / categories / dedupe) re-apply to the lineup now.
-  if ("content.hideAdult" in body || "content.hiddenCategories" in body || "content.dedupeLocals" in body) await reconcileAutoHides();
+  if ("content.hideAdult" in body || "content.hiddenCategories" in body || "content.hiddenMarkets" in body || "content.dedupeLocals" in body) await reconcileAutoHides();
   return c.json({ settings: await getSettings(), envLocked: envLockedKeys() });
 });
 

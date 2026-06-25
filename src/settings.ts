@@ -34,6 +34,7 @@ export interface Settings {
   "access.trustProxy": boolean; // resolve client IP from X-Forwarded-For (set true behind a reverse proxy)
   "content.hideAdult": boolean; // auto-hide adult/XXX channels (on by default)
   "content.hiddenCategories": string[]; // whole categories the admin chose to hide
+  "content.hiddenMarkets": string[]; // local markets (cities) the admin chose to hide
   "content.dedupeLocals": boolean; // collapse duplicate local stations (same callsign)
 }
 
@@ -57,6 +58,7 @@ const DEFAULTS: Settings = {
   "access.trustProxy": false,
   "content.hideAdult": true, // hide adult/XXX channels by default
   "content.hiddenCategories": [],
+  "content.hiddenMarkets": [],
   "content.dedupeLocals": true, // collapse duplicate local stations by default
 };
 

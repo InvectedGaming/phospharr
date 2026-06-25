@@ -1939,18 +1939,21 @@ function openProviderCategories(id) {
   if (!state.providerCats[id]) loadProviderCategories(id);
   render();
 }
-async function toggleCategories(catNames, hide) {
-  const current = (state.settings && state.settings["content.hiddenCategories"]) || [];
-  const set = new Set(catNames);
-  const next = hide ? [...new Set([...current, ...catNames])] : current.filter((c) => !set.has(c));
-  if (state.settings) state.settings["content.hiddenCategories"] = next; // optimistic
+// Hide/show by updating a list setting (hidden categories OR hidden markets).
+async function toggleSetting(key, names, hide) {
+  const current = (state.settings && state.settings[key]) || [];
+  const set = new Set(names);
+  const next = hide ? [...new Set([...current, ...names])] : current.filter((c) => !set.has(c));
+  if (state.settings) state.settings[key] = next; // optimistic
   const mark = (list) => (list || []).map((c) => (set.has(c.category) ? { ...c, hidden: hide } : c));
   for (const k in state.providerCats) state.providerCats[k] = mark(state.providerCats[k]);
   render();
-  await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ "content.hiddenCategories": next }) }).catch(() => {});
+  await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ [key]: next }) }).catch(() => {});
   loadView(); // the lineup changed
 }
-const toggleCategory = (cat, hide) => toggleCategories([cat], hide);
+const toggleCategories = (names, hide) => toggleSetting("content.hiddenCategories", names, hide);
+const toggleMarkets = (names, hide) => toggleSetting("content.hiddenMarkets", names, hide);
+const toggleItem = (c, hide) => (c.kind === "market" ? toggleMarkets : toggleCategories)([c.category], hide);
 
 // Category manager: a source's categories rolled up into a handful of groups, each
 // with a one-click hide-all toggle; expand a group to fine-tune its categories.
@@ -1979,20 +1982,23 @@ function categoryManager(cats) {
     h("div", { style: "flex:1;min-width:0;display:flex;align-items:center;gap:9px" },
       h("span", { style: "font-size:13px;color:" + (c.hidden ? "#7e858c" : "#dfe3e7") + (c.hidden ? ";text-decoration:line-through" : "") + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, c.category),
       h("span", { style: "flex:none;font-size:11px;color:#6b7178;font-family:'JetBrains Mono',monospace" }, c.total)),
-    toggleSwitch(c.hidden, () => toggleCategory(c.category, !c.hidden), false));
+    toggleSwitch(c.hidden, () => toggleItem(c, !c.hidden), false));
 
   const groupRows = groups.map((g) => {
     const expanded = searching || !!(state.catExpanded && state.catExpanded[g.name]);
     const allHidden = g.hidden === g.members.length;
     const someHidden = g.hidden > 0;
+    const isMarket = g.members[0] && g.members[0].kind === "market";
+    const noun = isMarket ? "market" : "category";
+    const batchToggle = isMarket ? toggleMarkets : toggleCategories;
     const header = h("div", { onClick: () => { if (!searching) { state.catExpanded = { ...state.catExpanded, [g.name]: !expanded }; render(); } }, style: "display:flex;align-items:center;gap:11px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:" + (searching ? "default" : "pointer") + ";background:rgba(255,255,255,0.015)" },
       h("span", { style: "flex:none;width:14px;color:#7e858c;font-size:10px;transition:transform .15s;transform:rotate(" + (expanded ? "90" : "0") + "deg)" }, "▶"),
       h("div", { style: "flex:1;min-width:0" },
-        h("div", { style: "font-size:14px;font-weight:600;color:" + (allHidden ? "#7e858c" : "#e6e9ec") }, g.name),
-        h("div", { style: "font-size:11.5px;color:#7e858c;margin-top:1px" }, g.members.length + " categor" + (g.members.length === 1 ? "y" : "ies") + " · " + g.ch.toLocaleString() + " channels" + (someHidden ? " · " + g.hidden + " hidden" : ""))),
+        h("div", { style: "font-size:14px;font-weight:600;color:" + (allHidden ? "#7e858c" : "#e6e9ec") }, g.name + (isMarket ? " (by city)" : "")),
+        h("div", { style: "font-size:11.5px;color:#7e858c;margin-top:1px" }, g.members.length + " " + noun + (g.members.length === 1 ? (isMarket ? "" : "y") : (isMarket ? "s" : "ies")) + " · " + g.ch.toLocaleString() + " channels" + (someHidden ? " · " + g.hidden + " hidden" : ""))),
       someHidden && !allHidden ? h("span", { style: "font-size:10px;font-weight:600;color:#f4b740;border:1px solid rgba(244,183,64,0.4);border-radius:5px;padding:1px 6px" }, "PARTIAL") : null,
       h("div", { onClick: (e) => e.stopPropagation() },
-        toggleSwitch(allHidden, () => toggleCategories(g.members.map((m) => m.category), !allHidden), false)));
+        toggleSwitch(allHidden, () => batchToggle(g.members.map((m) => m.category), !allHidden), false)));
     return h("div", null, header, ...(expanded ? g.members.map((c) => catRow(c, true)) : []));
   });
 
