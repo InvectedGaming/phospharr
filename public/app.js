@@ -1452,9 +1452,13 @@ function sourceModal() {
             h("div", { style: "font-size:13px;font-weight:600;color:#dfe3e7" }, "VPN for this source"),
             h("div", { style: "font-size:11.5px;color:#7e858c;margin-top:1px" }, vpnEndpoints().length ? "Routes stream + EPG + sync through the chosen endpoint." : "Add VPN endpoints in Settings → VPN first.")),
           vpnSelect(f.proxyUrl, (url) => { f.proxyUrl = url; render(); })),
-        state.addError ? h("div", { style: "margin-top:13px;padding:10px 12px;border-radius:9px;background:rgba(255,93,82,0.12);border:1px solid rgba(255,93,82,0.3);color:#ff8d85;font-size:12.5px" }, state.addError) : null),
+        state.addError ? h("div", { style: "margin-top:13px;padding:10px 12px;border-radius:9px;background:rgba(255,93,82,0.12);border:1px solid rgba(255,93,82,0.3);color:#ff8d85;font-size:12.5px" }, state.addError) : null,
+        testResultPanel()),
       // footer
-      h("div", { style: "padding:14px 22px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid rgba(255,255,255,0.07)" },
+      h("div", { style: "padding:14px 22px 20px;display:flex;gap:10px;align-items:center;border-top:1px solid rgba(255,255,255,0.07)" },
+        h("button", { onClick: (state.addBusy || (state.addTest && state.addTest.busy)) ? () => {} : testSource, style: "height:38px;padding:0 15px;border-radius:9px;border:1px solid rgba(84,182,255,0.35);background:rgba(84,182,255,0.1);color:#9bd0ff;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:7px;opacity:" + ((state.addTest && state.addTest.busy) ? ".7" : "1") },
+          icon("plug-zap", 15, 0.6), (state.addTest && state.addTest.busy) ? "Testing…" : "Test"),
+        h("div", { style: "flex:1" }),
         h("button", { style: "height:38px;padding:0 16px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;cursor:pointer", onClick: closeAddSource }, "Cancel"),
         h("button", {
           style: { height: "38px", padding: "0 18px", borderRadius: "9px", border: "none", background: AC, color: "#06121c", fontSize: "13px", fontWeight: 700, fontFamily: "inherit", cursor: state.addBusy ? "default" : "pointer", opacity: state.addBusy ? 0.7 : 1, display: "flex", alignItems: "center", gap: "8px" },
@@ -1462,13 +1466,41 @@ function sourceModal() {
         }, state.addBusy ? "Connecting & importing…" : "Add & import"))));
 }
 
+// Preview panel for a "Test connection" dry-run (channel count, EPG, categories).
+function testResultPanel() {
+  const t = state.addTest;
+  if (!t) return null;
+  if (t.busy) return h("div", { style: "margin-top:13px;font-size:12.5px;color:#9aa0a6;display:flex;align-items:center;gap:8px" }, "Testing connection…");
+  const r = t.result || {};
+  if (!r.ok) return h("div", { style: "margin-top:13px;padding:10px 12px;border-radius:9px;background:rgba(255,93,82,0.12);border:1px solid rgba(255,93,82,0.3);color:#ff8d85;font-size:12.5px" }, "✕ " + (r.error || "Couldn't connect."));
+  const top = (r.categories || []).slice(0, 8);
+  return h("div", { style: "margin-top:13px;padding:12px 13px;border-radius:10px;background:rgba(127,220,160,0.08);border:1px solid rgba(127,220,160,0.3)" },
+    h("div", { style: "font-size:13px;font-weight:700;color:#7fdca0" }, "✓ Connected — " + Number(r.channelCount).toLocaleString() + " channels"),
+    h("div", { style: "font-size:12px;color:#aeb4ba;margin:4px 0 9px" }, Number(r.withEpg).toLocaleString() + " carry an EPG id · " + r.totalCategories + " categories"),
+    h("div", { style: "display:flex;flex-wrap:wrap;gap:6px" },
+      ...top.map((cat) => h("span", { style: "font-size:11px;color:#cfd3d8;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:3px 8px" }, cat.name + " · " + cat.count)),
+      r.totalCategories > top.length ? h("span", { style: "font-size:11px;color:#6b7178;padding:3px 4px" }, "+" + (r.totalCategories - top.length) + " more") : null));
+}
+async function testSource() {
+  const f = state.addForm;
+  if (!f.url.trim()) return set({ addError: "Enter the URL first." });
+  state.addTest = { busy: true, result: null }; state.addError = null; render();
+  try {
+    const r = await fetch("/api/providers/test", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: f.type, url: f.url, username: f.username, password: f.password, proxyUrl: f.proxyUrl }) });
+    state.addTest = { busy: false, result: await r.json().catch(() => ({ ok: false, error: "Bad response from server." })) };
+  } catch (e) {
+    state.addTest = { busy: false, result: { ok: false, error: String(e) } };
+  }
+  render();
+}
 function openAddSource() {
   state.addForm = { name: "", type: "xtream", url: "", username: "", password: "", maxConnections: 4, epgUrl: "", proxyUrl: "" };
-  set({ addOpen: true, addError: null, addBusy: false });
+  set({ addOpen: true, addError: null, addBusy: false, addTest: null });
 }
 function closeAddSource() {
   if (state.addBusy) return;
-  set({ addOpen: false, addError: null });
+  set({ addOpen: false, addError: null, addTest: null });
 }
 async function submitAddSource() {
   const f = state.addForm;

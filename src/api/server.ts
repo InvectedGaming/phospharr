@@ -4,6 +4,10 @@ import { db } from "../db/index.ts";
 import { providers, channels, streams, rules, programs, vpns } from "../db/schema.ts";
 import { startVpn, stopVpn, vpnStatus } from "../net/tunnel.ts";
 import { syncProvider } from "../ingest/sync.ts";
+import { fetchM3U } from "../ingest/m3u.ts";
+import { fetchXtream } from "../ingest/xtream.ts";
+import { egress } from "../net/egress.ts";
+import { vpnSocksUrl } from "../net/tunnel.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
 import { applyRules } from "../rules/engine.ts";
 import { applyAdultFilter } from "../content/adult.ts";
@@ -467,6 +471,47 @@ app.post("/api/vpns/:id/restart", async (c) => {
   stopVpn(id);
   await startVpn(id);
   return c.json(vpnStatus(id));
+});
+
+// Dry-run a source's credentials/URL WITHOUT saving — returns a preview (channel
+// count, categories, EPG presence) so the user can sanity-check before importing.
+app.post("/api/providers/test", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, string>;
+  const type = b.type === "xtream" ? "xtream" : "m3u";
+  const url = String(b.url ?? "").trim();
+  if (!url) return c.json({ ok: false, error: "Enter the URL first." });
+  // Resolve a VPN reference the same way the real sync does, so the test exits
+  // through the chosen tunnel too.
+  let proxy = b.proxyUrl || undefined;
+  const vpnMatch = proxy?.match(/^vpn:(\d+)$/);
+  if (vpnMatch) proxy = vpnSocksUrl(Number(vpnMatch[1])); // undefined if the tunnel is down
+  const opts = egress(proxy);
+  try {
+    let entries;
+    if (type === "xtream") {
+      if (!b.username || !b.password) return c.json({ ok: false, error: "Xtream needs a username and password." });
+      entries = await fetchXtream(url, String(b.username), String(b.password), opts);
+    } else {
+      entries = await fetchM3U(url, opts);
+    }
+    const cats = new Map<string, number>();
+    let withEpg = 0;
+    for (const e of entries) {
+      cats.set(e.groupTitle || "Uncategorized", (cats.get(e.groupTitle || "Uncategorized") ?? 0) + 1);
+      if (e.tvgId) withEpg++;
+    }
+    const categories = [...cats.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+    return c.json({
+      ok: true,
+      channelCount: entries.length,
+      withEpg,
+      totalCategories: categories.length,
+      categories: categories.slice(0, 30),
+    });
+  } catch (e) {
+    return c.json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 app.post("/api/providers/:id/sync", async (c) => {
