@@ -12,8 +12,10 @@
 # routes the sources you choose, so one instance mixes VPN and non-VPN providers.
 #
 #   • WireGuard works out of the box — no extra privileges.
-#   • OpenVPN needs a TUN device + NET_ADMIN; the `cap_add`/`devices` below grant
-#     them. They're ONLY required for OpenVPN — delete them if you only use WireGuard.
+#   • OpenVPN needs a TUN device + NET_ADMIN — the SAME privileges Gluetun uses
+#     (no SYS_ADMIN, no namespaces; it routes per source via policy routing). The
+#     `cap_add`/`devices` below grant them, and are ONLY needed for OpenVPN —
+#     delete them if you only use WireGuard.
 # You can still point a Source at an EXTERNAL proxy (your own Gluetun, etc.) via
 # Settings → VPN ENDPOINTS if you prefer to run the tunnel yourself.
 

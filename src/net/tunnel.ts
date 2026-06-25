@@ -38,13 +38,6 @@ type Entry = {
 const PORT_BASE = 41080;
 const tunnels = new Map<number, Entry>();
 
-// Per-OpenVPN-tunnel /30 (host .1, namespace .2) carved from 10.200.0.0/16.
-function ovpnNet(idx: number): { hostIp: string; nsIp: string; cidr: string } {
-  const a = Math.floor(idx / 64) % 256;
-  const b = (idx % 64) * 4;
-  return { hostIp: `10.200.${a}.${b + 1}`, nsIp: `10.200.${a}.${b + 2}`, cidr: `10.200.${a}.${b}/30` };
-}
-
 // ── helper-binary resolution ───────────────────────────────────────────────
 function resolveBin(name: string, envVar: string): string | null {
   const fromEnv = process.env[envVar];
@@ -130,9 +123,11 @@ async function spawnTunnel(vpn: Vpn, entry: Entry): Promise<void> {
     }
     const confPath = writeRuntimeConfig(vpn.id, "ovpn.conf", vpn.config);
     const credsPath = writeRuntimeConfig(vpn.id, "ovpn.creds", `${vpn.username ?? ""}\n${vpn.password ?? ""}\n`);
-    const net = ovpnNet(entry.port - PORT_BASE);
-    entry.socksHost = net.nsIp;
-    cmd = ["sh", `${projectRoot}/scripts/ovpn-tunnel.sh`, `phospharr-ovpn-${vpn.id}`, confPath, credsPath, net.hostIp, net.nsIp, net.cidr, String(entry.port)];
+    const idx = entry.port - PORT_BASE;
+    const tun = `ph-ovpn${idx}`; // unique tun name (<=15 chars); table id from the same index
+    const table = 5000 + idx;
+    entry.socksHost = "127.0.0.1"; // policy routing binds the SOCKS outbound to the tun IP
+    cmd = ["sh", `${projectRoot}/scripts/ovpn-tunnel.sh`, tun, String(table), confPath, credsPath, String(entry.port)];
     readyMs = 95_000; // OpenVPN handshakes are slow; the script opens SOCKS only once up
   }
 

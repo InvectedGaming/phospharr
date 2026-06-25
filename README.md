@@ -137,9 +137,11 @@ fetches it automatically; locally run `bun run vpn:helpers` (or set
 `PHOSPHARR_WIREPROXY`).
 
 **OpenVPN** also works, but only on the Docker/Linux deploy: paste an `.ovpn`
-(plus username/password if it needs them) and Phospharr runs it in an isolated
-network namespace. It requires a TUN device + `NET_ADMIN`, which the shipped
-`docker-compose.yml` grants:
+(plus username/password if it needs them). Each tunnel runs on its own `tun`
+device and is kept per-source with **policy routing** (`microsocks` binds its
+outbound to the tunnel's IP) — the **same `NET_ADMIN` + `/dev/net/tun` privileges
+Gluetun uses, no `SYS_ADMIN` and no namespaces.** The shipped `docker-compose.yml`
+grants them:
 
 ```yaml
 services:
