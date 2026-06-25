@@ -881,7 +881,9 @@ function detailPane(ambient) {
 
   // AMBIENT: just the floating info (the background video lives in guideScreen)
   if (ambient) {
-    return h("div", { style: "flex:none;position:relative;z-index:3;padding:" + (mob ? "8px 14px 12px" : "16px 28px 20px") + ";display:flex;align-items:flex-end;justify-content:space-between;gap:16px" },
+    // On phones reserve extra height so the guide sits lower and more of the
+    // preview shows; the info stays pinned to the bottom (align-items:flex-end).
+    return h("div", { style: "flex:none;position:relative;z-index:3;padding:" + (mob ? "8px 14px 12px" : "16px 28px 20px") + (mob ? ";min-height:205px" : "") + ";display:flex;align-items:flex-end;justify-content:space-between;gap:16px" },
       h("div", { style: infoAnim + "display:flex;flex-direction:column;gap:" + (mob ? "6px" : "10px") + ";max-width:" + (mob ? "90%" : "64%") + ";pointer-events:auto" },
         channelRow, titleEl, metaEl, descEl, watchBtn),
       muteToggle());
