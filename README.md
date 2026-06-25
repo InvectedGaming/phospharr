@@ -116,29 +116,39 @@ To use them off your network, enable **Settings → Network Access → Allow ext
 so the LAN check sees the real client IP — with plain Docker port-publishing every
 client looks local, so the key stays your real lock.
 
-### VPN passthrough (Gluetun) — one VPN per source
+### VPN per source — built in, no Gluetun
 
-Run **one Gluetun per region**; each Source picks which VPN it uses — Source A →
+Phospharr **dials the VPN itself**. Each Source picks which VPN it uses — Source A →
 Japan, Source B → UK, others direct. Phospharr runs *outside* the tunnels, so one
-instance mixes VPN and non-VPN providers.
+instance mixes VPN and non-VPN providers, and a source pinned to a VPN that's down
+is **blocked, never sent direct** (so your real IP can't leak).
 
-1. Put your region's VPN details in `.env` (the compose ships a `gluetun-jp`
-   example — `JP_WIREGUARD_PRIVATE_KEY`, `JP_SERVER_COUNTRIES`, …; or the OpenVPN
-   equivalents — see the [Gluetun wiki](https://github.com/qdm12/gluetun-wiki)).
-2. Start with the `vpn` profile:
+1. In the UI: **Settings → VPN TUNNELS → Add VPN**. Paste a standard **WireGuard
+   `.conf`** (the file you download from Mullvad / Proton / IVPN / etc.), give it a
+   name, Save. It shows live status (Connecting → Connected).
+2. In **Sources**, set each provider's **VPN** dropdown to Direct or that tunnel.
 
-   ```bash
-   docker compose --profile vpn up -d
-   ```
+A source's stream pull, channel-list sync, *and* EPG all egress through its chosen
+VPN; everything else stays on your normal connection.
 
-3. In the UI: **Settings → VPN** → add an endpoint, e.g. name `Japan`, url
-   `http://gluetun-jp:8888`. Add one per region.
-4. In **Sources**, set each provider's **VPN** dropdown to Direct or any endpoint.
+**How it works:** WireGuard runs in userspace via a small bundled helper
+(`wireproxy`) — no root, no Docker privileges, works anywhere. The Docker image
+fetches it automatically; locally run `bun run vpn:helpers` (or set
+`PHOSPHARR_WIREPROXY`).
 
-For more regions, copy the `gluetun-jp` block in `docker-compose.yml` to
-`gluetun-uk` (with that region's creds) and add `http://gluetun-uk:8888` as another
-endpoint. A source's stream pull, channel-list sync, *and* EPG all egress through
-its chosen VPN; everything else stays on your normal connection.
+**OpenVPN** also works, but only on the Docker/Linux deploy: paste an `.ovpn`
+(plus username/password if it needs them) and Phospharr runs it in an isolated
+network namespace. It requires a TUN device + `NET_ADMIN`, which the shipped
+`docker-compose.yml` grants:
+
+```yaml
+services:
+  phospharr:
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+```
+
+(Delete those two lines if you only use WireGuard.)
 
 ### Adding to an existing stack
 
@@ -155,11 +165,11 @@ services:
 volumes: { phospharr-data: }
 ```
 
-Already run **Gluetun** (or any HTTP/SOCKS proxy)? Don't network Phospharr *through*
-it — just share a Docker network and add that proxy as an endpoint in
-**Settings → VPN** (e.g. `http://gluetun:8888` or `socks5://gluetun:1080`). The
-per-source dropdown does the rest, and you can register several proxies for
-several regions.
+Prefer to run the tunnel yourself (e.g. an existing **Gluetun** or any HTTP/SOCKS
+proxy)? Don't network Phospharr *through* it — just share a Docker network and add
+that proxy under **Settings → VPN ENDPOINTS** (e.g. `http://gluetun:8888` or
+`socks5://gluetun:1080`). The per-source dropdown lists it alongside the built-in
+tunnels, and you can register several for several regions.
 
 ## The Phospharr UI
 

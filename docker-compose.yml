@@ -1,16 +1,21 @@
 # Phospharr — self-hosted IPTV manager + viewer
 #
-#   Just Phospharr:            docker compose up -d            →  http://localhost:7777
-#   Phospharr + VPN (Gluetun): docker compose --profile vpn up -d
+#   docker compose up -d            →  http://localhost:7777
 #
 # Create your admin account in the UI on first run. Streaming + the HDHomeRun
 # tuner are locked behind an auto-generated key — grab the tuner URL from
 # Settings → Access & Tuner and paste it into Plex/Jellyfin.
 #
-# VPN: run one Gluetun per region (each exposes an HTTP proxy on :8888). Add each
-# as a named endpoint in Settings → VPN, then per Source pick which VPN it uses —
+# VPN (no Gluetun): Phospharr dials VPNs itself. In Settings → VPN TUNNELS, paste
+# a WireGuard .conf (or an OpenVPN .ovpn), then per Source pick which VPN it uses —
 # Source A → Japan, Source B → UK, etc. Phospharr runs OUTSIDE the tunnels and only
 # routes the sources you choose, so one instance mixes VPN and non-VPN providers.
+#
+#   • WireGuard works out of the box — no extra privileges.
+#   • OpenVPN needs a TUN device + NET_ADMIN; the `cap_add`/`devices` below grant
+#     them. They're ONLY required for OpenVPN — delete them if you only use WireGuard.
+# You can still point a Source at an EXTERNAL proxy (your own Gluetun, etc.) via
+# Settings → VPN ENDPOINTS if you prefer to run the tunnel yourself.
 
 services:
   phospharr:
@@ -26,40 +31,11 @@ services:
       BASE_URL: ${BASE_URL:-}         # public URL for HDHR discovery; blank = request host
       PHOSPHARR_STREAM_KEY: ${PHOSPHARR_STREAM_KEY:-}   # pin the tuner/stream key; blank = auto-generated
       TZ: ${TZ:-UTC}
-    networks: [phospharr]
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # Optional VPN via Gluetun. Starts with:  docker compose --profile vpn up -d
-  # Add this container's proxy in Settings → VPN as an endpoint:
-  #     http://gluetun-jp:8888
-  # Want a second region? Copy this whole block to `gluetun-uk` with that
-  # region's creds (SERVER_COUNTRIES: United Kingdom), and add it as another
-  # endpoint (http://gluetun-uk:8888). Repeat per region.
-  # ──────────────────────────────────────────────────────────────────────────
-  gluetun-jp:
-    image: qmcgaw/gluetun:latest
-    container_name: gluetun-jp
-    profiles: ["vpn"]
-    restart: unless-stopped
+    # ── OpenVPN tunnels only (WireGuard needs neither) ──
     cap_add:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-    environment:
-      # --- your VPN provider (see github.com/qdm12/gluetun-wiki) ---
-      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:-}
-      VPN_TYPE: ${VPN_TYPE:-wireguard}
-      # WireGuard:
-      WIREGUARD_PRIVATE_KEY: ${JP_WIREGUARD_PRIVATE_KEY:-}
-      WIREGUARD_ADDRESSES: ${JP_WIREGUARD_ADDRESSES:-}
-      # OpenVPN (if VPN_TYPE=openvpn):
-      OPENVPN_USER: ${OPENVPN_USER:-}
-      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
-      SERVER_COUNTRIES: ${JP_SERVER_COUNTRIES:-Japan}
-      # Built-in HTTP proxy Phospharr routes chosen sources through:
-      HTTPPROXY: "on"
-      HTTPPROXY_LISTENING_ADDRESS: ":8888"
-      TZ: ${TZ:-UTC}
     networks: [phospharr]
 
 networks:

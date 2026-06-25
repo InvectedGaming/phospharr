@@ -2,7 +2,10 @@
 FROM oven/bun:1-alpine
 
 # ffmpeg powers the browser audio-transcode fallback (AC-3/HEVC channels).
-RUN apk add --no-cache ffmpeg
+# The rest are the native-VPN helpers (no Gluetun): openvpn + iproute2 + iptables
+# + microsocks run OpenVPN tunnels in isolated namespaces; wireproxy (fetched
+# below) runs WireGuard tunnels in userspace.
+RUN apk add --no-cache ffmpeg openvpn iproute2 iptables microsocks ca-certificates
 
 WORKDIR /app
 
@@ -12,6 +15,11 @@ RUN bun install --frozen-lockfile --production
 
 # App source (drizzle/ migrations included; .dockerignore keeps the dev DB out).
 COPY . .
+
+# Fetch the wireproxy helper into ./bin for the build platform (best-effort — if
+# GitHub is unreachable at build time, set PHOSPHARR_WIREPROXY or run the script
+# at runtime; WireGuard simply won't start until it's present).
+RUN bun run vpn:helpers || echo "[build] wireproxy not fetched — set PHOSPHARR_WIREPROXY or run 'bun run vpn:helpers'"
 
 # DB + DVR live on a mounted volume so they survive container rebuilds.
 ENV DATABASE_URL=/data/phospharr.db \

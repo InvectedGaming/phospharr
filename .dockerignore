@@ -12,6 +12,8 @@ phospharr.db*
 # Local env + recordings + editor/agent cruft
 .env
 dvr/
+.vpn/
+bin/
 .claude/
 *.log
 npm-debug.log*

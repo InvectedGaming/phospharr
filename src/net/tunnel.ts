@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdirSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import { sqlite } from "../db/index.ts";
 import type { Vpn } from "../db/schema.ts";
@@ -27,6 +27,7 @@ type Status = "starting" | "up" | "down" | "error";
 type Entry = {
   id: number;
   port: number;
+  socksHost: string; // 127.0.0.1 for WireGuard; the namespace IP for OpenVPN
   proc: ReturnType<typeof Bun.spawn> | null;
   status: Status;
   error: string | null;
@@ -36,6 +37,13 @@ type Entry = {
 
 const PORT_BASE = 41080;
 const tunnels = new Map<number, Entry>();
+
+// Per-OpenVPN-tunnel /30 (host .1, namespace .2) carved from 10.200.0.0/16.
+function ovpnNet(idx: number): { hostIp: string; nsIp: string; cidr: string } {
+  const a = Math.floor(idx / 64) % 256;
+  const b = (idx % 64) * 4;
+  return { hostIp: `10.200.${a}.${b + 1}`, nsIp: `10.200.${a}.${b + 2}`, cidr: `10.200.${a}.${b}/30` };
+}
 
 // ── helper-binary resolution ───────────────────────────────────────────────
 function resolveBin(name: string, envVar: string): string | null {
@@ -55,9 +63,9 @@ function pickPort(id: number): number {
   return p;
 }
 
-function portIsOpen(port: number, timeoutMs = 500): Promise<boolean> {
+function portIsOpen(host: string, port: number, timeoutMs = 500): Promise<boolean> {
   return new Promise((resolve) => {
-    const sock = createConnection({ host: "127.0.0.1", port });
+    const sock = createConnection({ host, port });
     const done = (ok: boolean) => { try { sock.destroy(); } catch { /* noop */ } resolve(ok); };
     sock.setTimeout(timeoutMs);
     sock.once("connect", () => done(true));
@@ -95,16 +103,37 @@ function getVpn(id: number): Vpn | null {
 
 async function spawnTunnel(vpn: Vpn, entry: Entry): Promise<void> {
   let cmd: string[];
+  let readyMs = 12_000;
   if (vpn.kind === "wireguard") {
     const wpConfig = buildWireproxyConfig(vpn.config, entry.port); // validates the .conf first
     const bin = resolveBin("wireproxy", "PHOSPHARR_WIREPROXY");
     if (!bin) throw new Error("wireproxy helper not found — run `bun run vpn:helpers` or set PHOSPHARR_WIREPROXY.");
     const cfgPath = writeRuntimeConfig(vpn.id, "wireproxy.conf", wpConfig);
+    entry.socksHost = "127.0.0.1";
     cmd = [bin, "-c", cfgPath];
   } else {
-    // OpenVPN runs in its own follow-up (it needs a TUN device + NET_ADMIN and a
-    // tun2socks bridge to become a per-source SOCKS proxy). Fail loud, not silent.
-    throw new Error("OpenVPN tunnels are not enabled yet — WireGuard is supported today.");
+    // OpenVPN: an isolated network namespace + microsocks, via ovpn-tunnel.sh.
+    // Linux/Docker only — it needs a TUN device and NET_ADMIN.
+    if (process.platform !== "linux") {
+      throw new Error("OpenVPN tunnels need Linux — run the Docker image (WireGuard works everywhere).");
+    }
+    if (!existsSync("/dev/net/tun")) {
+      throw new Error("/dev/net/tun missing — add `devices: [/dev/net/tun:/dev/net/tun]` + `cap_add: [NET_ADMIN]`.");
+    }
+    for (const b of ["openvpn", "microsocks", "ip"]) {
+      if (!resolveBin(b, `PHOSPHARR_${b.toUpperCase()}`)) {
+        throw new Error(`'${b}' not found — the Docker image bundles it (and needs cap_add: NET_ADMIN).`);
+      }
+    }
+    if (!/\bremote\s+\S/i.test(vpn.config) && !/^\s*client\b/im.test(vpn.config)) {
+      throw new Error("Not an OpenVPN config (no `remote`/`client` line).");
+    }
+    const confPath = writeRuntimeConfig(vpn.id, "ovpn.conf", vpn.config);
+    const credsPath = writeRuntimeConfig(vpn.id, "ovpn.creds", `${vpn.username ?? ""}\n${vpn.password ?? ""}\n`);
+    const net = ovpnNet(entry.port - PORT_BASE);
+    entry.socksHost = net.nsIp;
+    cmd = ["sh", `${projectRoot}/scripts/ovpn-tunnel.sh`, `phospharr-ovpn-${vpn.id}`, confPath, credsPath, net.hostIp, net.nsIp, net.cidr, String(entry.port)];
+    readyMs = 95_000; // OpenVPN handshakes are slow; the script opens SOCKS only once up
   }
 
   const proc = Bun.spawn(cmd, { stdout: "ignore", stderr: "pipe" });
@@ -135,14 +164,15 @@ async function spawnTunnel(vpn: Vpn, entry: Entry): Promise<void> {
   });
 
   // Readiness: the SOCKS port accepting connections means the tunnel is serving.
-  for (let i = 0; i < 40; i++) {
+  const deadline = Date.now() + readyMs;
+  while (Date.now() < deadline) {
     if (entry.proc !== proc || entry.stopping) return;
-    if (await portIsOpen(entry.port)) { entry.status = "up"; entry.error = null; entry.restarts = 0; return; }
-    await Bun.sleep(250);
+    if (await portIsOpen(entry.socksHost, entry.port)) { entry.status = "up"; entry.error = null; entry.restarts = 0; return; }
+    await Bun.sleep(400);
   }
-  // Loop finished without coming up (the async exited/stderr handlers may have
-  // changed status to error/down in the meantime — cast past the narrowing).
-  if ((entry.status as string) !== "up") entry.error = entry.error ?? "tunnel did not come up within 10s";
+  // Didn't come up in time (the async exited/stderr handlers may have changed
+  // status to error/down in the meantime — cast past the narrowing).
+  if ((entry.status as string) !== "up") entry.error = entry.error ?? `tunnel did not come up within ${Math.round(readyMs / 1000)}s`;
 }
 
 export async function startVpn(id: number): Promise<void> {
@@ -151,7 +181,7 @@ export async function startVpn(id: number): Promise<void> {
   let entry = tunnels.get(id);
   if (entry?.proc) return; // already running
   if (!entry) {
-    entry = { id, port: pickPort(id), proc: null, status: "down", error: null, restarts: 0, stopping: false };
+    entry = { id, port: pickPort(id), socksHost: "127.0.0.1", proc: null, status: "down", error: null, restarts: 0, stopping: false };
     tunnels.set(id, entry);
   }
   entry.stopping = false;
@@ -175,7 +205,7 @@ export function stopVpn(id: number): void {
 /** The live SOCKS URL for a VPN, or undefined if it isn't up. */
 export function vpnSocksUrl(id: number): string | undefined {
   const entry = tunnels.get(id);
-  return entry && entry.status === "up" ? `socks5://127.0.0.1:${entry.port}` : undefined;
+  return entry && entry.status === "up" ? `socks5://${entry.socksHost}:${entry.port}` : undefined;
 }
 
 /** Status snapshot for the API (never includes config/keys). */
