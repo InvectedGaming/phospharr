@@ -2749,6 +2749,15 @@ let numberEntryTimer = null;
 let sleepTimerId = null;
 let sleepTimerEnd = 0;           // epoch ms the sleep timer fires (0 = off)
 let sleepBadgeInterval = null;
+// Timeshift (pause / rewind) — only meaningful while the fullscreen player is open.
+let tsBehindMs = 0;      // how far behind the live edge we're playing (0 = live)
+let tsPaused = false;
+let tsPauseAt = 0;       // wall-clock when paused, so behind grows on resume
+let tsTranscode = false; // this channel fell back to transcode → can't timeshift
+let tsTuneWall = 0;      // when the current channel tuned in (caps rewind depth)
+let tsWindowSec = 0;     // server-reported buffer depth available
+let tsTick = null;       // 1s UI updater while watching
+let tsPoll = 0;          // throttle for the window-depth poll
 
 // Jump back to the previously-watched channel (TV "Last" button).
 function zapLast() {
@@ -2826,6 +2835,85 @@ function destroyMpegts() {
   }
 }
 
+// ── Timeshift: pause / rewind / go-live ──
+function timeshiftAvailable() { return !!(state.settings && state.settings["features.timeshift"]); }
+function timeshiftActive() { return timeshiftAvailable() && !tsTranscode && !!playerEl; }
+function playerVideo() { return morphState && morphState.video; }
+// Reset per-channel timeshift state on a fresh tune (cold open or surf).
+function resetTimeshift() { tsBehindMs = 0; tsPaused = false; tsPauseAt = 0; tsTranscode = false; tsTuneWall = Date.now(); tsWindowSec = 0; tsPoll = 0; }
+// Furthest we can rewind: limited by both the server buffer and how long we've
+// been on this channel (the buffer only records from tune-in).
+function maxBehindSec() { return Math.max(0, Math.min(tsWindowSec || 0, Math.floor((Date.now() - tsTuneWall) / 1000))); }
+function behindSecNow() { let b = tsBehindMs / 1000; if (tsPaused && tsPauseAt) b += (Date.now() - tsPauseAt) / 1000; return Math.max(0, b); }
+
+// Re-tune the same channel at a new rewind offset (used by rewind / forward / live).
+function tsReconnect(behindSec) {
+  const v = playerVideo();
+  if (!v) return;
+  tsBehindMs = Math.max(0, behindSec) * 1000;
+  tsPaused = false; tsPauseAt = 0;
+  attachMpegts(v, playerChannelId, tsTranscode, behindSec);
+  v.play().catch(() => {});
+  refreshTimeshiftBar();
+}
+function tsTogglePause() {
+  const v = playerVideo();
+  if (!v) return;
+  if (v.paused) {
+    if (tsPauseAt) { tsBehindMs += Date.now() - tsPauseAt; tsPauseAt = 0; } // we drifted behind while paused
+    tsPaused = false;
+    v.play().catch(() => {});
+  } else {
+    tsPaused = true; tsPauseAt = Date.now();
+    v.pause();
+  }
+  refreshTimeshiftBar();
+}
+function tsRewind(sec) { tsReconnect(Math.min(maxBehindSec(), behindSecNow() + sec)); }
+function tsForward(sec) { tsReconnect(Math.max(0, behindSecNow() - sec)); }
+function tsGoLive() { tsReconnect(0); }
+
+// 1s ticker while the player is open: refresh the position label, the play/pause
+// glyph, and (throttled) poll the server for how much buffer is available.
+function startTimeshiftTick() {
+  stopTimeshiftTick();
+  if (!timeshiftActive()) return;
+  tsTick = setInterval(() => {
+    refreshTimeshiftBar();
+    if (Date.now() - tsPoll > 4000) { tsPoll = Date.now(); pollTsWindow(); }
+  }, 1000);
+}
+function stopTimeshiftTick() { if (tsTick) { clearInterval(tsTick); tsTick = null; } }
+function pollTsWindow() {
+  const id = playerChannelId;
+  fetch("/api/timeshift/" + id).then((r) => r.ok ? r.json() : null).then((d) => { if (d && playerChannelId === id) tsWindowSec = d.windowSec || 0; }).catch(() => {});
+}
+function fmtBehind(sec) { const s = Math.round(sec); const m = Math.floor(s / 60); return "-" + m + ":" + String(s % 60).padStart(2, "0"); }
+// Update the bottom timeshift bar in place (no chrome rebuild) every tick.
+function refreshTimeshiftBar() {
+  const v = playerVideo();
+  const label = document.getElementById("aerTsLabel");
+  const playIcon = document.getElementById("aerTsPlay");
+  const live = document.getElementById("aerTsLive");
+  const fill = document.getElementById("aerTsFill");
+  const behind = behindSecNow();
+  const atLive = behind < 3 && !(v && v.paused);
+  if (label) label.textContent = atLive ? "LIVE" : fmtBehind(behind);
+  if (label) label.style.color = atLive ? "#ff7b72" : "#e6e9ec";
+  if (playIcon) playIcon.replaceChildren(icon(v && v.paused ? "play" : "pause", 18, 0.95));
+  if (live) live.style.opacity = atLive ? "0.45" : "1";
+  if (fill) { const maxB = Math.max(1, maxBehindSec()); fill.style.width = Math.max(0, Math.min(100, 100 - (behind / maxB) * 100)) + "%"; }
+}
+// Rebuild the chrome to reflect a state change that the in-place updater can't
+// (e.g. timeshift just became unavailable after a transcode fallback).
+function refreshPlayerChrome() {
+  if (!morphState || !playerChannelId) return;
+  const fresh = buildPlayerChrome(playerChannelId);
+  morphState.chrome.replaceWith(fresh);
+  morphState.chrome = fresh;
+  showPlayerChrome();
+}
+
 // ── Fullscreen chrome auto-hide ──
 // The title bar (name / now-playing / surf chevrons / close) fades away on
 // inactivity just like the native player controls, and reappears on any pointer,
@@ -2885,6 +2973,8 @@ function closePlayer() {
   disarmPlayerAutohide();
   cancelNumberEntry();
   clearSleepTimer();
+  stopTimeshiftTick();
+  resetTimeshift();
   lastPlayerChannelId = null;
   resetGuideHero(); // returning to the guide shows the hero again, then re-times
   if (!playerEl || !morphState) { if (playerEl) { playerEl.remove(); playerEl = null; } return; }
@@ -2950,7 +3040,7 @@ function setPlayerStatus(msg) {
   el.style.display = msg ? "block" : "none"; // hide the pill entirely when idle/playing
 }
 
-function attachMpegts(video, channelId, transcode) {
+function attachMpegts(video, channelId, transcode, behindSec) {
   if (!window.mpegts || !mpegts.isSupported()) {
     setPlayerStatus("This browser can't play live TS (no Media Source Extensions).");
     return;
@@ -2960,8 +3050,16 @@ function attachMpegts(video, channelId, transcode) {
   // transcode only when the browser rejects the native codec (e.g. AC-3).
   setPlayerStatus(transcode ? "Switching to compatible audio…" : "Connecting…");
   // Absolute URL — mpegts.js fetches inside a Web Worker, which has no page base
-  // to resolve a relative "/stream/…" path against.
-  const url = location.origin + (transcode ? "/watch/" : "/stream/") + channelId;
+  // to resolve a relative "/stream/…" path against. With timeshift on (and on the
+  // passthrough path), tune through /timeshift so the rolling buffer owns the read
+  // cursor — that's what makes pause + rewind work instead of dropping data.
+  const ts = !transcode && timeshiftAvailable();
+  const behind = behindSec != null ? Math.max(0, Math.round(behindSec)) : 0;
+  const url = transcode
+    ? location.origin + "/watch/" + channelId
+    : ts
+      ? location.origin + "/timeshift/" + channelId + "?behind=" + behind
+      : location.origin + "/stream/" + channelId;
   const player = mpegts.createPlayer(
     { type: "mpegts", isLive: true, url, withCredentials: true }, // send the session cookie to the gated /stream
     {
@@ -2980,6 +3078,8 @@ function attachMpegts(video, channelId, transcode) {
     const msg = (info && info.msg) || "";
     const codecIssue = String(detail).indexOf("MSE") >= 0 || /codec|unsupported|addSourceBuffer/i.test(msg);
     if (!transcode && codecIssue && playerChannelId === channelId) {
+      tsTranscode = true; // transcoded channels can't timeshift (buffer is passthrough) — hide its controls
+      refreshPlayerChrome();
       attachMpegts(video, channelId, true); // retry via the transcode endpoint
       return;
     }
@@ -3017,6 +3117,26 @@ function buildPlayerChrome(channelId) {
   const lastBtn = (lastPlayerChannelId != null && lastPlayerChannelId !== channelId && state.data.channelsById[lastPlayerChannelId])
     ? topBtn(icon("corner-up-left", 17, 0.85), zapLast, { title: "Last channel (Backspace)" }) : null;
 
+  // Timeshift transport bar (pause / rewind / forward / go-live) — only when the
+  // feature's on and this channel is on the passthrough path the buffer records.
+  let tsBar = null;
+  if (timeshiftAvailable() && !tsTranscode) {
+    const v = playerVideo();
+    const paused = !!(v && v.paused);
+    const behind = behindSecNow();
+    const atLive = behind < 3 && !paused;
+    const tBtn = (kids, onClick, title) => h("button", { onClick: (e) => { e.stopPropagation(); onClick(); }, title, style: "width:40px;height:40px;flex:none;border-radius:10px;border:1px solid rgba(255,255,255,0.14);background:rgba(8,10,12,0.6);display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:auto" }, kids);
+    tsBar = h("div", { onClick: (e) => e.stopPropagation(), style: "position:absolute;bottom:78px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:9px 14px;background:rgba(10,12,15,0.74);border:1px solid rgba(255,255,255,0.12);border-radius:16px;backdrop-filter:blur(12px);box-shadow:0 12px 34px rgba(0,0,0,0.5);pointer-events:auto" },
+      tBtn(icon("rewind", 17, 0.9), () => tsRewind(30), "Rewind 30s (←)"),
+      tBtn(h("span", { id: "aerTsPlay", style: "display:flex" }, icon(paused ? "play" : "pause", 18, 0.95)), tsTogglePause, "Pause / play (Space)"),
+      tBtn(icon("fast-forward", 17, 0.9), () => tsForward(30), "Forward 30s (→)"),
+      h("div", { style: "width:120px;height:4px;border-radius:2px;background:rgba(255,255,255,0.18);overflow:hidden" },
+        h("div", { id: "aerTsFill", style: { height: "100%", width: (atLive ? 100 : 50) + "%", background: AC } })),
+      h("span", { id: "aerTsLabel", style: "min-width:46px;font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;color:" + (atLive ? "#ff7b72" : "#e6e9ec") }, atLive ? "LIVE" : fmtBehind(behind)),
+      h("button", { id: "aerTsLive", onClick: (e) => { e.stopPropagation(); tsGoLive(); }, title: "Jump to live", style: "display:flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:9px;border:1px solid rgba(255,93,82,0.4);background:rgba(255,93,82,0.14);color:#ff9d95;font-size:12px;font-weight:700;letter-spacing:.04em;cursor:pointer;pointer-events:auto;opacity:" + (atLive ? "0.45" : "1") },
+        h("span", { style: "width:6px;height:6px;border-radius:50%;background:#ff5d52;box-shadow:0 0 6px #ff5d52" }), "LIVE"));
+  }
+
   return h("div", { style: "position:fixed;inset:0;z-index:3;pointer-events:none;opacity:0;transition:opacity .26s ease .1s" },
     h("div", { style: "position:absolute;top:0;left:0;right:0;padding:34px 22px 18px;display:flex;align-items:flex-start;gap:14px;background:linear-gradient(180deg,rgba(0,0,0,0.78),transparent)" },
       h("div", { style: "display:flex;align-items:center;gap:14px;pointer-events:auto;min-width:0;max-width:60%" },
@@ -3039,6 +3159,7 @@ function buildPlayerChrome(channelId) {
         topBtn(icon("chevron-up", 18, 0.85), surf(-1), { title: "Channel up" }),
         topBtn(icon("chevron-down", 18, 0.85), surf(1), { title: "Channel down" }),
         topBtn(icon("x", 18, 0.9), closePlayer, { title: "Close (Esc)" }))),
+    tsBar,
     h("div", { id: "aerPlayerStatus", style: "position:absolute;bottom:30px;left:50%;transform:translateX(-50%);font-size:13px;color:#cfd3d8;background:rgba(8,10,12,0.7);padding:8px 16px;border-radius:10px;backdrop-filter:blur(6px)" }, "Connecting…"));
 }
 
@@ -3065,6 +3186,7 @@ function openPlayer(channelId) {
     if (channelId === playerChannelId) return;
     cancelNumberEntry();
     lastPlayerChannelId = playerChannelId; // remember where we came from for "Last"
+    resetTimeshift(); // new channel → fresh buffer / live edge
     destroyMpegts();
     playerChannelId = channelId;
     attachMpegts(morphState.video, channelId);
@@ -3073,6 +3195,7 @@ function openPlayer(channelId) {
     morphState.chrome = fresh;
     void fresh.offsetWidth;
     showPlayerChrome(); // reveal the new chrome and restart the idle countdown
+    startTimeshiftTick();
     return;
   }
 
@@ -3082,6 +3205,7 @@ function openPlayer(channelId) {
   const fromRect = warm && warm.video.isConnected ? warm.video.getBoundingClientRect() : centerRect();
   destroyAllTiles(); // stop the other background tiles (warm is already out of the registry)
   lastPlayerChannelId = null; // fresh cold open — no in-session "last" yet
+  resetTimeshift();
   playerChannelId = channelId;
 
   video.controls = false; // enabled only after the expand settles (avoids a control-bar pop mid-grow)
@@ -3112,14 +3236,19 @@ function openPlayer(channelId) {
     void morph.offsetWidth; // commit the start frame
   }
 
-  if (warm) {
-    // Already decoding — adopt it, unmute, play. No reconnect/rebuffer.
+  if (warm && !timeshiftAvailable()) {
+    // Already decoding live — adopt it, unmute, play. No reconnect/rebuffer.
     mpegtsPlayer = warm.player;
     video.play().catch(() => {});
     setPlayerStatus("");
   } else {
+    // With timeshift on we must tune through /timeshift (the warm tile is a raw
+    // live /stream that can't pause/rewind), so trade the warm decoder for buffer
+    // control. Off — just connect fresh.
+    if (warm) { try { warm.player.destroy(); } catch { /* noop */ } }
     attachMpegts(video, channelId);
   }
+  startTimeshiftTick();
 
   // PHASE 1 — fade the whole guide away, revealing the small preview behind it.
   if (root) { void root.offsetWidth; root.style.opacity = "0"; }
@@ -3144,6 +3273,9 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { if (numberEntry) { cancelNumberEntry(); return; } closePlayer(); }
   else if (e.key === "ArrowUp") openPlayer(nextChannel(playerChannelId, -1));
   else if (e.key === "ArrowDown") openPlayer(nextChannel(playerChannelId, 1));
+  else if (e.key === " " && timeshiftActive()) { e.preventDefault(); tsTogglePause(); } // pause / resume
+  else if (e.key === "ArrowLeft" && timeshiftActive()) { e.preventDefault(); tsRewind(30); } // rewind 30s
+  else if (e.key === "ArrowRight" && timeshiftActive()) { e.preventDefault(); tsForward(30); } // forward 30s
   else if (e.key === "Backspace") { e.preventDefault(); zapLast(); } // jump to last channel
 });
 

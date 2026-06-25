@@ -12,6 +12,7 @@ import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
 import { applyRules } from "../rules/engine.ts";
 import { reconcileAutoHides, listCategories, listProviderCategories } from "../content/filter.ts";
 import { muxer } from "../proxy/muxer.ts";
+import { timeshift } from "../proxy/timeshift.ts";
 import { transcoder } from "../proxy/transcode.ts";
 import { pool } from "../scheduler/pool.ts";
 import * as hdhr from "../tuner/hdhr.ts";
@@ -310,6 +311,30 @@ app.get("/watch/:channelId", async (c) => {
   const auth = streamAuth(c);
   if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
   return serveStream(c, channelId, true, auth.user);
+});
+
+// Timeshift (pause / rewind live): same multiplexed TS, but replayed from a
+// rolling buffer starting `behind` seconds in the past, then running into live.
+app.get("/timeshift/:channelId", async (c) => {
+  const channelId = Number(c.req.param("channelId"));
+  if (!Number.isFinite(channelId)) return c.text("bad channel id", 400);
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text(auth.status === 403 ? "off-network access is disabled" : "unauthorized", auth.status ?? 401);
+  if (!(await getSetting("features.timeshift"))) return c.text("timeshift disabled", 503);
+  if (auth.user && auth.user.role !== "admin") {
+    const ch = db.select({ category: channels.category }).from(channels).where(eq(channels.id, channelId)).get();
+    if (!channelVisible({ id: channelId, category: ch?.category ?? null }, auth.user.restrictions)) return c.text("forbidden", 403);
+  }
+  const behind = Math.max(0, Number(c.req.query("behind")) || 0);
+  const body = timeshift.open(channelId, behind);
+  trackSession(c, channelId, "passthrough");
+  return new Response(body, { headers: STREAM_HEADERS });
+});
+// How much rewind buffer is available (seconds behind live) for a channel.
+app.get("/api/timeshift/:channelId", (c) => {
+  const channelId = Number(c.req.param("channelId"));
+  if (!Number.isFinite(channelId)) return c.json({ error: "bad id" }, 400);
+  return c.json({ windowSec: timeshift.windowSec(channelId), enabled: !!cachedSetting("features.timeshift") });
 });
 
 // ─── Exports under /t/<stream key>/ so the key rides every derived URL. Point
