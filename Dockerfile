@@ -2,10 +2,19 @@
 FROM oven/bun:1-alpine
 
 # ffmpeg powers the browser audio-transcode fallback (AC-3/HEVC channels).
-# The rest are the native-VPN helpers (no Gluetun): openvpn + iproute2 + iptables
-# + microsocks run OpenVPN tunnels in isolated namespaces; wireproxy (fetched
-# below) runs WireGuard tunnels in userspace.
-RUN apk add --no-cache ffmpeg openvpn iproute2 iptables microsocks ca-certificates
+# The rest are the native-VPN helpers (no Gluetun): openvpn + iproute2 run OpenVPN
+# tunnels with per-source policy routing; microsocks is the per-tunnel SOCKS proxy;
+# wireproxy (fetched below) runs WireGuard tunnels in userspace.
+#
+# microsocks isn't in Alpine's stable repos (only edge/testing), so build the tiny
+# single-file proxy from source — reliable and avoids pulling edge into a stable base.
+RUN apk add --no-cache ffmpeg openvpn iproute2 iptables ca-certificates \
+ && apk add --no-cache --virtual .ms-build git make gcc musl-dev \
+ && git clone --depth 1 https://github.com/rofl0r/microsocks /tmp/microsocks \
+ && make -C /tmp/microsocks \
+ && install -m 0755 /tmp/microsocks/microsocks /usr/local/bin/microsocks \
+ && rm -rf /tmp/microsocks \
+ && apk del .ms-build
 
 WORKDIR /app
 
