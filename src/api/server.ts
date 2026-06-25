@@ -10,7 +10,7 @@ import { egress } from "../net/egress.ts";
 import { vpnSocksUrl } from "../net/tunnel.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
 import { applyRules } from "../rules/engine.ts";
-import { reconcileAutoHides, listCategories } from "../content/filter.ts";
+import { reconcileAutoHides, listCategories, listProviderCategories } from "../content/filter.ts";
 import { muxer } from "../proxy/muxer.ts";
 import { transcoder } from "../proxy/transcode.ts";
 import { pool } from "../scheduler/pool.ts";
@@ -481,6 +481,12 @@ app.post("/api/vpns/:id/restart", async (c) => {
 
 // Dry-run a source's credentials/URL WITHOUT saving — returns a preview (channel
 // count, categories, EPG presence) so the user can sanity-check before importing.
+// Categories a single provider contributes to (for per-source management).
+app.get("/api/providers/:id/categories", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  return c.json(await listProviderCategories(Number(c.req.param("id"))));
+});
+
 app.post("/api/providers/test", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;
   const b = (await c.req.json().catch(() => ({}))) as Record<string, string>;

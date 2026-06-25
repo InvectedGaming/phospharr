@@ -180,7 +180,8 @@ const state = {
   vpnNew: null, // add-VPN form draft, or null when closed
   vpnBusy: false,
   vpnError: null,
-  categories: null, // [{category,total,hidden,group}] from /api/categories
+  providerCats: {}, // providerId -> [{category,total,hidden,group}] (per-source category mgmt)
+  catOpenProvider: null, // which provider's category panel is open
   catSearch: "", // category manager filter
   catExpanded: {}, // which category groups are expanded
   ruleNew: null, // create-rule draft, or null
@@ -1365,8 +1366,8 @@ function settingsScreen() {
             statBlock(totalCh, "channels"),
             statBlock(withGuide, "with guide data"))),
         settingsSection("CONTENT",
-          settingRow({ title: "Hide adult content", desc: "Auto-hide adult / XXX channels (matched by their category) from the guide, tuner, and exports. On by default. Toggling re-applies instantly.", key: "content.hideAdult", type: "toggle" })),
-        settingsSection("CATEGORIES", categoriesRow()),
+          settingRow({ title: "Hide adult content", desc: "Auto-hide adult / XXX channels (matched by their category) from the guide, tuner, and exports. On by default. Toggling re-applies instantly.", key: "content.hideAdult", type: "toggle" }),
+          h("div", { style: "padding:11px 16px;font-size:12px;color:#7e858c;border-top:1px solid rgba(255,255,255,0.045)" }, "Manage categories per source in ", h("span", { style: "color:#9bd0ff;cursor:pointer", onClick: () => setScreen("sources") }, "Manage → Sources"), ".")),
         settingsSection("FEATURES",
           settingRow({ title: "HDHomeRun tuner", desc: "Expose Phospharr as a tuner for Plex / Emby / Jellyfin.", key: "features.hdhr", type: "toggle" }),
           settingRow({ title: "Browser audio transcode", desc: "Convert AC-3 → AAC so those channels play in-browser (needs ffmpeg).", key: "features.transcode", type: "toggle" }),
@@ -1824,7 +1825,7 @@ function setScreen(screen) {
   if (screen === "users") loadUsers();
   if (screen === "sources") loadSources();
   if (screen === "rules") loadRules();
-  if (screen === "settings") { loadVpns(); loadCategories(); } // VPN tunnels + category manager
+  if (screen === "settings") loadVpns(); // VPN tunnels section
 }
 // ===== users (admin) =====
 async function loadUsers() {
@@ -1922,28 +1923,34 @@ function vpnSelect(current, onPick) {
     h("span", { style: "position:absolute;right:9px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:8px;color:#9aa0a6" }, "▾"));
 }
 
-// ===== category manager =====
-async function loadCategories() {
-  try { const r = await fetch("/api/categories"); if (r.ok) { state.categories = await r.json(); render(); } } catch { /* ignore */ }
+// ===== category manager (per source) =====
+async function loadProviderCategories(id) {
+  try { const r = await fetch("/api/providers/" + id + "/categories"); if (r.ok) { state.providerCats[id] = await r.json(); render(); } } catch { /* ignore */ }
+}
+function openProviderCategories(id) {
+  if (state.catOpenProvider === id) { state.catOpenProvider = null; render(); return; }
+  state.catOpenProvider = id; state.catSearch = ""; state.catExpanded = {};
+  if (!state.providerCats[id]) loadProviderCategories(id);
+  render();
 }
 async function toggleCategories(catNames, hide) {
   const current = (state.settings && state.settings["content.hiddenCategories"]) || [];
   const set = new Set(catNames);
   const next = hide ? [...new Set([...current, ...catNames])] : current.filter((c) => !set.has(c));
   if (state.settings) state.settings["content.hiddenCategories"] = next; // optimistic
-  state.categories = (state.categories || []).map((c) => (set.has(c.category) ? { ...c, hidden: hide } : c));
+  const mark = (list) => (list || []).map((c) => (set.has(c.category) ? { ...c, hidden: hide } : c));
+  for (const k in state.providerCats) state.providerCats[k] = mark(state.providerCats[k]);
   render();
   await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ "content.hiddenCategories": next }) }).catch(() => {});
   loadView(); // the lineup changed
 }
 const toggleCategory = (cat, hide) => toggleCategories([cat], hide);
 
-// Category manager: 100+ raw categories rolled up into a handful of groups, each
+// Category manager: a source's categories rolled up into a handful of groups, each
 // with a one-click hide-all toggle; expand a group to fine-tune its categories.
-function categoriesRow() {
-  const cats = state.categories;
+function categoryManager(cats) {
   if (cats == null) return h("div", { style: "padding:14px 16px;font-size:12.5px;color:#7e858c" }, "Loading categories…");
-  if (!cats.length) return h("div", { style: "padding:14px 16px;font-size:12.5px;color:#7e858c" }, "No categories yet — add and sync a source first.");
+  if (!cats.length) return h("div", { style: "padding:14px 16px;font-size:12.5px;color:#7e858c" }, "No categories yet — sync this source first.");
   const q = (state.catSearch || "").toLowerCase();
   const searching = !!q;
   const filtered = q ? cats.filter((c) => c.category.toLowerCase().includes(q) || c.group.toLowerCase().includes(q)) : cats;
@@ -2231,12 +2238,14 @@ function sourcesScreen() {
 
   return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0" },
     header,
-    h("div", { class: "aer-stagger", style: "flex:1;overflow:auto;padding:0 26px 26px;display:flex;flex-direction:column;gap:11px" }, ...rows));
+    h("div", { "data-keep-scroll": "sources", class: "aer-stagger", style: "flex:1;overflow:auto;padding:0 26px 26px;display:flex;flex-direction:column;gap:11px" }, ...rows));
 }
 function providerCard(p) {
   const busy = state.providerBusyId === p.id;
   const slot = p.slots || { max: p.maxConnections, used: 0 };
   const off = !p.enabled;
+  const catOpen = state.catOpenProvider === p.id;
+  const hiddenHere = (state.providerCats[p.id] || []).filter((c) => c.hidden).length;
   const pill = (label, color) => h("span", { style: "font-size:11px;font-weight:600;color:" + color + ";padding:2px 9px;border-radius:6px;background:" + color.replace("rgb", "rgba").replace(")", ",0.12)") }, label);
   const stat = (label, value) => h("div", { style: "display:flex;flex-direction:column;gap:1px" },
     h("div", { style: "font-size:16px;font-weight:700;color:#eef0f2;font-family:'JetBrains Mono',monospace" }, value),
@@ -2257,15 +2266,22 @@ function providerCard(p) {
         stat("Channels", String(p.channels ?? 0)),
         stat("Slots", slot.used + "/" + slot.max),
         stat("Synced", p.lastSyncedAt ? relTime(p.lastSyncedAt) : "never"))),
-    h("div", { style: "display:flex;gap:8px;align-items:center;border-top:1px solid rgba(255,255,255,0.06);padding-top:13px" },
+    h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid rgba(255,255,255,0.06);padding-top:13px" },
       action(busy ? "Syncing…" : "Sync now", () => syncProviderAction(p.id), { busy }),
       action(p.enabled ? "Disable" : "Enable", () => toggleProvider(p)),
+      h("button", { onClick: () => openProviderCategories(p.id), style: "height:34px;padding:0 13px;border-radius:8px;border:1px solid " + (catOpen ? "rgba(84,182,255,0.4)" : "rgba(255,255,255,0.12)") + ";background:" + (catOpen ? "rgba(84,182,255,0.12)" : "rgba(255,255,255,0.04)") + ";color:" + (catOpen ? "#9bd0ff" : "#dfe3e7") + ";font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px" },
+        icon("layers", 14, catOpen ? 0.75 : 0.6), "Categories"),
       // Per-source VPN endpoint picker — Direct, or any configured VPN.
       h("div", { style: "display:flex;align-items:center;gap:7px" },
         h("img", { src: ICON("shield-check"), style: "width:15px;height:15px;flex:none;filter:brightness(0) invert(" + (p.proxyUrl ? ".75" : ".5") + ")" }),
         vpnSelect(p.proxyUrl, (url) => setProviderProxy(p, url))),
       h("div", { style: "flex:1" }),
-      action("Remove", () => deleteProvider(p), { danger: true })));
+      action("Remove", () => deleteProvider(p), { danger: true })),
+    catOpen ? h("div", { style: "border-top:1px solid rgba(255,255,255,0.06);margin-top:2px" },
+      h("div", { style: "padding:11px 2px 6px;display:flex;align-items:center;justify-content:space-between" },
+        h("div", { style: "font-size:12.5px;color:#9aa0a6" }, hiddenHere + " hidden here · hide whole groups, expand to fine-tune"),
+        action("Done", () => { state.catOpenProvider = null; render(); })),
+      categoryManager(state.providerCats[p.id])) : null);
 }
 function relTime(ts) {
   const diff = Date.now() - new Date(ts).getTime();

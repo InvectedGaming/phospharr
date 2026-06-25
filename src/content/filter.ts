@@ -72,11 +72,26 @@ export function categoryGroup(category: string | null | undefined): string {
   return "Other";
 }
 
-/** Categories with channel counts, their group, + whether the admin hid each one. */
-export async function listCategories(): Promise<{ category: string; total: number; hidden: boolean; group: string }[]> {
+type CategoryRow = { category: string; total: number; hidden: boolean; group: string };
+
+async function decorate(rows: { category: string; total: number }[]): Promise<CategoryRow[]> {
   const hiddenCats = new Set((await getSetting("content.hiddenCategories")) ?? []);
-  const rows = sqlite.query(
-    "SELECT category, COUNT(*) AS total FROM channels WHERE category IS NOT NULL AND category != '' GROUP BY category ORDER BY total DESC",
-  ).all() as { category: string; total: number }[];
   return rows.map((r) => ({ category: r.category, total: r.total, hidden: hiddenCats.has(r.category), group: categoryGroup(r.category) }));
+}
+
+/** Categories with channel counts, their group, + whether the admin hid each one. */
+export async function listCategories(): Promise<CategoryRow[]> {
+  return decorate(sqlite.query(
+    "SELECT category, COUNT(*) AS total FROM channels WHERE category IS NOT NULL AND category != '' GROUP BY category ORDER BY total DESC",
+  ).all() as { category: string; total: number }[]);
+}
+
+/** Categories a single provider contributes channels to (via its streams). */
+export async function listProviderCategories(providerId: number): Promise<CategoryRow[]> {
+  return decorate(sqlite.query(
+    `SELECT c.category AS category, COUNT(DISTINCT c.id) AS total
+       FROM channels c JOIN streams s ON s.channel_id = c.id
+      WHERE s.provider_id = ? AND c.category IS NOT NULL AND c.category != ''
+      GROUP BY c.category ORDER BY total DESC`,
+  ).all(providerId) as { category: string; total: number }[]);
 }
