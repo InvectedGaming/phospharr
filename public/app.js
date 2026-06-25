@@ -180,8 +180,9 @@ const state = {
   vpnNew: null, // add-VPN form draft, or null when closed
   vpnBusy: false,
   vpnError: null,
-  categories: null, // [{category,total,hidden}] from /api/categories
+  categories: null, // [{category,total,hidden,group}] from /api/categories
   catSearch: "", // category manager filter
+  catExpanded: {}, // which category groups are expanded
   ruleNew: null, // create-rule draft, or null
   ruleBusy: false,
   ruleError: null,
@@ -1916,36 +1917,64 @@ function vpnSelect(current, onPick) {
 async function loadCategories() {
   try { const r = await fetch("/api/categories"); if (r.ok) { state.categories = await r.json(); render(); } } catch { /* ignore */ }
 }
-async function toggleCategory(cat, hide) {
+async function toggleCategories(catNames, hide) {
   const current = (state.settings && state.settings["content.hiddenCategories"]) || [];
-  const next = hide ? [...new Set([...current, cat])] : current.filter((c) => c !== cat);
+  const set = new Set(catNames);
+  const next = hide ? [...new Set([...current, ...catNames])] : current.filter((c) => !set.has(c));
   if (state.settings) state.settings["content.hiddenCategories"] = next; // optimistic
-  state.categories = (state.categories || []).map((c) => (c.category === cat ? { ...c, hidden: hide } : c));
+  state.categories = (state.categories || []).map((c) => (set.has(c.category) ? { ...c, hidden: hide } : c));
   render();
   await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ "content.hiddenCategories": next }) }).catch(() => {});
   loadView(); // the lineup changed
 }
+const toggleCategory = (cat, hide) => toggleCategories([cat], hide);
+
+// Category manager: 100+ raw categories rolled up into a handful of groups, each
+// with a one-click hide-all toggle; expand a group to fine-tune its categories.
 function categoriesRow() {
   const cats = state.categories;
   if (cats == null) return h("div", { style: "padding:14px 16px;font-size:12.5px;color:#7e858c" }, "Loading categories…");
   if (!cats.length) return h("div", { style: "padding:14px 16px;font-size:12.5px;color:#7e858c" }, "No categories yet — add and sync a source first.");
   const q = (state.catSearch || "").toLowerCase();
-  const shown = q ? cats.filter((c) => c.category.toLowerCase().includes(q)) : cats;
-  const hiddenCount = cats.filter((c) => c.hidden).length;
+  const searching = !!q;
+  const filtered = q ? cats.filter((c) => c.category.toLowerCase().includes(q) || c.group.toLowerCase().includes(q)) : cats;
+  const byGroup = new Map();
+  for (const c of filtered) { if (!byGroup.has(c.group)) byGroup.set(c.group, []); byGroup.get(c.group).push(c); }
+  const groups = [...byGroup.entries()].map(([name, members]) => ({
+    name, members,
+    ch: members.reduce((s, c) => s + c.total, 0),
+    hidden: members.filter((c) => c.hidden).length,
+  })).sort((a, b) => b.ch - a.ch);
+  const totalHidden = cats.filter((c) => c.hidden).length;
+
   const search = h("div", { style: "padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,0.05)" },
     h("input", { value: state.catSearch, placeholder: "Filter " + cats.length + " categories…",
       onInput: (e) => { state.catSearch = e.target.value; render(); },
       style: "flex:1;height:34px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:0 11px;color:#e6e9ec;font-size:13px;font-family:inherit;outline:none" }),
-    h("span", { style: "font-size:11.5px;color:#7e858c;white-space:nowrap" }, hiddenCount + " hidden"));
-  const rows = h("div", { style: "max-height:340px;overflow:auto" },
-    ...shown.slice(0, 400).map((c) => h("div", { style: "display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,0.04)" },
-      h("div", { style: "flex:1;min-width:0;display:flex;align-items:center;gap:9px" },
-        h("span", { style: "font-size:13.5px;color:" + (c.hidden ? "#7e858c" : "#e6e9ec") + (c.hidden ? ";text-decoration:line-through" : "") + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, c.category),
-        h("span", { style: "flex:none;font-size:11px;color:#6b7178;font-family:'JetBrains Mono',monospace" }, c.total)),
-      h("span", { style: "font-size:11px;color:" + (c.hidden ? "#ff8d85" : "#7fdca0") }, c.hidden ? "Hidden" : "Shown"),
-      toggleSwitch(c.hidden, () => toggleCategory(c.category, !c.hidden), false))),
-    shown.length > 400 ? h("div", { style: "padding:10px 16px;font-size:11.5px;color:#6b7178" }, "Showing first 400 — filter to narrow.") : null);
-  return h("div", null, search, rows);
+    h("span", { style: "font-size:11.5px;color:#7e858c;white-space:nowrap" }, totalHidden + " hidden"));
+
+  const catRow = (c, indent) => h("div", { style: "display:flex;align-items:center;gap:12px;padding:9px 16px 9px " + (indent ? "44px" : "16px") + ";border-bottom:1px solid rgba(255,255,255,0.035)" },
+    h("div", { style: "flex:1;min-width:0;display:flex;align-items:center;gap:9px" },
+      h("span", { style: "font-size:13px;color:" + (c.hidden ? "#7e858c" : "#dfe3e7") + (c.hidden ? ";text-decoration:line-through" : "") + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, c.category),
+      h("span", { style: "flex:none;font-size:11px;color:#6b7178;font-family:'JetBrains Mono',monospace" }, c.total)),
+    toggleSwitch(c.hidden, () => toggleCategory(c.category, !c.hidden), false));
+
+  const groupRows = groups.map((g) => {
+    const expanded = searching || !!(state.catExpanded && state.catExpanded[g.name]);
+    const allHidden = g.hidden === g.members.length;
+    const someHidden = g.hidden > 0;
+    const header = h("div", { onClick: () => { if (!searching) { state.catExpanded = { ...state.catExpanded, [g.name]: !expanded }; render(); } }, style: "display:flex;align-items:center;gap:11px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:" + (searching ? "default" : "pointer") + ";background:rgba(255,255,255,0.015)" },
+      h("span", { style: "flex:none;width:14px;color:#7e858c;font-size:10px;transition:transform .15s;transform:rotate(" + (expanded ? "90" : "0") + "deg)" }, "▶"),
+      h("div", { style: "flex:1;min-width:0" },
+        h("div", { style: "font-size:14px;font-weight:600;color:" + (allHidden ? "#7e858c" : "#e6e9ec") }, g.name),
+        h("div", { style: "font-size:11.5px;color:#7e858c;margin-top:1px" }, g.members.length + " categor" + (g.members.length === 1 ? "y" : "ies") + " · " + g.ch.toLocaleString() + " channels" + (someHidden ? " · " + g.hidden + " hidden" : ""))),
+      someHidden && !allHidden ? h("span", { style: "font-size:10px;font-weight:600;color:#f4b740;border:1px solid rgba(244,183,64,0.4);border-radius:5px;padding:1px 6px" }, "PARTIAL") : null,
+      h("div", { onClick: (e) => e.stopPropagation() },
+        toggleSwitch(allHidden, () => toggleCategories(g.members.map((m) => m.category), !allHidden), false)));
+    return h("div", null, header, ...(expanded ? g.members.map((c) => catRow(c, true)) : []));
+  });
+
+  return h("div", { style: "max-height:440px;overflow:auto" }, search, ...groupRows);
 }
 
 // ===== native VPN tunnels =====

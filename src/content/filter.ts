@@ -48,11 +48,35 @@ export async function reconcileAutoHides(): Promise<number> {
   return changed;
 }
 
-/** Categories with channel counts + whether the admin has hidden the whole group. */
-export async function listCategories(): Promise<{ category: string; total: number; hidden: boolean }[]> {
+/**
+ * Roll a raw provider category up into a high-level group so 100+ categories
+ * collapse into a handful of manageable buckets (Sports, News, 24/7, …). Keyword
+ * heuristic, ordered most-specific-first; anything unmatched lands in "Other".
+ */
+export function categoryGroup(category: string | null | undefined): string {
+  const c = (category ?? "").toLowerCase();
+  if (isAdult(category, null)) return "Adult";
+  if (/24\s*[/-]?\s*7/.test(c)) return "24/7 & VOD";
+  if (/\b(ppv|pay.?per.?view|event)/.test(c)) return "PPV & Events";
+  if (/sport|espn|\bnfl\b|\bnba\b|\bwnba\b|\bmlb\b|\bmilb\b|\bnhl\b|\bufc\b|\bf1\b|\bmma\b|\bepl\b|ncaa|soccer|football|fight|wwe|tennis|golf|racing|nascar|motogp|cricket|rugby|boxing|premier\s*league|la\s*liga|bundesliga|serie\s*a|world\s*cup|olympic|big\s*10|big\s*ten|\bsec\b|\bacc\b/.test(c)) return "Sports";
+  if (/\bnews\b|cnbc|bloomberg|weather/.test(c)) return "News & Weather";
+  if (/movie|cinema|\bfilm|\bvod\b/.test(c)) return "Movies";
+  if (/kids|cartoon|children|disney|\bnick\b|junior|baby/.test(c)) return "Kids";
+  if (/music|\bmtv\b|concert|radio/.test(c)) return "Music & Radio";
+  if (/document|history|discovery|nat\s*geo|geographic|science|\banimal/.test(c)) return "Documentary";
+  if (/religio|church|islam|christ|gospel|cathol|quran|bible|spiritual|faith|hindu/.test(c)) return "Religious";
+  if (/shop|teleshop|qvc/.test(c)) return "Shopping";
+  if (/local|regional|broadcast|network affiliates/.test(c)) return "Local";
+  if (/\b(latin|latino|spanish|espanol|telemundo|univision|galavision|unimas|arabic|asia|ex.?yu|balkan|portug|brasil|italia|deutsch|german|french|francais|turk|hindi|punjabi|desi|polski|polska|romania|greek|albania|kurd|farsi|afghan|ireland|eire)\b/.test(c)) return "International";
+  if (/drama|series|\bshows?\b|entertain|reality|comedy|lifestyle|cooking|travel|\btv\b/.test(c)) return "Entertainment";
+  return "Other";
+}
+
+/** Categories with channel counts, their group, + whether the admin hid each one. */
+export async function listCategories(): Promise<{ category: string; total: number; hidden: boolean; group: string }[]> {
   const hiddenCats = new Set((await getSetting("content.hiddenCategories")) ?? []);
   const rows = sqlite.query(
     "SELECT category, COUNT(*) AS total FROM channels WHERE category IS NOT NULL AND category != '' GROUP BY category ORDER BY total DESC",
   ).all() as { category: string; total: number }[];
-  return rows.map((r) => ({ category: r.category, total: r.total, hidden: hiddenCats.has(r.category) }));
+  return rows.map((r) => ({ category: r.category, total: r.total, hidden: hiddenCats.has(r.category), group: categoryGroup(r.category) }));
 }
