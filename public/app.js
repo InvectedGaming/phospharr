@@ -180,6 +180,8 @@ const state = {
   vpnNew: null, // add-VPN form draft, or null when closed
   vpnBusy: false,
   vpnError: null,
+  categories: null, // [{category,total,hidden}] from /api/categories
+  catSearch: "", // category manager filter
   ruleNew: null, // create-rule draft, or null
   ruleBusy: false,
   ruleError: null,
@@ -1363,6 +1365,7 @@ function settingsScreen() {
             statBlock(withGuide, "with guide data"))),
         settingsSection("CONTENT",
           settingRow({ title: "Hide adult content", desc: "Auto-hide adult / XXX channels (matched by their category) from the guide, tuner, and exports. On by default. Toggling re-applies instantly.", key: "content.hideAdult", type: "toggle" })),
+        settingsSection("CATEGORIES", categoriesRow()),
         settingsSection("FEATURES",
           settingRow({ title: "HDHomeRun tuner", desc: "Expose Phospharr as a tuner for Plex / Emby / Jellyfin.", key: "features.hdhr", type: "toggle" }),
           settingRow({ title: "Browser audio transcode", desc: "Convert AC-3 → AAC so those channels play in-browser (needs ffmpeg).", key: "features.transcode", type: "toggle" }),
@@ -1811,7 +1814,7 @@ function setScreen(screen) {
   if (screen === "users") loadUsers();
   if (screen === "sources") loadSources();
   if (screen === "rules") loadRules();
-  if (screen === "settings") loadVpns(); // the VPN tunnels section
+  if (screen === "settings") { loadVpns(); loadCategories(); } // VPN tunnels + category manager
 }
 // ===== users (admin) =====
 async function loadUsers() {
@@ -1907,6 +1910,42 @@ function vpnSelect(current, onPick) {
     h("option", { value: "__custom__", selected: !known, style: "background:#16181c;color:#dfe3e7" }, known ? "Custom…" : "Custom: " + cur));
   return h("div", { style: "position:relative;display:inline-flex", onClick: stop }, sel,
     h("span", { style: "position:absolute;right:9px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:8px;color:#9aa0a6" }, "▾"));
+}
+
+// ===== category manager =====
+async function loadCategories() {
+  try { const r = await fetch("/api/categories"); if (r.ok) { state.categories = await r.json(); render(); } } catch { /* ignore */ }
+}
+async function toggleCategory(cat, hide) {
+  const current = (state.settings && state.settings["content.hiddenCategories"]) || [];
+  const next = hide ? [...new Set([...current, cat])] : current.filter((c) => c !== cat);
+  if (state.settings) state.settings["content.hiddenCategories"] = next; // optimistic
+  state.categories = (state.categories || []).map((c) => (c.category === cat ? { ...c, hidden: hide } : c));
+  render();
+  await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ "content.hiddenCategories": next }) }).catch(() => {});
+  loadView(); // the lineup changed
+}
+function categoriesRow() {
+  const cats = state.categories;
+  if (cats == null) return h("div", { style: "padding:14px 16px;font-size:12.5px;color:#7e858c" }, "Loading categories…");
+  if (!cats.length) return h("div", { style: "padding:14px 16px;font-size:12.5px;color:#7e858c" }, "No categories yet — add and sync a source first.");
+  const q = (state.catSearch || "").toLowerCase();
+  const shown = q ? cats.filter((c) => c.category.toLowerCase().includes(q)) : cats;
+  const hiddenCount = cats.filter((c) => c.hidden).length;
+  const search = h("div", { style: "padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,0.05)" },
+    h("input", { value: state.catSearch, placeholder: "Filter " + cats.length + " categories…",
+      onInput: (e) => { state.catSearch = e.target.value; render(); },
+      style: "flex:1;height:34px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:0 11px;color:#e6e9ec;font-size:13px;font-family:inherit;outline:none" }),
+    h("span", { style: "font-size:11.5px;color:#7e858c;white-space:nowrap" }, hiddenCount + " hidden"));
+  const rows = h("div", { style: "max-height:340px;overflow:auto" },
+    ...shown.slice(0, 400).map((c) => h("div", { style: "display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,0.04)" },
+      h("div", { style: "flex:1;min-width:0;display:flex;align-items:center;gap:9px" },
+        h("span", { style: "font-size:13.5px;color:" + (c.hidden ? "#7e858c" : "#e6e9ec") + (c.hidden ? ";text-decoration:line-through" : "") + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, c.category),
+        h("span", { style: "flex:none;font-size:11px;color:#6b7178;font-family:'JetBrains Mono',monospace" }, c.total)),
+      h("span", { style: "font-size:11px;color:" + (c.hidden ? "#ff8d85" : "#7fdca0") }, c.hidden ? "Hidden" : "Shown"),
+      toggleSwitch(c.hidden, () => toggleCategory(c.category, !c.hidden), false))),
+    shown.length > 400 ? h("div", { style: "padding:10px 16px;font-size:11.5px;color:#6b7178" }, "Showing first 400 — filter to narrow.") : null);
+  return h("div", null, search, rows);
 }
 
 // ===== native VPN tunnels =====

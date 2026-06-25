@@ -33,6 +33,7 @@ export interface Settings {
   "access.allowExternal": boolean; // allow tuner/M3U/EPG/stream exports off the local network (with key)
   "access.trustProxy": boolean; // resolve client IP from X-Forwarded-For (set true behind a reverse proxy)
   "content.hideAdult": boolean; // auto-hide adult/XXX channels (on by default)
+  "content.hiddenCategories": string[]; // whole categories the admin chose to hide
 }
 
 const DEFAULTS: Settings = {
@@ -54,6 +55,7 @@ const DEFAULTS: Settings = {
   "access.allowExternal": false, // LAN-only by default
   "access.trustProxy": false,
   "content.hideAdult": true, // hide adult/XXX channels by default
+  "content.hiddenCategories": [],
 };
 
 // Env overrides (ops/Docker). Present env value wins over DB + default.

@@ -6,8 +6,7 @@ import { fetchXtream } from "./xtream.ts";
 import { egress } from "../net/egress.ts";
 import { matchCanonical, qualityScore } from "../canonical/matcher.ts";
 import { pool } from "../scheduler/pool.ts";
-import { getSetting } from "../settings.ts";
-import { applyAdultFilter } from "../content/adult.ts";
+import { reconcileAutoHides } from "../content/filter.ts";
 import type { RawEntry } from "./types.ts";
 
 /**
@@ -128,8 +127,7 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
   await db.update(providers).set({ lastSyncedAt: new Date() }).where(eq(providers.id, p.id));
   pool.setBudget(p.id, p.maxConnections);
   await assignChannelNumbers();
-  // Keep newly-synced adult channels hidden when the setting is on.
-  if (await getSetting("content.hideAdult")) await applyAdultFilter(true);
+  await reconcileAutoHides(); // re-hide newly-synced adult / hidden-category channels
 
   return {
     providerId,

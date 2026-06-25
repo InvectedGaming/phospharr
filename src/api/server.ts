@@ -10,7 +10,7 @@ import { egress } from "../net/egress.ts";
 import { vpnSocksUrl } from "../net/tunnel.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
 import { applyRules } from "../rules/engine.ts";
-import { applyAdultFilter } from "../content/adult.ts";
+import { reconcileAutoHides, listCategories } from "../content/filter.ts";
 import { muxer } from "../proxy/muxer.ts";
 import { transcoder } from "../proxy/transcode.ts";
 import { pool } from "../scheduler/pool.ts";
@@ -207,6 +207,12 @@ app.get("/api/analytics", (c) => ensureAdmin(c) ?? c.json(getAnalytics()));
 
 // ─── Settings + capabilities ───
 app.get("/api/capabilities", async (c) => c.json(await capabilities()));
+// Every category + channel count + whether the admin has hidden the whole group.
+app.get("/api/categories", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  return c.json(await listCategories());
+});
+
 app.get("/api/settings", async (c) => c.json({ settings: await getSettings(), envLocked: envLockedKeys() }));
 app.patch("/api/settings", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;
@@ -218,8 +224,8 @@ app.patch("/api/settings", async (c) => {
       /* skip unknown keys */
     }
   }
-  // Toggling adult-hiding re-applies it to the existing lineup immediately.
-  if ("content.hideAdult" in body) await applyAdultFilter(!!body["content.hideAdult"]);
+  // Content-filter changes (adult / hidden categories) re-apply to the lineup now.
+  if ("content.hideAdult" in body || "content.hiddenCategories" in body) await reconcileAutoHides();
   return c.json({ settings: await getSettings(), envLocked: envLockedKeys() });
 });
 
