@@ -137,7 +137,7 @@ const state = {
   detailVolume: 1, // preview volume (0–1), via the hover rocker
   detailHeight: loadDetailHeight(), // resizable hero height, persisted
   ambient: prefDefault("phospharr.ambient"), // focused video as guide backdrop (off by default on phones)
-  mosaicLayout: "2x2",
+  mosaicLayout: "stage", // 'stage' (controller) | '2x2' | '3x3'
   mosaicChannels: loadMosaicChannels(), // per-slot channel ids (user-chosen)
   mosaicPick: null, // slot index whose channel-picker is open (null = closed)
   mosaicPickQ: "", // picker search query
@@ -1282,8 +1282,9 @@ function copyText(t) { try { navigator.clipboard.writeText(t); } catch { /* igno
 function setMosaicAudio(id) { set({ activeTileId: id }); if (state.mosaicCombined) startCombined(); }
 
 function mosaicScreen() {
-  const n = state.mosaicLayout === "2x2" ? 4 : 9;
-  const cols = state.mosaicLayout === "2x2" ? 2 : 3;
+  const isStage = state.mosaicLayout === "stage";
+  const n = state.mosaicLayout === "3x3" ? 9 : 4;
+  const cols = state.mosaicLayout === "3x3" ? 3 : 2;
   const slots = mosaicSlotChannels(n);
   const liveN = slots.filter(Boolean).length;
   const seg = (on) => ({ display: "flex", alignItems: "center", height: "30px", padding: "0 14px", borderRadius: "8px", border: "none", background: on ? AC : "transparent", color: on ? "#06121c" : "#aeb4ba", fontSize: "13px", fontWeight: 600, cursor: "pointer", transition: "all .15s" });
@@ -1297,16 +1298,81 @@ function mosaicScreen() {
     h("div", { style: "flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:18px 24px 14px;gap:12px;flex-wrap:wrap" },
       h("div", null,
         h("div", { style: "font-size:23px;font-weight:700;letter-spacing:-.01em" }, "Mosaic"),
-        h("div", { style: "font-size:13px;color:#7e858c;margin-top:3px" }, `${liveN} live tiles · one audio-active · click a tile's ⤡ to swap channel`)),
+        h("div", { style: "font-size:13px;color:#7e858c;margin-top:3px" }, isStage
+          ? "Controller — one channel on the big screen with its sound; tap a thumbnail to switch."
+          : `${liveN} live tiles · one audio-active · click a tile's ⤡ to swap channel`)),
       h("div", { style: "display:flex;align-items:center;gap:10px" },
         combinedBtn,
         h("div", { style: "display:flex;padding:3px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:10px;gap:2px" },
+          h("button", { style: seg(isStage), onClick: () => set({ mosaicLayout: "stage" }) }, "Stage"),
           h("button", { style: seg(state.mosaicLayout === "2x2"), onClick: () => set({ mosaicLayout: "2x2" }) }, "2×2"),
           h("button", { style: seg(state.mosaicLayout === "3x3"), onClick: () => set({ mosaicLayout: "3x3" }) }, "3×3")))),
     combinedPanel(),
-    h("div", { style: "flex:1;min-height:0;padding:6px 24px 24px" },
-      h("div", { style: { display: "grid", gridTemplateColumns: `repeat(${cols},1fr)`, gap: "14px", width: "100%", height: "100%" } },
-        ...slots.map((c, i) => mosaicTile(c, i)))));
+    isStage
+      ? stageView(slots, isMobile())
+      : h("div", { style: "flex:1;min-height:0;padding:6px 24px 24px" },
+          h("div", { style: { display: "grid", gridTemplateColumns: `repeat(${cols},1fr)`, gap: "14px", width: "100%", height: "100%" } },
+            ...slots.map((c, i) => mosaicTile(c, i)))));
+}
+
+// ===== STAGE / CONTROLLER =====
+// One channel on a big "stage" with its audio; the rest are muted live
+// thumbnails. Clicking a thumbnail swaps it onto the stage — seamless, because
+// tileVideo reuses each channel's <video> by key across renders and just
+// resizes + flips muted. Only the staged channel is ever unmuted (one sound).
+function focusedStageIndex(slots) {
+  let fi = Number((state.activeTileId || "t0").slice(1));
+  if (!Number.isFinite(fi) || !slots[fi]) fi = slots.findIndex(Boolean);
+  return fi;
+}
+function focusStage(i) { setMosaicAudio("t" + i); } // sets the audio/focus tile (and re-syncs the cast if on)
+
+function stageView(slots, mob) {
+  const fi = focusedStageIndex(slots);
+  const focus = fi >= 0 ? slots[fi] : null;
+  const big = focus ? stageBig(focus, fi, mob) : h("div", { onClick: () => openMosaicPick(fi >= 0 ? fi : 0), style: "flex:none;width:100%;aspect-ratio:16/9;max-height:60vh;border-radius:16px;border:1px dashed rgba(255,255,255,0.16);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#8c9298;cursor:pointer;background:rgba(255,255,255,0.02)" },
+    h("div", { style: "width:54px;height:54px;border-radius:14px;border:1px solid rgba(255,255,255,0.14);display:flex;align-items:center;justify-content:center" }, icon("plus", 26, 0.6)),
+    h("div", { style: "font-size:14px;font-weight:600" }, "Pick a channel for the stage"));
+  return h("div", { style: "flex:1;min-height:0;display:flex;flex-direction:column;padding:" + (mob ? "8px 12px 16px" : "6px 24px 22px") + ";gap:14px;overflow:auto" },
+    big,
+    h("div", { style: "flex:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(" + (mob ? "120px" : "168px") + ",1fr));gap:12px" },
+      ...slots.map((c, i) => stageThumb(c, i, i === fi))));
+}
+
+function stageBig(c, fi, mob) {
+  const onNow = onNowProgram(c);
+  const ts = "text-shadow:0 2px 10px rgba(0,0,0,0.85)";
+  return h("div", { style: "flex:none;position:relative;width:100%;aspect-ratio:16/9;max-height:" + (mob ? "44vh" : "60vh") + ";border-radius:16px;overflow:hidden;background:" + c.grad + ";border:1px solid rgba(255,255,255,0.12);box-shadow:0 16px 44px rgba(0,0,0,0.5)" },
+    c.logoUrl ? h("img", { src: c.logoUrl, loading: "lazy", style: "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);max-width:30%;max-height:34%;object-fit:contain;opacity:.5;filter:drop-shadow(0 2px 10px rgba(0,0,0,0.5))", onError: (e) => e.target.remove() }) : null,
+    tileVideo("mosaic:" + c.id, c.id, false), // the ONE unmuted channel
+    h("div", { style: "position:absolute;top:14px;left:16px;z-index:3;display:flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(8,10,12,0.55);border-radius:8px;backdrop-filter:blur(4px)" },
+      h("span", { style: "width:6px;height:6px;border-radius:50%;background:#ff5d52;box-shadow:0 0 7px #ff5d52;animation:aerBlink 2s infinite" }),
+      h("span", { style: "font-size:10px;font-weight:700;letter-spacing:.12em" }, "LIVE"),
+      h("span", { style: "margin-left:4px;color:#54b6ff;font-size:12px" }, "♪")),
+    h("div", { style: "position:absolute;top:14px;right:16px;z-index:3;display:flex;gap:8px" },
+      tileBtn("repeat", "Change channel", () => openMosaicPick(fi), false),
+      tileBtn("maximize-2", "Fullscreen", () => openPlayer(c.id), false)),
+    h("div", { style: "position:absolute;left:0;right:0;bottom:0;z-index:2;padding:" + (mob ? "26px 16px 14px" : "40px 24px 20px") + ";background:linear-gradient(180deg,rgba(8,10,12,0),rgba(8,10,12,0.9))" },
+      h("div", { style: "display:flex;align-items:center;gap:10px;margin-bottom:4px" },
+        h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:" + c.color + ";" + ts }, "#" + (c.num ?? "—")),
+        h("span", { style: "font-size:" + (mob ? "18px" : "22px") + ";font-weight:800;color:#fff;" + ts }, c.name)),
+      h("div", { style: "font-size:14px;color:#cfd3d8;" + ts + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, onNow.filler ? "Live" : onNow.title)));
+}
+
+function stageThumb(c, i, isFocused) {
+  if (!c) return h("div", { onClick: () => openMosaicPick(i), style: "position:relative;aspect-ratio:16/9;border-radius:11px;border:1px dashed rgba(255,255,255,0.16);background:rgba(255,255,255,0.02);display:flex;align-items:center;justify-content:center;color:#8c9298;cursor:pointer" }, icon("plus", 20, 0.6));
+  // The focused channel lives on the stage; show a static chip here (no second
+  // <video> for the same key) so the audio stays single and keys don't collide.
+  if (isFocused) return h("div", { style: "position:relative;aspect-ratio:16/9;border-radius:11px;overflow:hidden;border:1px solid " + AC + ";box-shadow:0 0 0 1px " + AC + ";background:" + c.grad + ";display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px" },
+    c.logoUrl ? h("img", { src: c.logoUrl, loading: "lazy", style: "max-width:38%;max-height:40%;object-fit:contain;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.5))", onError: (e) => e.target.remove() }) : h("div", { style: "font-size:22px;font-weight:800;color:rgba(255,255,255,0.85)" }, c.mono),
+    h("div", { style: "display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;letter-spacing:.08em;color:#06121c;background:" + AC + ";padding:2px 8px;border-radius:6px" }, "ON AIR ♪"));
+  return h("div", { onClick: () => focusStage(i), title: "Put " + c.name + " on the stage", style: "position:relative;aspect-ratio:16/9;border-radius:11px;overflow:hidden;cursor:pointer;border:1px solid rgba(255,255,255,0.1);background:" + c.grad },
+    c.logoUrl ? h("img", { src: c.logoUrl, loading: "lazy", style: "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);max-width:40%;max-height:42%;object-fit:contain;z-index:1;opacity:.5", onError: (e) => e.target.remove() }) : null,
+    tileVideo("mosaic:" + c.id, c.id, true), // muted thumbnail
+    h("div", { style: "position:absolute;top:7px;right:7px;z-index:3" }, tileBtn("repeat", "Change channel", () => openMosaicPick(i), false)),
+    h("div", { style: "position:absolute;left:0;right:0;bottom:0;z-index:2;padding:14px 9px 7px;background:linear-gradient(180deg,rgba(8,10,12,0),rgba(8,10,12,0.85));display:flex;align-items:center;gap:6px" },
+      h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:10px;color:" + c.color }, "#" + (c.num ?? "—")),
+      h("span", { style: "font-size:12px;font-weight:600;color:#eef0f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, c.name)));
 }
 
 // The combined-stream bar: an inline HLS preview + the castable link to open on
