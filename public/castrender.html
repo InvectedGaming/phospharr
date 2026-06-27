@@ -1,0 +1,139 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Phospharr cast renderer</title>
+  <style>html,body{margin:0;background:#000;overflow:hidden}</style>
+</head>
+<body>
+  <!-- Headless renderer: the server (CDP) loads this, sets state, and it streams
+       the composited grid (+ active audio) up the cast ingest socket. Not a user
+       page — it has no UI. -->
+  <script src="/vendor/mpegts.js"></script>
+  <script>
+  (function () {
+    var KEY = new URLSearchParams(location.search).get("key") || "";
+    var W = 1280, H = 720;
+    var canvas = document.createElement("canvas"); canvas.width = W; canvas.height = H;
+    var ctx = canvas.getContext("2d", { alpha: false });
+    var players = {};   // channelId -> { video, player, audioSrc, gain }
+    var st = { channels: [], focus: null, audio: 0 };
+    var audioCtx = null, dest = null;
+    var rec = null, ws = null;
+
+    function streamUrl(id, transcode) { return location.origin + (transcode ? "/watch/" : "/stream/") + id + "?key=" + encodeURIComponent(KEY); }
+
+    function ensurePlayer(id, transcode) {
+      if (players[id] && !transcode) return players[id];
+      if (players[id]) destroyPlayer(id);
+      var video = document.createElement("video");
+      video.muted = true; video.autoplay = true; video.playsInline = true;
+      document.body.appendChild(video);
+      var entry = { video: video, player: null, audioSrc: null, gain: null };
+      players[id] = entry;
+      if (window.mpegts && mpegts.isSupported()) {
+        var p = mpegts.createPlayer({ type: "mpegts", isLive: true, url: streamUrl(id, transcode), withCredentials: false },
+          { enableWorker: true, liveBufferLatencyChasing: true, lazyLoad: false, autoCleanupSourceBuffer: true });
+        entry.player = p;
+        p.attachMediaElement(video);
+        p.on(mpegts.Events.ERROR, function (t, detail, info) {
+          var codec = String(detail).indexOf("MSE") >= 0 || /codec|unsupported|addSourceBuffer/i.test((info && info.msg) || "");
+          if (!transcode && codec) ensurePlayer(id, true); // AC-3/HEVC → transcode path
+        });
+        p.load();
+        video.play().catch(function () {});
+      }
+      return entry;
+    }
+    function destroyPlayer(id) {
+      var e = players[id]; if (!e) return;
+      try { e.gain && e.gain.disconnect(); } catch (x) {}
+      try { e.audioSrc && e.audioSrc.disconnect(); } catch (x) {}
+      try { e.player && e.player.destroy(); } catch (x) {}
+      try { e.video && e.video.remove(); } catch (x) {}
+      delete players[id];
+    }
+
+    function drawFit(v, x, y, w, h) {
+      if (!v.videoWidth) { ctx.fillStyle = "#0e1116"; ctx.fillRect(x + 2, y + 2, w - 4, h - 4); return; }
+      var vr = v.videoWidth / v.videoHeight, br = w / h, dw = w, dh = h;
+      if (vr > br) dh = w / vr; else dw = h * vr;
+      ctx.drawImage(v, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+    }
+    function frame() {
+      ctx.fillStyle = "#06080b"; ctx.fillRect(0, 0, W, H);
+      var ids = st.channels;
+      if (st.focus != null && ids[st.focus] != null) {
+        var e = players[ids[st.focus]]; if (e) drawFit(e.video, 0, 0, W, H);
+      } else {
+        var n = Math.max(1, ids.length), cols = n > 4 ? 3 : 2, rows = Math.ceil(n / cols);
+        var tw = W / cols, th = H / rows;
+        for (var i = 0; i < ids.length; i++) {
+          var p = players[ids[i]];
+          drawFit(p ? p.video : { videoWidth: 0 }, (i % cols) * tw, Math.floor(i / cols) * th, tw, th);
+        }
+      }
+      requestAnimationFrame(frame);
+    }
+
+    function updateAudio() {
+      if (!audioCtx || !dest) return;
+      for (var id in players) if (players[id].gain) players[id].gain.gain.value = 0;
+      var want = st.channels[st.audio] != null ? st.channels[st.audio] : st.channels.filter(function (x) { return x != null; })[0];
+      var e = players[want]; if (!e) return;
+      if (!e.gain) {
+        try {
+          var ms = e.video.captureStream ? e.video.captureStream() : e.video.mozCaptureStream();
+          if (!ms.getAudioTracks().length) return; // not decoded yet → retry on interval
+          e.audioSrc = audioCtx.createMediaStreamSource(ms);
+          e.gain = audioCtx.createGain(); e.gain.gain.value = 0;
+          e.audioSrc.connect(e.gain); e.gain.connect(dest);
+        } catch (x) { return; }
+      }
+      e.gain.gain.value = 1;
+    }
+
+    // Apply a new state (which channels, focused tile, audio tile).
+    function applyState(next) {
+      next = next || {};
+      var ids = (next.channels || []).slice();
+      st.focus = (next.focus == null ? null : next.focus);
+      st.audio = next.audio || 0;
+      var keep = {};
+      ids.forEach(function (id) { if (id != null) { keep[id] = 1; ensurePlayer(id, false); } });
+      for (var id in players) if (!keep[id]) destroyPlayer(id);
+      st.channels = ids;
+      updateAudio();
+    }
+    // Self-drive by polling the server — no CDP needed. Switches are instant
+    // (a redraw + a gain change), so this is just a cheap state poll.
+    function poll() {
+      fetch("/caststate?key=" + encodeURIComponent(KEY), { cache: "no-store" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (s) { if (s && s.channels) applyState(s); })
+        .catch(function () {});
+    }
+
+    function start() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      dest = audioCtx.createMediaStreamDestination();
+      requestAnimationFrame(frame);
+      setInterval(updateAudio, 1500);
+      poll(); setInterval(poll, 600); // self-drive from the server state
+      var v = canvas.captureStream(30);
+      var stream = new MediaStream(v.getVideoTracks().concat(dest.stream.getAudioTracks()));
+      var proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(proto + "://" + location.host + "/castingest?key=" + encodeURIComponent(KEY));
+      ws.binaryType = "arraybuffer";
+      ws.onopen = function () {
+        var mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus") ? "video/webm;codecs=vp8,opus" : "video/webm";
+        rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 5000000 });
+        rec.ondataavailable = function (e) { if (e.data && e.data.size && ws.readyState === 1) e.data.arrayBuffer().then(function (b) { try { ws.send(b); } catch (x) {} }); };
+        rec.start(400);
+      };
+    }
+    start();
+  })();
+  </script>
+</body>
+</html>

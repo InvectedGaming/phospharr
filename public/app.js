@@ -1192,57 +1192,146 @@ function setMosaicChannel(slot, channelId) {
   recastIfOn(); // keep the cast pointed at the focused channel
 }
 
-// ── Cast: stream the focused channel to a TV (follows the controller) ──
+// ── Cast: render the grid → HLS, then play it on a TV ──
+// Two render paths feed the SAME server ingest (→ ffmpeg → HLS):
+//   • in-tab (default): THIS browser draws the grid to a canvas and streams it —
+//     works anywhere, but the tab must stay foreground.
+//   • server (PHOSPHARR_SERVER_CAST=on): a headless Chrome on the server renders
+//     it instead, so it survives the tab closing — but needs a GPU to encode.
 let combinedHls = null;      // hls.js instance for the inline preview
 let combinedVideoEl = null;  // the <video> it's attached to (survives re-render via re-attach)
-let combinedKeepalive = null; // pings the playlist so the encoder isn't idle-reaped while enabled
-// The channel currently on the stage (what we cast).
-function castChannel() {
+let castPushTimer = null;    // debounce rapid focus/audio changes (server mode)
+let serverCast = false;      // is the headless server renderer the active mode?
+const cap = { canvas: null, ctx: null, raf: 0, rec: null, ws: null, audioCtx: null, dest: null, srcs: {}, audioTimer: null, key: "" };
+
+// What to show, as indices into the compact channel list (used by both paths).
+function castState() {
   const slots = mosaicSlotChannels(state.mosaicLayout === "3x3" ? 9 : 4);
-  const fi = focusedStageIndex(slots);
-  return fi >= 0 ? slots[fi] : (slots.find(Boolean) || null);
+  const live = slots.filter(Boolean);
+  const channels = live.map((c) => c.id);
+  let focus = null;
+  if (state.mosaicLayout === "stage") {
+    const fi = focusedStageIndex(slots);
+    const fch = fi >= 0 ? slots[fi] : null;
+    if (fch) { const i = channels.indexOf(fch.id); if (i >= 0) focus = i; }
+  }
+  const ai = Number((state.activeTileId || "t0").slice(1));
+  const ach = slots[Number.isFinite(ai) ? ai : 0] || live[0];
+  const audio = ach ? Math.max(0, channels.indexOf(ach.id)) : 0;
+  return { channels, focus, audio };
 }
+
+// ---- in-tab capture path ----
+function tileVideoEl(id) { const e = tilePlayers["mosaic:" + id]; return e && e.video && e.video.videoWidth ? e.video : null; }
+function drawFit(v, x, y, w, h) {
+  if (!v) { cap.ctx.fillStyle = "#0e1116"; cap.ctx.fillRect(x + 2, y + 2, w - 4, h - 4); return; }
+  const vr = v.videoWidth / v.videoHeight, br = w / h; let dw = w, dh = h;
+  if (vr > br) dh = w / vr; else dw = h * vr;
+  cap.ctx.drawImage(v, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+}
+function drawCapFrame() {
+  if (!state.mosaicCombined || serverCast || !cap.ctx) return;
+  const cs = castState(), W = 1280, H = 720;
+  cap.ctx.fillStyle = "#06080b"; cap.ctx.fillRect(0, 0, W, H);
+  if (cs.focus != null && cs.channels[cs.focus] != null) {
+    drawFit(tileVideoEl(cs.channels[cs.focus]), 0, 0, W, H);
+  } else {
+    const n = Math.max(1, cs.channels.length), cols = n > 4 ? 3 : 2, rows = Math.ceil(n / cols), tw = W / cols, th = H / rows;
+    cs.channels.forEach((id, i) => drawFit(tileVideoEl(id), (i % cols) * tw, Math.floor(i / cols) * th, tw, th));
+  }
+  cap.raf = requestAnimationFrame(drawCapFrame);
+}
+function updateCapAudio() {
+  if (!cap.audioCtx || !cap.dest) return;
+  for (const k in cap.srcs) cap.srcs[k].gain.gain.value = 0;
+  const cs = castState(), want = cs.channels[cs.audio];
+  if (want == null) return;
+  let s = cap.srcs[want];
+  if (!s) {
+    const e = tilePlayers["mosaic:" + want]; if (!e || !e.video) return;
+    try {
+      const get = e.video.captureStream || e.video.mozCaptureStream; if (!get) return;
+      const ms = get.call(e.video); if (!ms.getAudioTracks().length) return;
+      const src = cap.audioCtx.createMediaStreamSource(ms), gain = cap.audioCtx.createGain();
+      gain.gain.value = 0; src.connect(gain); gain.connect(cap.dest);
+      s = cap.srcs[want] = { src, gain };
+    } catch { return; }
+  }
+  s.gain.gain.value = 1;
+}
+function startInTabCapture() {
+  cap.canvas = document.createElement("canvas"); cap.canvas.width = 1280; cap.canvas.height = 720;
+  cap.ctx = cap.canvas.getContext("2d", { alpha: false });
+  cap.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  try { cap.audioCtx.resume(); } catch { /* gesture */ }
+  cap.dest = cap.audioCtx.createMediaStreamDestination();
+  cap.raf = requestAnimationFrame(drawCapFrame);
+  updateCapAudio(); cap.audioTimer = setInterval(updateCapAudio, 1500);
+  const v = cap.canvas.captureStream(30);
+  const stream = new MediaStream(v.getVideoTracks().concat(cap.dest.stream.getAudioTracks()));
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  cap.ws = new WebSocket(proto + "://" + location.host + "/castingest?key=" + encodeURIComponent(cap.key));
+  cap.ws.binaryType = "arraybuffer";
+  cap.ws.onopen = () => {
+    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus") ? "video/webm;codecs=vp8,opus" : "video/webm";
+    cap.rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+    cap.rec.ondataavailable = (e) => { if (e.data && e.data.size && cap.ws && cap.ws.readyState === 1) e.data.arrayBuffer().then((b) => { try { cap.ws.send(b); } catch { /* closed */ } }); };
+    cap.rec.start(400);
+  };
+}
+function stopInTabCapture() {
+  if (cap.raf) cancelAnimationFrame(cap.raf), cap.raf = 0;
+  if (cap.audioTimer) { clearInterval(cap.audioTimer); cap.audioTimer = null; }
+  try { cap.rec && cap.rec.state !== "inactive" && cap.rec.stop(); } catch { /* noop */ }
+  try { cap.ws && cap.ws.close(); } catch { /* noop */ }
+  try { cap.audioCtx && cap.audioCtx.close(); } catch { /* noop */ }
+  cap.rec = cap.ws = cap.audioCtx = cap.dest = cap.canvas = cap.ctx = null; cap.srcs = {};
+}
+
+function pushCast() { return fetch("/api/mosaic/cast", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(castState()) }); }
+
 async function startCombined() {
-  const ch = castChannel();
-  if (!ch) { set({ mosaicCombinedErr: "Pick a channel first.", mosaicCombined: false }); return; }
+  const cs = castState();
+  if (!cs.channels.length) { set({ mosaicCombinedErr: "Pick a channel first.", mosaicCombined: false }); return; }
   state.mosaicCombined = true; state.mosaicCombinedBusy = true; state.mosaicCombinedErr = null; render();
   try {
-    const r = await fetch("/api/mosaic/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channel: ch.id }) });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) { state.mosaicCombined = false; state.mosaicCombinedBusy = false; state.mosaicCombinedErr = d.error || "Couldn't start the cast."; render(); return; }
-    const url = location.origin + d.playlist + (d.key ? "?key=" + encodeURIComponent(d.key) : "");
-    state.mosaicCombinedUrl = url; render();
-    if (combinedKeepalive) clearInterval(combinedKeepalive);
-    combinedKeepalive = setInterval(() => { if (state.mosaicCombined) fetch(location.origin + "/mosaic/index.m3u8", { cache: "no-store" }).catch(() => {}); }, 10000);
-    const ready = await waitForCombined(url);
-    if (!state.mosaicCombined) return; // turned off while we waited
-    state.mosaicCombinedBusy = false;
-    if (!ready) { state.mosaicCombinedErr = "Couldn't start the cast in time — try again."; render(); return; }
+    const meta = await fetch("/api/mosaic/status").then((r) => r.json()).catch(() => ({}));
+    serverCast = !!meta.serverCast; cap.key = meta.key || "";
+    if (serverCast) {
+      const r = await pushCast();
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { state.mosaicCombined = false; state.mosaicCombinedBusy = false; state.mosaicCombinedErr = d.error || "Couldn't start the server cast."; render(); return; }
+    } else {
+      startInTabCapture();
+    }
+    state.mosaicCombinedUrl = location.origin + "/mosaic/index.m3u8" + (cap.key ? "?key=" + encodeURIComponent(cap.key) : "");
     render();
-    attachCombinedHls();
+    const ready = await waitForCombined(location.origin + "/mosaic/index.m3u8");
+    if (!state.mosaicCombined) return;
+    state.mosaicCombinedBusy = false;
+    if (!ready) { state.mosaicCombinedErr = serverCast ? "Headless renderer didn't produce video — this host likely can't encode (GPU needed)." : "Couldn't start — make sure the tiles are playing."; render(); return; }
+    render(); attachCombinedHls();
   } catch (e) { state.mosaicCombined = false; state.mosaicCombinedBusy = false; state.mosaicCombinedErr = String(e); render(); }
 }
-// When the controller refocuses (or a slot's channel changes) while casting,
-// re-point the cast at the new focused channel — a quick stage restart.
+// Reflect a focus / audio / channel change. In-tab: the draw loop already reads
+// live state; just refresh the audio gain. Server: debounced push to the renderer.
 function recastIfOn() {
   if (!state.mosaicCombined) return;
-  const ch = castChannel();
-  if (!ch) return;
-  fetch("/api/mosaic/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channel: ch.id }) }).catch(() => {});
+  if (serverCast) { if (castPushTimer) clearTimeout(castPushTimer); castPushTimer = setTimeout(() => { castPushTimer = null; pushCast().catch(() => {}); }, 120); }
+  else updateCapAudio();
 }
-// Poll the live playlist until it lists at least one segment (or we give up).
-// Each poll also touches the server so the warming encoder isn't idle-reaped.
 async function waitForCombined(url) {
   for (let i = 0; i < 22; i++) {
     if (!state.mosaicCombined) return false;
-    try { const r = await fetch(url, { cache: "no-store" }); if (r.ok && (await r.text()).indexOf("seg_") >= 0) return true; } catch { /* not ready */ }
-    await new Promise((res) => setTimeout(res, 2000));
+    try { const r = await fetch(url, { cache: "no-store" }); if (r.ok && (await r.text()).indexOf("seg") >= 0) return true; } catch { /* not ready */ }
+    await new Promise((res) => setTimeout(res, 1500));
   }
   return false;
 }
 async function stopCombined() {
-  if (combinedKeepalive) { clearInterval(combinedKeepalive); combinedKeepalive = null; }
+  if (castPushTimer) { clearTimeout(castPushTimer); castPushTimer = null; }
   set({ mosaicCombined: false, mosaicCombinedUrl: null, mosaicCombinedErr: null });
+  if (!serverCast) stopInTabCapture();
   destroyCombinedHls();
   try { await fetch("/api/mosaic/stop", { method: "POST" }); } catch { /* ignore */ }
 }
@@ -1395,10 +1484,9 @@ function combinedPanel() {
     h("div", { style: "flex:1;min-width:240px;display:flex;flex-direction:column;gap:8px" },
       h("div", { style: "display:flex;align-items:center;gap:9px" },
         h("span", { style: "font-size:14px;font-weight:700;color:#e6e9ec" }, "Cast to TV"),
-        (castChannel() ? h("span", { style: "font-size:12px;font-weight:600;color:#cfe8ff" }, "· " + castChannel().name) : null),
         h("span", { style: "font-size:10px;font-weight:700;letter-spacing:.1em;color:#9aa0a6;border:1px solid rgba(255,255,255,0.14);border-radius:5px;padding:2px 6px" }, "HLS")),
       err ? h("div", { style: "font-size:12.5px;color:#ff8079" }, err)
-        : h("div", { style: "font-size:12px;color:#8c9298;line-height:1.45" }, "Open this link on a TV, VLC, Plex, or another device — it streams whatever channel is on your stage. Focus a different tile and the cast follows."),
+        : h("div", { style: "font-size:12px;color:#8c9298;line-height:1.45" }, "Open this link on a TV, VLC, Plex, or another device — it shows the grid (or your focused Stage tile) with the active tile's audio, switching instantly. Keep this tab open and visible. (For tab-free casting on a GPU server, set PHOSPHARR_SERVER_CAST=on.)"),
       linkRow));
 }
 

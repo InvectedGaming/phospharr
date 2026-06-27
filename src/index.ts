@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import app from "./api/server.ts";
+import app, { websocket } from "./api/server.ts";
 import { primePool } from "./ingest/sync.ts";
 import { getSettings, setSetting } from "./settings.ts";
 import { startEpgScheduler } from "./epg/scheduler.ts";
@@ -37,6 +37,7 @@ console.log(`
 export default {
   port,
   fetch: app.fetch,
+  websocket, // mosaic cast ingest socket
   // Streaming responses can run long; don't let Bun time them out.
   idleTimeout: 0,
 };

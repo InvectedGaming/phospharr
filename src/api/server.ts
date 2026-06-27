@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { createBunWebSocket } from "hono/bun";
 import { and, eq, gt, lte, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { providers, channels, streams, rules, programs, vpns } from "../db/schema.ts";
@@ -57,6 +58,10 @@ function trackSession(c: Context, channelId: number, source: "passthrough" | "tr
 }
 
 export const app = new Hono<Env>();
+// WebSocket support (mosaic cast ingest). `websocket` is wired into the Bun
+// server export in index.ts; `upgradeWebSocket` turns a route into a WS endpoint.
+const { upgradeWebSocket, websocket } = createBunWebSocket();
+export { websocket };
 
 const COOKIE_OPTS = { httpOnly: true, sameSite: "Lax" as const, path: "/", maxAge: 30 * 24 * 3600 };
 /** 403 unless the request's user is an admin; null means OK to proceed. */
@@ -356,18 +361,47 @@ app.get("/mosaicfeed/:channelId", async (c) => {
   return new Response(keyframeAlignedStream(body), { headers: STREAM_HEADERS });
 });
 
-// ─── Mosaic cast: stream the controller's focused channel to a TV / VLC / Plex ───
-app.get("/api/mosaic/status", (c) => c.json(mosaic.status()));
-// Cast a channel (or switch the cast to a new one when the controller refocuses).
-app.post("/api/mosaic/start", async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { channel?: number };
-  const channel = Number(body.channel);
-  if (!Number.isFinite(channel)) return c.json({ error: "channel required" }, 400);
-  const out = mosaic.start(channel);
-  // The cast/play URL carries the stream key so a dumb device can fetch it too.
-  return c.json({ ...out, key: String(cachedSetting("access.streamKey") || "") });
-});
+// ─── Mosaic cast: render the grid → HLS, either in-tab (default) or, with
+// PHOSPHARR_SERVER_CAST set, in a headless browser ON THE SERVER (GPU hosts) ───
+const serverCastEnabled = () => /^(on|true|1|yes)$/i.test(process.env.PHOSPHARR_SERVER_CAST ?? "");
+app.get("/api/mosaic/status", (c) => c.json({ ...mosaic.status(), serverCast: serverCastEnabled(), key: String(cachedSetting("access.streamKey") || ""), playlist: "/mosaic/index.m3u8" }));
 app.post("/api/mosaic/stop", (c) => { mosaic.stop(); return c.json({ ok: true }); });
+// Server-cast only: launch/drive the headless renderer (the in-tab path streams
+// straight to /castingest and never calls this).
+app.post("/api/mosaic/cast", async (c) => {
+  if (!serverCastEnabled()) return c.json({ error: "server cast is off (set PHOSPHARR_SERVER_CAST=on)" }, 400);
+  const body = (await c.req.json().catch(() => ({}))) as { channels?: number[]; focus?: number | null; audio?: number };
+  const channels = (body.channels ?? []).map(Number).filter((n) => Number.isFinite(n));
+  if (!channels.length) return c.json({ error: "no channels" }, 400);
+  const focus = body.focus == null ? null : Math.max(0, Number(body.focus) || 0);
+  const ok = await mosaic.cast(channels, focus, Number(body.audio) || 0, String(cachedSetting("access.streamKey") || ""));
+  if (!ok) return c.json({ error: "couldn't start the headless cast renderer (Chrome missing, or it can't encode on this host — a GPU is usually needed)" }, 503);
+  return c.json({ playlist: "/mosaic/index.m3u8", key: String(cachedSetting("access.streamKey") || "") });
+});
+
+// The internal render page the headless browser loads (stream-key gated). It
+// composites the grid and streams it up /castingest.
+app.get("/castrender", (c) => {
+  if (c.req.query("key") !== streamKey()) return c.text("unauthorized", 401);
+  return new Response(Bun.file(`${publicDir}/castrender.html`), { headers: { "Content-Type": "text/html", "Cache-Control": noStore } });
+});
+// The render page polls this for what to show (channels / focus / audio).
+app.get("/caststate", (c) => {
+  if (c.req.query("key") !== streamKey()) return c.json({ error: "unauthorized" }, 401);
+  return c.json(mosaic.getCastState());
+});
+// The render page streams its captured canvas+audio (WebM) up this socket → ffmpeg
+// → cast HLS. Key-gated (the headless browser carries no session cookie).
+app.get("/castingest", async (c, next) => { if (c.req.query("key") !== streamKey()) return c.text("unauthorized", 401); await next(); },
+  upgradeWebSocket(() => ({
+    onOpen() { mosaic.startIngest(); },
+    onMessage(evt) {
+      const d = evt.data as unknown;
+      if (d instanceof ArrayBuffer) mosaic.feed(new Uint8Array(d));
+      else if (ArrayBuffer.isView(d as ArrayBufferView)) mosaic.feed(new Uint8Array((d as ArrayBufferView).buffer));
+    },
+    onClose() { mosaic.stop(); },
+  })));
 // Serve the live HLS playlist + segments (session cookie, or ?key= for devices).
 app.get("/mosaic/:file", (c) => {
   const auth = streamAuth(c);
