@@ -2,14 +2,17 @@ import { mkdirSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import { sqlite } from "../db/index.ts";
 import type { Vpn } from "../db/schema.ts";
+import { startHttpBridge } from "./httpproxy.ts";
 
 /**
  * Native VPN tunnels — Phospharr dials the VPN itself, no Gluetun.
  *
  * Each VPN row (a pasted WireGuard .conf or OpenVPN .ovpn) is run in userspace by
- * a small bundled helper that exposes a local SOCKS5 proxy. Providers route
- * through one via `proxy_url = "vpn:<id>"`, which egress() resolves to the live
- * `socks5://127.0.0.1:<port>` here. The provider plumbing is otherwise unchanged.
+ * a small bundled helper that exposes a local SOCKS5 proxy. Bun's `fetch` can't
+ * use a SOCKS proxy, so we front each tunnel's SOCKS port with a tiny in-process
+ * HTTP proxy (see httpproxy.ts). Providers route through one via
+ * `proxy_url = "vpn:<id>"`, which egress() resolves to the live
+ * `http://127.0.0.1:<httpPort>` here. The provider plumbing is otherwise unchanged.
  *
  *   WireGuard → wireproxy   (clean: userspace WG, no root, no TUN device)
  *   OpenVPN   → openvpn + tun2socks  (heavier: needs the TUN device + NET_ADMIN)
@@ -26,9 +29,11 @@ const exe = (n: string) => (isWin ? `${n}.exe` : n);
 type Status = "starting" | "up" | "down" | "error";
 type Entry = {
   id: number;
-  port: number;
+  port: number;      // the helper's SOCKS5 port
+  httpPort: number;  // our HTTP→SOCKS bridge port (what fetch actually uses)
   socksHost: string; // 127.0.0.1 for WireGuard; the namespace IP for OpenVPN
   proc: ReturnType<typeof Bun.spawn> | null;
+  bridge: ReturnType<typeof startHttpBridge> | null;
   status: Status;
   error: string | null;
   restarts: number;
@@ -158,16 +163,31 @@ async function spawnTunnel(vpn: Vpn, entry: Entry): Promise<void> {
     setTimeout(() => { if (!entry.stopping && getVpn(vpn.id)) startVpn(vpn.id).catch(() => {}); }, delay);
   });
 
-  // Readiness: the SOCKS port accepting connections means the tunnel is serving.
+  // The HTTP bridge fetch() actually uses. Start it now and keep it for the life
+  // of the entry: it's harmless while SOCKS is down (forwards just fail), and this
+  // way we never miss starting it because of bring-up timing.
+  if (!entry.bridge) entry.bridge = startHttpBridge(entry.socksHost, entry.port, entry.httpPort);
+
+  // Health monitor: keep status in lockstep with SOCKS reachability for as long as
+  // this proc lives — so a slow handshake that finishes *after* the initial window
+  // still flips us to "up" (otherwise a working tunnel stays marked failed forever).
+  void (async () => {
+    while (entry.proc === proc && !entry.stopping) {
+      const ok = await portIsOpen(entry.socksHost, entry.port);
+      if (ok && entry.status !== "up") { entry.status = "up"; entry.error = null; entry.restarts = 0; }
+      else if (!ok && entry.status === "up") { entry.status = "starting"; }
+      await Bun.sleep(2_000);
+    }
+  })();
+
+  // Give initial bring-up a chance so the API reflects "up" promptly on the fast path.
   const deadline = Date.now() + readyMs;
   while (Date.now() < deadline) {
     if (entry.proc !== proc || entry.stopping) return;
-    if (await portIsOpen(entry.socksHost, entry.port)) { entry.status = "up"; entry.error = null; entry.restarts = 0; return; }
+    if ((entry.status as string) === "up") return;
     await Bun.sleep(400);
   }
-  // Didn't come up in time (the async exited/stderr handlers may have changed
-  // status to error/down in the meantime — cast past the narrowing).
-  if ((entry.status as string) !== "up") entry.error = entry.error ?? `tunnel did not come up within ${Math.round(readyMs / 1000)}s`;
+  if ((entry.status as string) !== "up") entry.error = entry.error ?? `tunnel still coming up after ${Math.round(readyMs / 1000)}s (monitor will keep retrying)`;
 }
 
 export async function startVpn(id: number): Promise<void> {
@@ -176,7 +196,8 @@ export async function startVpn(id: number): Promise<void> {
   let entry = tunnels.get(id);
   if (entry?.proc) return; // already running
   if (!entry) {
-    entry = { id, port: pickPort(id), socksHost: "127.0.0.1", proc: null, status: "down", error: null, restarts: 0, stopping: false };
+    const port = pickPort(id);
+    entry = { id, port, httpPort: port + 5000, socksHost: "127.0.0.1", proc: null, bridge: null, status: "down", error: null, restarts: 0, stopping: false };
     tunnels.set(id, entry);
   }
   entry.stopping = false;
@@ -193,14 +214,16 @@ export function stopVpn(id: number): void {
   if (!entry) return;
   entry.stopping = true;
   if (entry.proc) { try { entry.proc.kill(); } catch { /* noop */ } }
+  if (entry.bridge) { try { entry.bridge.close(); } catch { /* noop */ } entry.bridge = null; }
   entry.proc = null;
   entry.status = "down";
 }
 
-/** The live SOCKS URL for a VPN, or undefined if it isn't up. */
-export function vpnSocksUrl(id: number): string | undefined {
+/** The live proxy URL for a VPN, or undefined if it isn't up. This is the
+ *  HTTP→SOCKS bridge (`http://…`) because Bun's fetch can't use SOCKS directly. */
+export function vpnProxyUrl(id: number): string | undefined {
   const entry = tunnels.get(id);
-  return entry && entry.status === "up" ? `socks5://${entry.socksHost}:${entry.port}` : undefined;
+  return entry && entry.status === "up" ? `http://${entry.socksHost}:${entry.httpPort}` : undefined;
 }
 
 /** Status snapshot for the API (never includes config/keys). */

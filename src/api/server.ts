@@ -8,7 +8,7 @@ import { syncProvider } from "../ingest/sync.ts";
 import { fetchM3U } from "../ingest/m3u.ts";
 import { fetchXtream } from "../ingest/xtream.ts";
 import { egress } from "../net/egress.ts";
-import { vpnSocksUrl } from "../net/tunnel.ts";
+import { vpnProxyUrl } from "../net/tunnel.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
 import { applyRules } from "../rules/engine.ts";
 import { reconcileAutoHides, listCategories, listProviderCategories } from "../content/filter.ts";
@@ -598,7 +598,7 @@ app.post("/api/providers/test", async (c) => {
   // through the chosen tunnel too.
   let proxy = b.proxyUrl || undefined;
   const vpnMatch = proxy?.match(/^vpn:(\d+)$/);
-  if (vpnMatch) proxy = vpnSocksUrl(Number(vpnMatch[1])); // undefined if the tunnel is down
+  if (vpnMatch) proxy = vpnProxyUrl(Number(vpnMatch[1])); // undefined if the tunnel is down
   const opts = egress(proxy);
   try {
     let entries;

@@ -1,5 +1,5 @@
 import { sqlite } from "../db/index.ts";
-import { vpnSocksUrl } from "./tunnel.ts";
+import { vpnProxyUrl } from "./tunnel.ts";
 
 /**
  * Per-source egress. Each provider can carry its OWN `proxy_url`, so different
@@ -8,10 +8,12 @@ import { vpnSocksUrl } from "./tunnel.ts";
  * normal connection.
  *
  *   proxy_url = ""                → direct
- *   proxy_url = "http://…"/"socks5://…" → that proxy (e.g. your own Gluetun)
+ *   proxy_url = "http://…"        → that proxy (e.g. your own Gluetun)
  *   proxy_url = "vpn:<id>"        → a VPN Phospharr dials itself (see tunnel.ts)
  *
- * Bun's fetch honors `{ proxy }` for http(s):// and socks5:// proxies.
+ * Bun's fetch honors `{ proxy }` for http(s):// proxies only — NOT socks5://
+ * (it throws UnsupportedProxyProtocol). VPNs therefore resolve to the tunnel's
+ * HTTP→SOCKS bridge URL, and a user-supplied proxy_url must be http(s):// too.
  */
 
 const proxyStmt = sqlite.prepare("SELECT proxy_url FROM providers WHERE id = ?");
@@ -29,7 +31,7 @@ export function providerEgress(providerId: number | null | undefined): Egress {
 
   const vpnMatch = raw.match(/^vpn:(\d+)$/);
   if (vpnMatch) {
-    const url = vpnSocksUrl(Number(vpnMatch[1]));
+    const url = vpnProxyUrl(Number(vpnMatch[1]));
     // Fail CLOSED: a source pinned to a VPN must never silently fall back to a
     // direct connection when the tunnel is down — that would expose the host IP.
     if (!url) return { blocked: true, reason: "VPN tunnel is not up" };
