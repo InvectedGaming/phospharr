@@ -1217,8 +1217,10 @@ let serverCast = false;      // is the headless server renderer the active mode?
 const cap = { canvas: null, ctx: null, raf: 0, rec: null, ws: null, audioCtx: null, dest: null, srcs: {}, audioTimer: null, key: "" };
 
 // What to show, as indices into the compact channel list (used by both paths).
+// Tiles per layout: 2-up (2), 2×2 (4), or 3×3 (9).
+function mosaicTileCount() { return state.mosaicLayout === "3x3" ? 9 : state.mosaicLayout === "2up" ? 2 : 4; }
 function castState() {
-  const slots = mosaicSlotChannels(state.mosaicLayout === "3x3" ? 9 : 4);
+  const slots = mosaicSlotChannels(mosaicTileCount());
   const live = slots.filter(Boolean);
   const channels = live.map((c) => c.id);
   let focus = null;
@@ -1378,13 +1380,12 @@ function attachCombinedHls() {
   }
 }
 function destroyCombinedHls() { if (combinedHls) { try { combinedHls.destroy(); } catch { /* noop */ } combinedHls = null; } combinedVideoEl = null; }
-function copyText(t) { try { navigator.clipboard.writeText(t); } catch { /* ignore */ } }
 function setMosaicAudio(id) { set({ activeTileId: id }); recastIfOn(); }
 
 function mosaicScreen() {
   const isStage = state.mosaicLayout === "stage";
-  const n = state.mosaicLayout === "3x3" ? 9 : 4;
-  const cols = state.mosaicLayout === "3x3" ? 3 : 2;
+  const n = mosaicTileCount();
+  const cols = state.mosaicLayout === "3x3" ? 3 : state.mosaicLayout === "2up" ? (isMobile() ? 1 : 2) : 2;
   const slots = mosaicSlotChannels(n);
   const liveN = slots.filter(Boolean).length;
   const seg = (on) => ({ display: "flex", alignItems: "center", height: "30px", padding: "0 14px", borderRadius: "8px", border: "none", background: on ? AC : "transparent", color: on ? "#06121c" : "#aeb4ba", fontSize: "13px", fontWeight: 600, cursor: "pointer", transition: "all .15s" });
@@ -1405,6 +1406,7 @@ function mosaicScreen() {
         combinedBtn,
         h("div", { style: "display:flex;padding:3px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:10px;gap:2px" },
           h("button", { style: seg(isStage), onClick: () => set({ mosaicLayout: "stage" }) }, "Stage"),
+          h("button", { style: seg(state.mosaicLayout === "2up"), onClick: () => set({ mosaicLayout: "2up" }) }, "2-up"),
           h("button", { style: seg(state.mosaicLayout === "2x2"), onClick: () => set({ mosaicLayout: "2x2" }) }, "2×2"),
           h("button", { style: seg(state.mosaicLayout === "3x3"), onClick: () => set({ mosaicLayout: "3x3" }) }, "3×3")))),
     combinedPanel(),
@@ -1510,7 +1512,7 @@ function tileBtn(iconName, title, onClick, on) {
 
 function mosaicTile(c, i) {
   const id = "t" + i;
-  const big = state.mosaicLayout === "2x2" ? 72 : 48;
+  const big = (state.mosaicLayout === "2x2" || state.mosaicLayout === "2up") ? 72 : 48;
   // Empty slot → a tap target to pick a channel.
   if (!c) {
     return h("div", { onClick: () => openMosaicPick(i), style: "position:relative;border-radius:14px;cursor:pointer;border:1px dashed rgba(255,255,255,0.16);background:rgba(255,255,255,0.02);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:0;color:#8c9298" },
