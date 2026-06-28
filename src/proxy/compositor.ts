@@ -49,8 +49,11 @@ function buildArgs(state: MosaicState): string[] | null {
   const rects = focused ? [{ x: 0, y: 0, w: W, h: H }] : cells(state.layout, drawn.length);
   const audioPos = focused ? 0 : Math.min(Math.max(0, state.audio | 0), drawn.length - 1);
 
+  // Feed from /mosaicfeed (keyframe-aligned) not /stream: each tile starts on a
+  // keyframe so ffmpeg can decode immediately instead of waiting a whole GOP for
+  // the first SPS/keyframe — that's what kept first-frame latency high.
   const inputs: string[] = [];
-  for (const id of drawn) inputs.push("-rw_timeout", "10000000", "-thread_queue_size", "1024", "-i", `http://127.0.0.1:${PORT}/stream/${id}?key=${key}`);
+  for (const id of drawn) inputs.push("-rw_timeout", "12000000", "-thread_queue_size", "1024", "-analyzeduration", "2000000", "-probesize", "2000000", "-i", `http://127.0.0.1:${PORT}/mosaicfeed/${id}?key=${key}`);
 
   // [bg] black clock; each tile scaled+padded into its cell; chained overlays.
   let fc = `color=c=black:s=${W}x${H}:r=${FPS}[bg];`;
