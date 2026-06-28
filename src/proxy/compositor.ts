@@ -21,7 +21,7 @@ const PORT = Number(process.env.PORT ?? 7777);
 const W = 1280, H = 720, FPS = 25;
 
 export type MosaicLayout = "2up" | "2x2" | "3x3";
-export interface MosaicState { channels: number[]; layout: MosaicLayout; focus: number | null; audio: number }
+export interface MosaicState { channels: number[]; layout: MosaicLayout; focus: number | null; audio: number; names?: string[] }
 
 function encoderArgs(): string[] {
   switch (process.env.PHOSPHARR_CAST_ENCODER) {
@@ -65,13 +65,21 @@ function buildArgs(state: MosaicState): string[] | null {
   rects.forEach((r, i) => { const out = i === rects.length - 1 ? "vout" : `o${i}`; fc += `[${last}][v${i}]overlay=${r.x}:${r.y}:eof_action=pass[${out}];`; last = out; });
   fc = fc.replace(/;$/, "");
 
+  // Every tile's audio is its own selectable MPEG-TS track, so the viewer swaps
+  // which side they hear INSTANTLY in the player — no re-encode, no re-buffer.
+  // The chosen tile is mapped first (track 0) so it's the default on tune-in.
+  const order = [audioPos, ...drawn.map((_, i) => i).filter((i) => i !== audioPos)];
+  const amaps = order.flatMap((i) => ["-map", `${i}:a:0?`]);
+  const ameta = order.flatMap((i, t) => [`-metadata:s:a:${t}`, `title=${(state.names && state.names[i]) || "Tile " + (i + 1)}`]);
+
   return [
     "-hide_banner", "-loglevel", "error",
     ...inputs,
     "-filter_complex", fc,
-    "-map", "[vout]", "-map", `${audioPos}:a:0?`,
+    "-map", "[vout]", ...amaps,
     ...encoderArgs(), "-g", String(FPS), "-bf", "0",
     "-c:a", "aac", "-ac", "2", "-b:a", "128k",
+    ...ameta,
     "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "1",
     "-f", "mpegts", "-mpegts_flags", "+resend_headers", "pipe:1",
   ];
@@ -94,9 +102,14 @@ class Compositor {
   /** Set what to show. Restarts the encode if anything changed and there are viewers. */
   setState(next: Partial<MosaicState>): void {
     const merged = { ...this.state, ...next };
-    const changed = JSON.stringify(merged) !== JSON.stringify(this.state);
+    // Only the VIDEO layout (channels / grid / focused tile) needs a re-encode.
+    // Audio is multi-track, so switching the audible tile is done in the player —
+    // an audio-only change must NOT restart ffmpeg (that re-buffer/drift was the
+    // cast lag). The audio index still sets the default track on the next restart.
+    const vsig = (s: MosaicState) => JSON.stringify([s.channels, s.layout, s.focus]);
+    const restart = this.subs.size > 0 && vsig(merged) !== vsig(this.state);
     this.state = merged;
-    if (changed && this.subs.size > 0) this.restart();
+    if (restart) this.restart();
   }
 
   private restart(): void {

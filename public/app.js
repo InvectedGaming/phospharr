@@ -1233,7 +1233,8 @@ function castState() {
   const ach = slots[Number.isFinite(ai) ? ai : 0] || live[0];
   const audio = ach ? Math.max(0, channels.indexOf(ach.id)) : 0;
   const layout = state.mosaicLayout === "3x3" ? "3x3" : state.mosaicLayout === "2up" ? "2up" : "2x2";
-  return { channels, focus, audio, layout };
+  const names = live.map((c) => c.name || ("#" + (c.num ?? "")));
+  return { channels, focus, audio, layout, names };
 }
 
 // ---- in-tab capture path ----
@@ -1486,7 +1487,7 @@ function combinedPanel() {
       h("span", { style: "font-size:14px;font-weight:700;color:#e6e9ec" }, busy ? "Starting mosaic channel…" : "Mosaic is live as a channel"),
       h("span", { style: "font-size:10px;font-weight:700;letter-spacing:.1em;color:#9aa0a6;border:1px solid rgba(255,255,255,0.14);border-radius:5px;padding:2px 6px" }, "CH 8000")),
     err ? h("div", { style: "font-size:12.5px;color:#ff8079" }, err)
-      : h("div", { style: "font-size:12px;color:#8c9298;line-height:1.45" }, "Tune “Mosaic” (ch 8000) on your TV via Plex / Jellyfin / Emby / TiviMate — it's in your HDHR lineup + M3U — or open the link below in VLC/desktop. It mirrors this tab live: switch the audio tile, focus a tile, or change layout and the channel follows. Uses one provider slot per tile."),
+      : h("div", { style: "font-size:12px;color:#8c9298;line-height:1.45" }, "Tune “Mosaic” (ch 8000) on your TV via Plex / Jellyfin / Emby / TiviMate — it's in your HDHR lineup + M3U — or open the link in VLC/desktop. Each tile is a separate AUDIO TRACK on the cast: switch which side you hear instantly with your player's audio button — no loading. Changing channels / layout / focus in this tab updates the cast. Uses one provider slot per tile."),
     linkRow);
 }
 
