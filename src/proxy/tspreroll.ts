@@ -35,7 +35,7 @@ function psiOffset(p: Uint8Array): number {
 }
 
 export class TsPreroll {
-  private leftover = new Uint8Array(0);
+  private leftover: Uint8Array = new Uint8Array(0);
   private aligned = false;
   private patPkt: Uint8Array | null = null;
   private pmtPkt: Uint8Array | null = null;
