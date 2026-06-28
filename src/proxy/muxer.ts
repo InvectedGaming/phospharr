@@ -2,6 +2,7 @@ import { pool } from "../scheduler/pool.ts";
 import { selectStream, markLive, markDead } from "../scheduler/selector.ts";
 import { cachedSetting } from "../settings.ts";
 import { providerEgress } from "../net/egress.ts";
+import { TsPreroll } from "../proxy/tspreroll.ts";
 import type { Stream } from "../db/schema.ts";
 
 /**
@@ -34,6 +35,9 @@ class ChannelMux {
   private graceTimer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
   private onTeardown: () => void;
+  // Rolling keyframe buffer: lets a new viewer start on a decodable keyframe
+  // instantly instead of waiting out a GOP. Persists while the mux is warm.
+  private pre = new TsPreroll();
 
   constructor(stream: Stream, onTeardown: () => void) {
     this.stream = stream;
@@ -73,14 +77,17 @@ class ChannelMux {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) {
-        for (const sub of this.subs.values()) {
-          try {
-            sub.push(value);
-          } catch {
-            // Slow/broken client — drop it, don't stall the others.
-            this.detach(sub.id);
-          }
+      if (!value) continue;
+      // Keyframe-aware: aligns packets + buffers the current GOP, returns the
+      // aligned slice to fan out. New viewers get the GOP replayed on attach.
+      const region = this.pre.push(value);
+      if (!region || !region.length) continue;
+      for (const sub of this.subs.values()) {
+        try {
+          sub.push(region);
+        } catch {
+          // Slow/broken client — drop it, don't stall the others.
+          this.detach(sub.id);
         }
       }
     }
@@ -94,6 +101,9 @@ class ChannelMux {
       clearTimeout(this.graceTimer);
       this.graceTimer = null;
     }
+    // Replay the current GOP (keyframe → now) so this viewer decodes immediately.
+    const pre = this.pre.preroll();
+    if (pre) { try { sub.push(pre); } catch { /* its own stream will detach */ } }
     return id;
   }
 
