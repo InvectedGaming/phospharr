@@ -1181,11 +1181,18 @@ function miniPlayer() {
 // fresh mosaic still shows something; explicit picks are stable per slot.
 function mosaicSlotChannels(n) {
   const d = state.data, byId = d.channelsById;
-  const ids = (state.mosaicChannels || []).slice(0, n);
+  // A stored pick only counts if it still exists AND isn't hidden (e.g. adult) —
+  // otherwise the slot opens up and gets backfilled with a visible channel.
+  const vis = (id) => id != null && byId[id] && !byId[id].isHidden;
+  const stored = state.mosaicChannels || [];
+  const ids = [];
+  for (let i = 0; i < n; i++) ids.push(vis(stored[i]) ? stored[i] : null);
   const used = new Set(ids.filter((x) => x != null));
-  for (const c of d.channels) { if (ids.length >= n) break; if (!c.isHidden && !used.has(c.id)) { ids.push(c.id); used.add(c.id); } }
-  while (ids.length < n) ids.push(null);
-  return ids.slice(0, n).map((id) => (id != null ? byId[id] || null : null));
+  for (let i = 0; i < n; i++) {
+    if (ids[i] != null) continue;
+    for (const c of d.channels) { if (!c.isHidden && !used.has(c.id)) { ids[i] = c.id; used.add(c.id); break; } }
+  }
+  return ids.map((id) => (id != null ? byId[id] || null : null));
 }
 function setMosaicChannel(slot, channelId) {
   const arr = (state.mosaicChannels || []).slice();
