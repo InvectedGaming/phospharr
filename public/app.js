@@ -1487,7 +1487,7 @@ function combinedPanel() {
       h("span", { style: "font-size:10px;font-weight:700;letter-spacing:.1em;color:#9aa0a6;border:1px solid rgba(255,255,255,0.14);border-radius:5px;padding:2px 6px" }, "CH 8000")),
     err ? h("div", { style: "font-size:12.5px;color:#ff8079" }, err)
       : h("div", { style: "font-size:12px;color:#8c9298;line-height:1.45" }, "Tune “Mosaic” (ch 8000) on your TV via Plex / Jellyfin / Emby / TiviMate — it's in your HDHR lineup + M3U — or open the link below in VLC/desktop. It mirrors this tab live: switch the audio tile, focus a tile, or change layout and the channel follows. Uses one provider slot per tile."),
-    linkRow));
+    linkRow);
 }
 
 // Small round control used in a tile's top-right cluster.
