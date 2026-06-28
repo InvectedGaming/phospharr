@@ -23,6 +23,8 @@ RUN curl -fSL https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz -o /tmp/ff.tar.xz 
       --enable-gpl --enable-version3 --enable-libx264 --enable-libzmq --enable-nvenc \
       --disable-doc --disable-ffplay --disable-debug \
  && make -j"$(nproc)" && make install
+# zmqsend CLI — the app spawns this to push live commands to the zmq filter.
+RUN make -C /tmp/ff tools/zmqsend && cp /tmp/ff/tools/zmqsend /opt/ffzmq/bin/zmqsend
 
 FROM debian:bookworm-slim
 
@@ -34,8 +36,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libzmq5 libx264-164 \
  && rm -rf /var/lib/apt/lists/*
 
-# The zmq+NVENC ffmpeg for the persistent compositor (see the builder stage).
+# The zmq+NVENC ffmpeg + zmqsend for the persistent compositor (builder stage).
 COPY --from=ffbuilder /opt/ffzmq/bin/ffmpeg /usr/local/bin/ffmpeg-zmq
+COPY --from=ffbuilder /opt/ffzmq/bin/zmqsend /usr/local/bin/zmqsend
 
 # Bun runtime (official installer → /usr/local/bin/bun).
 RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
