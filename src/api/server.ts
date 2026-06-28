@@ -16,6 +16,7 @@ import { reconcileAutoHides, listCategories, listProviderCategories } from "../c
 import { muxer } from "../proxy/muxer.ts";
 import { timeshift } from "../proxy/timeshift.ts";
 import { mosaic } from "../proxy/mosaic.ts";
+import { compositor } from "../proxy/compositor.ts";
 import { keyframeAlignedStream } from "../proxy/tsfeed.ts";
 import { transcoder } from "../proxy/transcode.ts";
 import { pool } from "../scheduler/pool.ts";
@@ -327,6 +328,27 @@ app.get("/watch/:channelId", async (c) => {
   const auth = streamAuth(c);
   if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
   return serveStream(c, channelId, true, auth.user);
+});
+
+// ── Mosaic compositor: one server-built MPEG-TS of the grid (low-latency, castable) ──
+app.get("/mosaic/live.ts", (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text(auth.status === 403 ? "off-network access is disabled" : "unauthorized — sign in, or append ?key=<stream key>", auth.status ?? 401);
+  const body = compositor.open(c.req.raw.signal);
+  if (!body) return c.text("mosaic has no channels selected", 409);
+  return new Response(body, { headers: STREAM_HEADERS });
+});
+// The mosaic tab drives the composite: which channels, layout, focused tile, audio tile.
+app.post("/api/mosaic/compose", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const b = (await c.req.json().catch(() => ({}))) as Partial<{ channels: (number | null)[]; layout: string; focus: number | null; audio: number }>;
+  const patch: Partial<import("../proxy/compositor.ts").MosaicState> = {};
+  if (Array.isArray(b.channels)) patch.channels = b.channels.map((x) => (x == null ? (null as unknown as number) : Number(x)));
+  if (b.layout === "2up" || b.layout === "2x2" || b.layout === "3x3") patch.layout = b.layout;
+  if ("focus" in b) patch.focus = b.focus == null ? null : Number(b.focus);
+  if (typeof b.audio === "number") patch.audio = b.audio;
+  compositor.setState(patch);
+  return c.json(compositor.status());
 });
 
 // Timeshift (pause / rewind live): same multiplexed TS, but replayed from a
