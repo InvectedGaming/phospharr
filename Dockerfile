@@ -1,27 +1,30 @@
 # Phospharr — self-hosted IPTV manager + viewer (Bun + ffmpeg w/ NVENC)
 #
-# Debian (glibc) base, NOT Alpine: NVENC needs the NVIDIA driver libraries the
-# container toolkit injects at runtime, and those are glibc — they can't load
-# under musl. With this base + a GPU grant in compose (+ PHOSPHARR_CAST_ENCODER=
-# h264_nvenc) the mosaic compositor / transcoder encode on the GPU.
-FROM oven/bun:1-debian
+# Debian BOOKWORM (glibc) base — NOT Alpine (musl can't load the NVIDIA encode
+# libs the container toolkit injects) and NOT trixie (jellyfin only ships the
+# driver-535-compatible jellyfin-ffmpeg6 for bookworm). With a GPU grant in
+# compose + PHOSPHARR_CAST_ENCODER=h264_nvenc, the compositor/transcoder encode
+# on the GPU. Bun is installed directly since we're off the oven/bun image.
+FROM debian:bookworm-slim
 
-# Native-VPN helpers (no Gluetun): openvpn + iproute2 run OpenVPN tunnels with
-# per-source policy routing; iptables; microsocks is the per-tunnel SOCKS proxy;
-# wireproxy (fetched below) runs WireGuard in userspace. curl/xz fetch ffmpeg.
+# Native-VPN helpers (openvpn + iproute2 policy routing; iptables; microsocks
+# SOCKS) + tooling (curl/gnupg/unzip for Bun & the jellyfin repo; git/make for
+# microsocks). wireproxy (WireGuard, userspace) is fetched at the end.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      openvpn iproute2 iptables ca-certificates curl gnupg xz-utils git build-essential \
+      openvpn iproute2 iptables ca-certificates curl gnupg unzip xz-utils git build-essential \
  && rm -rf /var/lib/apt/lists/*
 
-# NVENC-capable ffmpeg, MATCHED TO THE HOST DRIVER. The BtbN "latest" build needs
-# NVENC API 13.1 (driver 610+); this host is on 535 (API 12.1). jellyfin-ffmpeg6
-# is built for broad driver compatibility (NVENC 12.x), so it works on 535. It
-# dlopens the NVIDIA libs the container toolkit injects; falls back to libx264 with
-# no GPU. Symlinked into PATH; FFMPEG_PATH points the app at it.
+# Bun runtime (official installer → /usr/local/bin/bun).
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+ && bun --version
+
+# NVENC-capable ffmpeg matched to the host driver (535 → NVENC API 12.x).
+# jellyfin-ffmpeg6 (bookworm) is built for broad driver compat; the BtbN "latest"
+# build needs driver 610+. It dlopens the toolkit-injected NVIDIA libs; falls back
+# to libx264 with no GPU. Symlinked into PATH; FFMPEG_PATH points the app at it.
 RUN mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg \
- && . /etc/os-release \
- && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/jellyfin.list \
+ && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian bookworm main" > /etc/apt/sources.list.d/jellyfin.list \
  && apt-get update && apt-get install -y --no-install-recommends jellyfin-ffmpeg6 \
  && ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
  && ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe \
