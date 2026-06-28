@@ -77,9 +77,14 @@ export async function buildView(user?: User | null) {
     byChannel.set(s.channelId, arr);
   }
 
+  // Hidden channels (adult, hidden categories, dupes, rule-hidden) simply don't
+  // exist in the viewing payload — the guide, search, mosaic, cast and player only
+  // ever see real, playable channels, so there's nothing to leak. (Channel/source
+  // *management* reads channels separately and still sees everything.)
+  const shownRows = chanRows.filter((ch) => !ch.isHidden);
   // Restricted (non-admin) users only see channels their restrictions allow.
   const restrict = user && user.role !== "admin" ? user.restrictions : null;
-  const visibleRows = restrict ? chanRows.filter((ch) => channelVisible(ch, restrict)) : chanRows;
+  const visibleRows = restrict ? shownRows.filter((ch) => channelVisible(ch, restrict)) : shownRows;
 
   const viewChannels: ViewChannel[] = visibleRows.map((ch) => {
     const ss = byChannel.get(ch.id) ?? [];
@@ -107,7 +112,7 @@ export async function buildView(user?: User | null) {
   return {
     now: Date.now(),
     serverHealth: {
-      channels: viewChannels.filter((c) => !c.isHidden).length,
+      channels: viewChannels.length,
       streams: streamRows.length,
       sources: provRows.length,
     },

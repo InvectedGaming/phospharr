@@ -297,10 +297,13 @@ function streamAuth(c: Context<Env>): { ok: boolean; user?: User; status?: 401 |
   return { ok: false, status: 403 }; // valid key but off-network and not opted in
 }
 async function serveStream(c: Context<Env>, channelId: number, transcode: boolean, user?: User) {
+  const ch = db.select({ category: channels.category, isHidden: channels.isHidden }).from(channels).where(eq(channels.id, channelId)).get();
+  // Hidden channels (adult, hidden categories, dupes, rule-hidden) aren't part of
+  // the lineup, so they aren't playable either — even by a stale or direct id.
+  if (!ch || ch.isHidden) return c.text("not found", 404);
   // A restricted (non-admin) viewer can't stream a channel they aren't allowed to see.
   if (user && user.role !== "admin") {
-    const ch = db.select({ category: channels.category }).from(channels).where(eq(channels.id, channelId)).get();
-    if (!channelVisible({ id: channelId, category: ch?.category ?? null }, user.restrictions)) return c.text("forbidden", 403);
+    if (!channelVisible({ id: channelId, category: ch.category ?? null }, user.restrictions)) return c.text("forbidden", 403);
   }
   if (transcode && !(await getSetting("features.transcode"))) return c.text("transcode disabled", 503);
   const body = transcode ? await transcoder.open(channelId, c.req.raw.signal) : await muxer.open(channelId, c.req.raw.signal);
