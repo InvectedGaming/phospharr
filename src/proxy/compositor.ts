@@ -16,9 +16,9 @@ import { cachedSetting } from "../settings.ts";
  */
 
 const PORT = Number(process.env.PORT ?? 7777);
-// 540p keeps the CPU encode (libx264) comfortably realtime for a multi-tile grid
-// on a shared box — plenty for small tiles. Bump back to 1280x720 once NVENC is in.
-const W = 960, H = 540, FPS = 25;
+// 720p — fine for the GPU (NVENC). Without a GPU (PHOSPHARR_CAST_ENCODER unset →
+// libx264) drop this to 960x540 if the CPU can't hold realtime on a busy grid.
+const W = 1280, H = 720, FPS = 25;
 
 export type MosaicLayout = "2up" | "2x2" | "3x3";
 export interface MosaicState { channels: number[]; layout: MosaicLayout; focus: number | null; audio: number }
