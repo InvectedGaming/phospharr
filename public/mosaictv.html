@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Phospharr · Mosaic TV</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+    #grid { position: fixed; inset: 0; display: grid; gap: 2px; background: #000; }
+    .tile { position: relative; background: #0a0c0f; overflow: hidden; min-width: 0; min-height: 0; }
+    .tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+    .tile .lbl { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: 10px 13px; background: linear-gradient(transparent, rgba(0,0,0,.82)); color: #fff; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile .au { position: absolute; top: 9px; right: 9px; z-index: 2; padding: 3px 8px; border-radius: 7px; background: rgba(84,182,255,.9); color: #06121c; font-size: 12px; font-weight: 700; display: none; }
+    .tile.audio { box-shadow: inset 0 0 0 3px #54b6ff; }
+    .tile.audio .au { display: block; }
+    #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #6b7178; font-size: 20px; text-align: center; padding: 24px; }
+    #tap { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; background: rgba(4,6,9,.9); color: #dfe3e7; font-size: 22px; cursor: pointer; }
+    #tap .play { width: 70px; height: 70px; border-radius: 50%; border: 2px solid #54b6ff; display: flex; align-items: center; justify-content: center; font-size: 30px; color: #54b6ff; }
+  </style>
+</head>
+<body>
+  <div id="grid"></div>
+  <div id="msg">Waiting for the mosaic… pick channels in the app.</div>
+  <div id="tap"><div class="play">▶</div><div>Tap to start the mosaic</div></div>
+  <script src="/vendor/mpegts.js"></script>
+  <script>
+  (function () {
+    var KEY = new URLSearchParams(location.search).get("key") || "";
+    var grid = document.getElementById("grid"), msg = document.getElementById("msg"), tap = document.getElementById("tap");
+    var players = {}; // channelId -> { video, player, tileEl, lbl }
+    var lastSig = "", started = false, lastState = null;
+
+    function streamUrl(id) { return "/stream/" + id + "?key=" + encodeURIComponent(KEY); }
+
+    function makeTile(id) {
+      var tileEl = document.createElement("div"); tileEl.className = "tile";
+      var video = document.createElement("video"); video.autoplay = true; video.playsInline = true; video.muted = true;
+      var au = document.createElement("div"); au.className = "au"; au.textContent = "♪ SOUND";
+      var lbl = document.createElement("div"); lbl.className = "lbl";
+      tileEl.appendChild(video); tileEl.appendChild(au); tileEl.appendChild(lbl);
+      var player = null;
+      if (window.mpegts && mpegts.isSupported()) {
+        player = mpegts.createPlayer({ type: "mpegts", isLive: true, url: streamUrl(id), withCredentials: false },
+          { enableWorker: true, liveBufferLatencyChasing: true, lazyLoad: false, autoCleanupSourceBuffer: true });
+        player.attachMediaElement(video); player.load(); video.play().catch(function () {});
+      }
+      players[id] = { video: video, player: player, tileEl: tileEl, lbl: lbl };
+      return players[id];
+    }
+    function destroyTile(id) {
+      var e = players[id]; if (!e) return;
+      try { e.player && e.player.destroy(); } catch (x) {}
+      try { e.tileEl.remove(); } catch (x) {}
+      delete players[id];
+    }
+
+    function render(state) {
+      lastState = state;
+      var tiles = state.tiles || [], focus = state.focus, audio = state.audio || 0, layout = state.layout || "2x2";
+      if (!tiles.length) { msg.style.display = "flex"; for (var k in players) destroyTile(k); return; }
+      msg.style.display = "none";
+
+      var keep = {};
+      tiles.forEach(function (t) { keep[t.id] = 1; if (!players[t.id]) makeTile(t.id); });
+      for (var id in players) if (!keep[id]) destroyTile(id);
+
+      var focused = (focus != null && tiles[focus]) ? tiles[focus].id : null;
+      if (focused != null) { grid.style.gridTemplateColumns = "1fr"; grid.style.gridTemplateRows = "1fr"; }
+      else {
+        var cols = layout === "3x3" ? 3 : 2;
+        var rows = layout === "3x3" ? 3 : (layout === "2up" ? 1 : 2);
+        grid.style.gridTemplateColumns = "repeat(" + cols + ",1fr)";
+        grid.style.gridTemplateRows = "repeat(" + rows + ",1fr)";
+      }
+      tiles.forEach(function (t, i) {
+        var e = players[t.id]; if (!e) return;
+        if (e.tileEl.parentNode !== grid) grid.appendChild(e.tileEl);
+        e.tileEl.style.display = (focused == null || t.id === focused) ? "block" : "none";
+        var isAudio = i === audio;
+        e.video.muted = !isAudio || !started; // sound only after the start gesture
+        e.tileEl.className = "tile" + (isAudio ? " audio" : "");
+        e.lbl.textContent = (t.number != null ? "#" + t.number + "  " : "") + (t.name || "");
+      });
+    }
+
+    function poll() {
+      fetch("/api/mosaic/state?key=" + encodeURIComponent(KEY), { cache: "no-store" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (s) { if (!s) return; var sig = JSON.stringify(s); if (sig !== lastSig) { lastSig = sig; render(s); } })
+        .catch(function () {});
+    }
+
+    tap.addEventListener("click", function () {
+      started = true; tap.style.display = "none";
+      for (var id in players) { try { players[id].video.play().catch(function () {}); } catch (x) {} }
+      if (lastState) { lastSig = ""; render(lastState); } // re-apply mute now that we have a gesture
+    });
+
+    poll(); setInterval(poll, 1000);
+  })();
+  </script>
+</body>
+</html>

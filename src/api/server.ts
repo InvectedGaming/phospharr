@@ -362,6 +362,27 @@ app.post("/api/mosaic/compose", async (c) => {
   return c.json(compositor.status());
 });
 
+// Shared mosaic state for the TV display page to poll (key-gated so a TV browser
+// can read it without a login). Enriched with channel render info so the display
+// needs nothing else. The controller (the mosaic tab) writes via /compose above.
+app.get("/api/mosaic/state", (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
+  const st = compositor.getState();
+  const tiles = st.channels.filter((id): id is number => id != null).map((id) => {
+    const ch = db.select({ id: channels.id, name: channels.name, number: channels.number, logoUrl: channels.logoUrl }).from(channels).where(eq(channels.id, id)).get();
+    return ch ?? { id, name: "#" + id, number: null, logoUrl: null };
+  });
+  return c.json({ layout: st.layout, focus: st.focus, audio: st.audio, tiles });
+});
+// The TV display: a clean fullscreen mosaic that mirrors the shared state, playing
+// tiles straight from the muxer (no transcode). Open this on a browser by the TV.
+app.get("/mosaic/tv", (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text("unauthorized — append ?key=<stream key>", auth.status ?? 401);
+  return new Response(Bun.file(`${publicDir}/mosaictv.html`), { headers: { "Content-Type": "text/html", "Cache-Control": noStore } });
+});
+
 // Timeshift (pause / rewind live): same multiplexed TS, but replayed from a
 // rolling buffer starting `behind` seconds in the past, then running into live.
 app.get("/timeshift/:channelId", async (c) => {

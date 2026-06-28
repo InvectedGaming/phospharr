@@ -145,6 +145,7 @@ const state = {
   mosaicCombinedBusy: false, // start request in flight
   mosaicCombinedUrl: null, // castable HLS link once started
   mosaicCombinedErr: null,
+  tvUrl: null, // /mosaic/tv link to open on a TV browser (mirrors this tab)
   density: "comfortable", // guide row density: 'comfortable' | 'compact'
   guideOnlyWithEpg: true, // guide shows only channels that have program data
   networkGroup: localStorage.getItem("phospharr.netgroup") !== "off", // collapse affiliate clusters into one row
@@ -1307,6 +1308,31 @@ function stopInTabCapture() {
 function pushCast() { return fetch("/api/mosaic/cast", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(castState()) }); }
 
 function pushCompose() { return fetch("/api/mosaic/compose", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(castState()) }); }
+// Open-on-TV: push the current mosaic state, then surface the /mosaic/tv link to
+// open on a browser by the TV. That page mirrors this tab live, playing tiles
+// straight from the muxer (no transcode) — the page-first cast.
+async function openTvLink() {
+  const cs = castState();
+  if (!cs.channels.length) { set({ mosaicCombinedErr: "Pick a channel for a tile first." }); return; }
+  await pushCompose().catch(() => {}); // make sure the server has this mosaic
+  const meta = await fetch("/api/mosaic/status").then((r) => r.json()).catch(() => ({}));
+  const key = meta.key || "";
+  set({ tvUrl: location.origin + "/mosaic/tv" + (key ? "?key=" + encodeURIComponent(key) : "") });
+}
+function tvPanel() {
+  if (!state.tvUrl) return null;
+  const url = state.tvUrl;
+  return h("div", { style: "flex:none;margin:0 24px 6px;padding:13px 15px;border:1px solid rgba(127,220,160,0.28);border-radius:13px;background:rgba(127,220,160,0.06);display:flex;flex-direction:column;gap:9px" },
+    h("div", { style: "display:flex;align-items:center;gap:9px" },
+      h("span", { style: "width:8px;height:8px;border-radius:50%;background:#2fae5c;box-shadow:0 0 8px #2fae5c" }),
+      h("span", { style: "font-size:14px;font-weight:700;color:#e6e9ec" }, "Open this on your TV"),
+      h("button", { onClick: () => set({ tvUrl: null }), style: "margin-left:auto;height:26px;padding:0 10px;border-radius:7px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#9aa0a6;font-size:12px;cursor:pointer" }, "Hide")),
+    h("div", { style: "font-size:12px;color:#8c9298;line-height:1.45" }, "Open this link in a browser by your TV — a smart-TV browser, Chromecast/Android TV, a Fire stick, or a mini-PC. It plays the tiles straight from the server (instant, low-latency) and mirrors THIS tab live: change channels, layout, focus, or the 🔊 tile here and the TV follows. No transcode, no loading. (Tap once on the TV to enable sound.)"),
+    h("div", { style: "display:flex;align-items:center;gap:8px;flex-wrap:wrap" },
+      h("input", { value: url, readonly: true, onClick: (e) => e.target.select(), style: "flex:1;min-width:180px;height:32px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:0 10px;color:#cfe8ff;font-family:'JetBrains Mono',monospace;font-size:12px;outline:none" }),
+      h("button", { onClick: () => copyText(url), style: "flex:none;height:32px;padding:0 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:12.5px;font-weight:600;cursor:pointer" }, "Copy"),
+      h("button", { onClick: () => window.open(url, "_blank"), style: "flex:none;height:32px;padding:0 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:12.5px;font-weight:600;cursor:pointer" }, "Open here")));
+}
 async function startCombined() {
   const cs = castState();
   if (!cs.channels.length) { set({ mosaicCombinedErr: "Pick a channel for a tile first.", mosaicCombined: false }); return; }
@@ -1323,7 +1349,8 @@ async function startCombined() {
 // Reflect a focus / audio / channel change. In-tab: the draw loop already reads
 // live state; just refresh the audio gain. Server: debounced push to the renderer.
 function recastIfOn() {
-  if (!state.mosaicCombined) return;
+  // Always publish the mosaic state so the TV display (/mosaic/tv) mirrors this tab
+  // live, and the cast-as-channel — if running — picks it up too.
   if (castPushTimer) clearTimeout(castPushTimer);
   castPushTimer = setTimeout(() => { castPushTimer = null; pushCompose().catch(() => {}); }, 150);
 }
@@ -1382,9 +1409,12 @@ function mosaicScreen() {
   const seg = (on) => ({ display: "flex", alignItems: "center", height: "30px", padding: "0 14px", borderRadius: "8px", border: "none", background: on ? AC : "transparent", color: on ? "#06121c" : "#aeb4ba", fontSize: "13px", fontWeight: 600, cursor: "pointer", transition: "all .15s" });
 
   const on = state.mosaicCombined;
-  const combinedBtn = h("button", { onClick: () => (on ? stopCombined() : startCombined()),
-    style: "display:flex;align-items:center;gap:8px;height:36px;padding:0 14px;border-radius:9px;border:1px solid " + (on ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.12)") + ";background:" + (on ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.05)") + ";color:" + (on ? "#cfe8ff" : "#dfe3e7") + ";font-size:13px;font-weight:600;cursor:pointer" },
-    icon(on ? "cast" : "cast", 15, on ? 0.85 : 0.7), on ? "Casting" : "Cast to TV");
+  const openTvBtn = h("button", { onClick: openTvLink, title: "Open the mosaic on a browser by your TV — instant, mirrors this tab.",
+    style: "display:flex;align-items:center;gap:8px;height:36px;padding:0 15px;border-radius:9px;border:none;background:" + AC + ";color:#06121c;font-size:13px;font-weight:700;cursor:pointer" },
+    icon("tv", 15, 0.05), "Open on TV");
+  const combinedBtn = h("button", { onClick: () => (on ? stopCombined() : startCombined()), title: "Tuner fallback (Plex / cable box): re-encodes the grid into one channel, so it adds a few seconds of delay. For most TVs, use Open on TV.",
+    style: "display:flex;align-items:center;gap:7px;height:36px;padding:0 13px;border-radius:9px;border:1px solid " + (on ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.12)") + ";background:" + (on ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";color:" + (on ? "#cfe8ff" : "#9aa0a6") + ";font-size:12.5px;font-weight:600;cursor:pointer" },
+    icon("cast", 14, 0.6), on ? "Casting (channel)" : "Cast as channel");
 
   return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0" },
     h("div", { style: "flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:18px 24px 14px;gap:12px;flex-wrap:wrap" },
@@ -1393,13 +1423,15 @@ function mosaicScreen() {
         h("div", { style: "font-size:13px;color:#7e858c;margin-top:3px" }, isStage
           ? "Controller — one channel on the big screen with its sound; tap a thumbnail to switch."
           : `${liveN} live tiles · one audio-active · click a tile's ⤡ to swap channel`)),
-      h("div", { style: "display:flex;align-items:center;gap:10px" },
+      h("div", { style: "display:flex;align-items:center;gap:10px;flex-wrap:wrap" },
+        openTvBtn,
         combinedBtn,
         h("div", { style: "display:flex;padding:3px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:10px;gap:2px" },
           h("button", { style: seg(isStage), onClick: () => { set({ mosaicLayout: "stage" }); recastIfOn(); } }, "Stage"),
           h("button", { style: seg(state.mosaicLayout === "2up"), onClick: () => { set({ mosaicLayout: "2up" }); recastIfOn(); } }, "2-up"),
           h("button", { style: seg(state.mosaicLayout === "2x2"), onClick: () => { set({ mosaicLayout: "2x2" }); recastIfOn(); } }, "2×2"),
           h("button", { style: seg(state.mosaicLayout === "3x3"), onClick: () => { set({ mosaicLayout: "3x3" }); recastIfOn(); } }, "3×3")))),
+    tvPanel(),
     combinedPanel(),
     isStage
       ? stageView(slots, isMobile())
