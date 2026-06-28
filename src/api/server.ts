@@ -17,6 +17,7 @@ import { muxer } from "../proxy/muxer.ts";
 import { timeshift } from "../proxy/timeshift.ts";
 import { mosaic } from "../proxy/mosaic.ts";
 import { compositor } from "../proxy/compositor.ts";
+import { readFileSync } from "node:fs";
 import { keyframeAlignedStream } from "../proxy/tsfeed.ts";
 import { transcoder } from "../proxy/transcode.ts";
 import { pool } from "../scheduler/pool.ts";
@@ -78,7 +79,16 @@ const publicDir = new URL("../../public", import.meta.url).pathname.replace(/^\/
 // The app shell + script must never be cached — otherwise a browser keeps
 // running a stale build and silently misses new features/fixes.
 const noStore = "no-store, no-cache, must-revalidate";
-app.get("/", () => new Response(Bun.file(`${publicDir}/index.html`), { headers: { "Content-Type": "text/html", "Cache-Control": noStore } }));
+// Cache-bust client JS: a CDN (Cloudflare) caches .js by extension and ignores
+// our no-store, pinning a stale app.js across deploys. index.html is never
+// CDN-cached, so stamp the asset URLs with a content hash (?v=) that changes only
+// when app.js changes — each deploy is a fresh URL the CDN must refetch.
+const assetVer = (() => { try { return Bun.hash(readFileSync(`${publicDir}/app.js`)).toString(36); } catch { return Date.now().toString(36); } })();
+const indexHtml = (() => {
+  try { return readFileSync(`${publicDir}/index.html`, "utf8").replace(/(src|href)="(\/app\.js|\/vendor\/[^"]+\.js)"/g, `$1="$2?v=${assetVer}"`); }
+  catch { return ""; }
+})();
+app.get("/", () => new Response(indexHtml, { headers: { "Content-Type": "text/html", "Cache-Control": noStore } }));
 app.get("/app.js", () => new Response(Bun.file(`${publicDir}/app.js`), { headers: { "Content-Type": "text/javascript", "Cache-Control": noStore } }));
 app.get("/vendor/mpegts.js", () =>
   new Response(Bun.file(`${publicDir}/vendor/mpegts.js`), {
