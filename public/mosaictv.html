@@ -30,22 +30,31 @@
     var players = {}; // channelId -> { video, player, tileEl, lbl }
     var lastSig = "", started = false, lastState = null;
 
-    function streamUrl(id) { return "/stream/" + id + "?key=" + encodeURIComponent(KEY); }
-
+    // /stream is raw passthrough; if the browser can't decode it (AC-3 audio / HEVC),
+    // fall back to /watch, which the server transcodes to AAC + H.264. Same logic the
+    // main app uses — without it, AC-3 channels show black + silent.
+    function startMpegts(e, id, transcode) {
+      if (e.player) { try { e.player.destroy(); } catch (x) {} e.player = null; }
+      if (!window.mpegts || !mpegts.isSupported()) return;
+      var url = (transcode ? "/watch/" : "/stream/") + id + "?key=" + encodeURIComponent(KEY);
+      var p = mpegts.createPlayer({ type: "mpegts", isLive: true, url: url, withCredentials: false },
+        { enableWorker: true, liveBufferLatencyChasing: true, lazyLoad: false, autoCleanupSourceBuffer: true });
+      e.player = p; p.attachMediaElement(e.video);
+      p.on(mpegts.Events.ERROR, function (t, detail, info) {
+        var codec = String(detail).indexOf("MSE") >= 0 || /codec|unsupported|addSourceBuffer/i.test((info && info.msg) || "");
+        if (!transcode && codec && players[id]) startMpegts(e, id, true);
+      });
+      p.load(); e.video.play().catch(function () {});
+    }
     function makeTile(id) {
       var tileEl = document.createElement("div"); tileEl.className = "tile";
       var video = document.createElement("video"); video.autoplay = true; video.playsInline = true; video.muted = true;
       var au = document.createElement("div"); au.className = "au"; au.textContent = "♪ SOUND";
       var lbl = document.createElement("div"); lbl.className = "lbl";
       tileEl.appendChild(video); tileEl.appendChild(au); tileEl.appendChild(lbl);
-      var player = null;
-      if (window.mpegts && mpegts.isSupported()) {
-        player = mpegts.createPlayer({ type: "mpegts", isLive: true, url: streamUrl(id), withCredentials: false },
-          { enableWorker: true, liveBufferLatencyChasing: true, lazyLoad: false, autoCleanupSourceBuffer: true });
-        player.attachMediaElement(video); player.load(); video.play().catch(function () {});
-      }
-      players[id] = { video: video, player: player, tileEl: tileEl, lbl: lbl };
-      return players[id];
+      var e = players[id] = { video: video, player: null, tileEl: tileEl, lbl: lbl };
+      startMpegts(e, id, false);
+      return e;
     }
     function destroyTile(id) {
       var e = players[id]; if (!e) return;
