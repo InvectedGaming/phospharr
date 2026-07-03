@@ -34,6 +34,10 @@ export async function exportXmltv(): Promise<string> {
 
   const seen = new Set<string>();
   const parts: string[] = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Phospharr">'];
+  // Channel 1, the always-listed mosaic composite — no DB row; gets filler
+  // blocks below so tuner consumers show a titled guide instead of a blank.
+  seen.add("phospharr.mosaic");
+  parts.push('<channel id="phospharr.mosaic"><display-name>Mosaic</display-name></channel>');
   for (const ch of chans) {
     if (!ch.canonicalId || seen.has(ch.canonicalId)) continue;
     seen.add(ch.canonicalId);
@@ -67,6 +71,7 @@ export async function exportXmltv(): Promise<string> {
   // mapping. Emit hour-aligned 4h blocks titled with the channel name so the
   // guide is fully populated and the channel is identifiable at a glance.
   const nameByCanonical = new Map(chans.map((c) => [c.canonicalId!, c.name]));
+  nameByCanonical.set("phospharr.mosaic", "Mosaic — compose in Phospharr");
   const blockSec = 4 * 3600;
   const fillStart = Math.floor((now - WINDOW_BEHIND) / 3600) * 3600;
   for (const cid of seen) {

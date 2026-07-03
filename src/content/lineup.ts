@@ -7,13 +7,13 @@ import { classify, localNetwork, GENRES, type Taxonomy } from "./taxonomy.ts";
  * Cable-style lineup numbering. Channels live in genre/kind blocks like a real
  * cable plan, so surfing and the guide read sensibly:
  *
- *     1–  99  reserved for manual pins (never auto-assigned)
+ *          1  Mosaic (virtual — src/tuner/hdhr.ts, always listed)
+ *     2–  99  reserved for manual pins (never auto-assigned)
  *   100– 249  News
  *   250– 449  Sports (+ PPV events)
  *   450–1499  Networks by genre (Movies → Entertainment → … alphabetical inside)
  *  1500–2999  Locals — ABC, NBC, CBS, FOX, CW, PBS, then misc; by market inside
  *  3000–7999  24/7 loops — grouped by genre, alphabetical inside
- *       8000  Mosaic (virtual — src/tuner/hdhr.ts)
  *  8100–9999  International
  *
  * Numbers are STICKY: syncs only assign numbers to NEW channels (next free slot
@@ -81,7 +81,7 @@ export async function reflowLineup(): Promise<{ channels: number }> {
   // mid-flight, then assign blocks in ascending order with a global used-set —
   // an overflowing block spills into the next free numbers instead of failing.
   await db.update(channels).set({ number: sql`-${channels.id}` });
-  const used = new Set<number>([8000]); // the mosaic's virtual number stays reserved
+  const used = new Set<number>([1]); // the mosaic's virtual channel 1 stays reserved
   const ordered = [...buckets.values()].sort((a, b) => a.block.start - b.block.start);
   for (const { block, rows: rs } of ordered) {
     rs.sort(blockSort);
@@ -101,7 +101,7 @@ export async function assignNumbersInBlocks(ids: number[]): Promise<void> {
   const used = new Set<number>(
     (await db.select({ n: channels.number }).from(channels).where(sql`${channels.number} IS NOT NULL`)).map((r) => Math.floor(r.n!)),
   );
-  used.add(8000); // mosaic's virtual number — no DB row, still reserved
+  used.add(1); // mosaic's virtual channel — no DB row, still reserved
   for (const id of ids) {
     const [row] = await db
       .select({ name: channels.name, category: channels.category, kind: channels.kind, genre: channels.genre })

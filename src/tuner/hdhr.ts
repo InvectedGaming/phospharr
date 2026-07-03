@@ -1,13 +1,13 @@
 import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { channels, streams } from "../db/schema.ts";
-import { compositor } from "../proxy/compositor.ts";
 import { VERSION } from "../version.ts";
 
-// Reserved virtual channel for the live mosaic composite (only listed while the
-// mosaic tab has it running).
-const MOSAIC_NUMBER = 8000;
-const mosaicActive = () => compositor.getState().channels.filter(Boolean).length > 0;
+// Channel 1: the live mosaic composite. ALWAYS listed — tuner consumers (Emby,
+// Plex) cache the lineup and refresh rarely, so a channel that appears only
+// while composed would effectively never exist for them. Tuning it before the
+// app has composed anything returns 503 until channels are picked in Mosaic.
+const MOSAIC_NUMBER = 1;
 
 /**
  * HDHomeRun emulation. Makes Phospharr look like an HDHR tuner so Plex, Jellyfin,
@@ -64,7 +64,7 @@ export async function lineup(baseUrl: string) {
     URL: `${baseUrl}/stream/${ch.id}`,
     HD: 1,
   }));
-  if (mosaicActive()) list.unshift({ GuideNumber: String(MOSAIC_NUMBER), GuideName: "Mosaic", URL: `${baseUrl}/mosaic.ts`, HD: 1 });
+  list.unshift({ GuideNumber: String(MOSAIC_NUMBER), GuideName: "Mosaic", URL: `${baseUrl}/mosaic.ts`, HD: 1 });
   return list;
 }
 
@@ -80,10 +80,8 @@ export async function playlistM3U(baseUrl: string): Promise<string> {
     .where(and(eq(channels.isHidden, false), isNotNull(channels.number), hasUsableSource))
     .orderBy(channels.number);
   const out = ["#EXTM3U"];
-  if (mosaicActive()) {
-    out.push(`#EXTINF:-1 tvg-id="phospharr.mosaic" tvg-chno="${MOSAIC_NUMBER}" tvg-name="Mosaic" group-title="Phospharr",Mosaic`);
-    out.push(`${baseUrl}/mosaic.ts`);
-  }
+  out.push(`#EXTINF:-1 tvg-id="phospharr.mosaic" tvg-chno="${MOSAIC_NUMBER}" tvg-name="Mosaic" group-title="Phospharr",Mosaic`);
+  out.push(`${baseUrl}/mosaic.ts`);
   for (const ch of rows) {
     const tvgId = ch.canonicalId ?? ch.epgChannelId ?? String(ch.id);
     // Clean taxonomy group (Emby/TiviMate group channels by this) — falls back
