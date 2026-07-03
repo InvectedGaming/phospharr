@@ -772,7 +772,7 @@ function guideScreen() {
   // Low tint so the video shows through; backdrop-filter does the legibility work.
   // On phones the ambient video behind a dense grid washes everything out, so use
   // a much heavier scrim (just a faint glow shows through) for legibility.
-  const stickyBg = ambient ? (mob ? "rgba(10,11,14,0.74)" : "rgba(14,16,20,0.28)") : "#0c0d0e";
+  const stickyBg = ambient ? (mob ? "rgba(10,11,14,0.74)" : "rgba(14,16,20,0.52)") : "#0c0d0e";
   const frost = ambient ? ";backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)" : "";
   const scrollerAmbientBg = mob ? "rgba(8,9,11,0.76)" : "rgba(11,12,15,0.3)";
 
@@ -906,13 +906,18 @@ function guideScreen() {
 
   if (ambient) {
     const fc = focusSel.ch;
+    // When the video isn't rendering (previews off, stream still loading) the
+    // backdrop is what shows. The old fc.grad painted the WHOLE page in one
+    // saturated genre gradient — use a near-black canvas with a whisper of the
+    // channel color instead; a real video simply covers it.
+    const ambientBg = "radial-gradient(130% 110% at 18% -8%," + (fc.color || "#3a4a5a") + "1c 0%,rgba(0,0,0,0) 55%),#0b0c0f";
     if (mob) {
       // Phones are portrait, so covering the whole tall container zooms a 16:9
       // feed to a tiny central sliver. Pin the video to a top preview BAND so
       // cover scales it far less and you see most of the actual frame, full-bleed.
       const previewH = 290;
       return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0;position:relative;overflow:hidden" },
-        h("div", { style: "position:absolute;inset:0;z-index:0;overflow:hidden;background:" + fc.grad },
+        h("div", { style: "position:absolute;inset:0;z-index:0;overflow:hidden;background:" + ambientBg },
           h("div", { style: "position:absolute;top:0;left:0;right:0;height:" + previewH + "px;overflow:hidden" },
             tileVideo("detail", fc.id, state.detailMuted))),
         // Darken only the top (header) and bottom (info) of the band; leave the
@@ -922,7 +927,7 @@ function guideScreen() {
     }
     return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0;position:relative;overflow:hidden" },
       // sharp full-screen background video (the grid frosts it via backdrop-filter)
-      h("div", { style: "position:absolute;inset:0;z-index:0;overflow:hidden;background:" + fc.grad },
+      h("div", { style: "position:absolute;inset:0;z-index:0;overflow:hidden;background:" + ambientBg },
         tileVideo("detail", fc.id, state.detailMuted)),
       // subtle left fade so the hero text reads over the sharp video
       h("div", { style: "position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(100deg,rgba(9,10,11,0.86) 0%,rgba(9,10,11,0.5) 26%,rgba(9,10,11,0) 56%)" }),
@@ -1081,32 +1086,58 @@ function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
   const cells = programsFor(ch).map((p, pi) => {
     const id = ci + "-" + pi;
     const onNow = p.start <= now && p.end > now && !p.filler;
+    const isPast = !p.filler && p.end <= now;
     const sel = state.selectedCellId === id;
     const startsBefore = !p.filler && p.start < windowStart;
     const endsAfter = !p.filler && p.end > windowEnd;
     const left = Math.max(0, ((p.start - windowStart) / 60000) * PXPM);
     const rawW = ((p.end - windowStart) / 60000) * PXPM - left;
     const width = Math.max(54, rawW - 5);
-    return h("div", { style: { position: "absolute", top: "6px", bottom: "6px", left: left + "px", width: width + "px" }, onClick: () => { if (mob) showGuideHero(); set({ selectedCellId: id }); } },
-      h("div", { class: "aer-cell", style: {
-        height: "100%", borderRadius: "9px", overflow: "hidden", position: "relative", display: "flex", flexDirection: "column", justifyContent: "flex-end",
-        padding: "9px 11px", cursor: "pointer", transition: "transform .14s, box-shadow .14s, border-color .14s",
-        border: "1px solid " + (sel ? AC : onNow ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)"),
-        background: onNow ? ch.grad : "rgba(255,255,255,0.028)",
-        boxShadow: sel ? "0 0 0 1px " + AC + ", 0 0 26px rgba(84,182,255,0.32)" : "none",
-      } },
-        onNow ? h("div", { style: { position: "absolute", inset: 0, background: "repeating-linear-gradient(0deg,rgba(255,255,255,0.05) 0,rgba(255,255,255,0.05) 1px,transparent 1px,transparent 3px)", opacity: 0.5 } }) : null,
-        onNow ? h("div", { style: "position:absolute;top:7px;left:8px;display:flex;align-items:center;gap:5px;padding:2px 7px;background:rgba(8,10,12,0.66);border-radius:6px;backdrop-filter:blur(4px)" },
-          h("span", { style: "width:6px;height:6px;border-radius:50%;background:#ff5d52;box-shadow:0 0 7px #ff5d52;animation:aerBlink 2s infinite" }),
-          h("span", { style: "font-size:9.5px;font-weight:700;letter-spacing:.12em;color:#f5f0e6" }, "LIVE")) : null,
-        !onNow ? h("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: "3px", background: ch.color, opacity: 0.55 } }) : null,
-        startsBefore ? h("div", { style: "position:absolute;left:4px;top:50%;transform:translateY(-50%);z-index:3;color:#9aa0a6;font-size:15px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,0.6)" }, "‹") : null,
-        endsAfter ? h("div", { style: "position:absolute;right:4px;top:50%;transform:translateY(-50%);z-index:3;color:#9aa0a6;font-size:15px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,0.6)" }, "›") : null,
-        h("div", { style: "position:relative;z-index:2" },
-          h("div", { style: { fontSize: "13.5px", fontWeight: 600, color: onNow ? "#f5f7f9" : "#cfd3d8", lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: onNow ? "0 1px 6px rgba(0,0,0,0.5)" : "none" } }, p.title),
-          // The per-cell time line clips to noise ("180", ":80") in narrow phone
-          // cells and is redundant with the time axis — drop it on mobile.
-          mob ? null : h("div", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: "10.5px", color: onNow ? "rgba(245,247,249,0.75)" : "#6b7178", marginTop: "2px" } }, p.filler ? "" : fmtClock(p.start) + " – " + fmtClock(p.end)))));
+    // Quiet cells: neutral elevated surfaces, the genre color reduced to a thin
+    // identity strip + a faint tint on the airing program. The old full-cell
+    // gradient turned every on-now row into a saturated wall; emphasis now comes
+    // from a brighter surface, white title, inline LIVE, and an elapsed bar.
+    const tint = ch.color || "#9aa6b2";
+    const prog = onNow ? Math.max(0, Math.min(1, (now - p.start) / (p.end - p.start || 1))) : 0;
+    // Two layers: a clipped chrome layer (surface, strip, progress) and an
+    // UNCLIPPED sticky text block. position:sticky pins the title to the
+    // viewport's left edge while a long cell scrolls under it — without this,
+    // an on-now program that started off-screen reads as a big empty slab.
+    const chrome = h("div", { class: "aer-cell", style: {
+      position: "absolute", inset: "0", borderRadius: "9px", overflow: "hidden", cursor: "pointer",
+      border: "1px solid " + (sel ? AC : onNow ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.055)"),
+      background: onNow
+        ? "linear-gradient(180deg," + tint + "30 0%," + tint + "12 52%,rgba(255,255,255,0.02) 100%),rgba(255,255,255,0.03)"
+        : "rgba(255,255,255,0.028)",
+      boxShadow: sel ? "0 0 0 1px " + AC + ", 0 0 26px rgba(84,182,255,0.32)" : onNow ? "inset 0 1px 0 rgba(255,255,255,0.08)" : "none",
+    } },
+      // per-channel identity strip (all cells; brighter while airing)
+      p.filler ? null : h("div", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: "3px", background: tint, opacity: onNow ? 0.95 : isPast ? 0.2 : 0.4 } }),
+      startsBefore ? h("div", { style: "position:absolute;left:5px;top:50%;transform:translateY(-50%);color:#9aa0a6;font-size:15px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,0.6)" }, "‹") : null,
+      endsAfter ? h("div", { style: "position:absolute;right:4px;top:50%;transform:translateY(-50%);color:#9aa0a6;font-size:15px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,0.6)" }, "›") : null,
+      // phones drop the time row, so the airing cue is a small pulsing dot
+      mob && onNow ? h("span", { style: "position:absolute;top:8px;right:9px;width:6px;height:6px;border-radius:50%;background:#ff5d52;box-shadow:0 0 7px #ff5d52;animation:aerBlink 2s infinite" }) : null,
+      // elapsed progress along the bottom of the airing cell
+      onNow ? h("div", { style: "position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,0.07)" },
+        h("div", { style: { height: "100%", width: Math.round(prog * 100) + "%", background: tint, boxShadow: "0 0 6px " + tint, borderRadius: "0 2px 2px 0" } })) : null);
+    const text = h("div", { style: {
+      position: "sticky", left: (COLW + 12) + "px", alignSelf: "flex-start",
+      maxWidth: "100%", minWidth: 0, zIndex: 2, pointerEvents: "none",
+      padding: "0 12px " + (onNow && !mob ? "10px" : "8px") + " 13px",
+      opacity: isPast ? 0.52 : 1,
+    } },
+      h("div", { style: { fontSize: "13.5px", fontWeight: onNow ? 700 : 600, color: onNow ? "#f7f9fb" : "#cfd3d8", lineHeight: 1.25, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textShadow: onNow ? "0 1px 5px rgba(0,0,0,0.45)" : "none" } }, p.title),
+      // The per-cell time line clips to noise ("180", ":80") in narrow phone
+      // cells and is redundant with the time axis — drop it on mobile.
+      mob ? null : h("div", { style: "display:flex;align-items:center;gap:7px;margin-top:2px;min-width:0" },
+        h("span", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: "10.5px", color: onNow ? "rgba(245,247,249,0.72)" : "#6b7178", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, p.filler ? "" : fmtClock(p.start) + " – " + fmtClock(p.end)),
+        onNow ? h("span", { style: "flex:none;display:inline-flex;align-items:center;gap:4px" },
+          h("span", { style: "width:5px;height:5px;border-radius:50%;background:#ff5d52;box-shadow:0 0 6px #ff5d52;animation:aerBlink 2s infinite" }),
+          h("span", { style: "font-size:9px;font-weight:700;letter-spacing:.13em;color:#ff9d95" }, "LIVE")) : null));
+    return h("div", {
+      style: { position: "absolute", top: "6px", bottom: "6px", left: left + "px", width: width + "px", display: "flex", flexDirection: "column", justifyContent: "flex-end" },
+      onClick: () => { if (mob) showGuideHero(); set({ selectedCellId: id }); },
+    }, chrome, text);
   });
 
   const g = ch._group;
@@ -1127,7 +1158,7 @@ function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
   const colBg = ambient
     ? (mob
         ? "linear-gradient(90deg, rgba(9,10,13,0.84) 0%, rgba(9,10,13,0.84) 52%, rgba(9,10,13,0.97) 100%)"
-        : "linear-gradient(90deg, rgba(13,15,19,0.34) 0%, rgba(13,15,19,0.34) 46%, rgba(13,15,19,0.86) 100%)")
+        : "linear-gradient(90deg, rgba(13,15,19,0.55) 0%, rgba(13,15,19,0.55) 46%, rgba(13,15,19,0.9) 100%)")
     : "#0c0d0e";
   return h("div", { style: { display: "flex", height: ROWH + "px", borderBottom: "1px solid rgba(255,255,255,0.045)" } },
     h("div", { onClick: () => openPlayer(ch.id), title: g ? "Watch " + g.network : "Watch " + ch.name, style: { width: COLW + "px", flex: "none", position: "sticky", left: 0, zIndex: 6, background: colBg, backdropFilter: ambient ? "blur(18px)" : undefined, borderRight: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: mob ? "9px" : "11px", padding: mob ? "0 10px" : "0 16px", cursor: "pointer" } },
