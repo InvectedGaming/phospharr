@@ -66,7 +66,15 @@ class MosaicCast {
       "-hls_flags", "delete_segments+append_list+omit_endlist",
       "-hls_segment_filename", join(this.dir, "seg_%d.ts"), join(this.dir, "index.m3u8"),
     ];
-    this.proc = Bun.spawn([FFMPEG, ...args], { stdin: "pipe", stdout: "ignore", stderr: "pipe" });
+    // A spawn failure (ffmpeg missing) must not blow up the WebSocket onOpen
+    // handler — record it for /api/mosaic/status and leave the ingest inert.
+    try {
+      this.proc = Bun.spawn([FFMPEG, ...args], { stdin: "pipe", stdout: "ignore", stderr: "pipe" });
+    } catch (e) {
+      this.lastErr = `ffmpeg spawn failed: ${e instanceof Error ? e.message : e}`;
+      try { rmSync(this.dir, { recursive: true, force: true }); } catch { /* noop */ }
+      return;
+    }
     this.sink = this.proc.stdin as unknown as { write: (c: Uint8Array) => number; flush?: () => void; end?: () => void };
     this.lastErr = "";
     void this.drain(this.proc);

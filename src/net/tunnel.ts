@@ -173,9 +173,13 @@ async function spawnTunnel(vpn: Vpn, entry: Entry): Promise<void> {
   // still flips us to "up" (otherwise a working tunnel stays marked failed forever).
   void (async () => {
     while (entry.proc === proc && !entry.stopping) {
-      const ok = await portIsOpen(entry.socksHost, entry.port);
-      if (ok && entry.status !== "up") { entry.status = "up"; entry.error = null; entry.restarts = 0; }
-      else if (!ok && entry.status === "up") { entry.status = "starting"; }
+      // The monitor must never die: if it stops, a tunnel that recovers after a
+      // slow handshake stays marked failed forever. Swallow-and-continue.
+      try {
+        const ok = await portIsOpen(entry.socksHost, entry.port);
+        if (ok && entry.status !== "up") { entry.status = "up"; entry.error = null; entry.restarts = 0; }
+        else if (!ok && entry.status === "up") { entry.status = "starting"; }
+      } catch { /* transient check failure — try again next tick */ }
       await Bun.sleep(2_000);
     }
   })();

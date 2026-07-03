@@ -81,7 +81,11 @@ class TranscodeChannel {
   async start(): Promise<boolean> {
     if (this.started) return true;
     // One raw-muxer client feeds ffmpeg — reuses the existing upstream fan-out.
-    const raw = await muxer.open(this.channelId);
+    // A muxer THROW must behave like a null return: if it propagated, the caller's
+    // active-map cleanup would be skipped and this dead entry would block the
+    // channel's transcode until restart.
+    let raw: ReadableStream<Uint8Array> | null = null;
+    try { raw = await muxer.open(this.channelId); } catch { return false; }
     if (!raw) return false;
     this.rawStream = raw;
     try {

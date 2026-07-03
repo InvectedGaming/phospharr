@@ -42,7 +42,7 @@ function channelHealth(rows: { health: string; resolution: number | null }[]): {
   if (rows.length === 0) return { health: "dead", resolution: null };
   const best = rows.reduce((m, r) => Math.max(m, r.resolution ?? 0), 0) || null;
   // "unknown" = not yet probed. Treat as usable — a channel is only Dead once
-  // every source has actually been probed dead (the health-probe loop is roadmap).
+  // every source has actually been probed dead (see src/health/probe.ts).
   const usable = rows.some((r) => r.health === "live" || r.health === "unknown");
   const degraded = rows.some((r) => r.health === "degraded");
   if (usable) {

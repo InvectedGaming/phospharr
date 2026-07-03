@@ -1,7 +1,8 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { channels } from "../db/schema.ts";
+import { channels, streams } from "../db/schema.ts";
 import { compositor } from "../proxy/compositor.ts";
+import { VERSION } from "../version.ts";
 
 // Reserved virtual channel for the live mosaic composite (only listed while the
 // mosaic tab has it running).
@@ -26,7 +27,7 @@ export function discover(baseUrl: string) {
     Manufacturer: "Phospharr",
     ModelNumber: "HDTC-2US",
     FirmwareName: "phospharr_atsc",
-    FirmwareVersion: "0.1.0",
+    FirmwareVersion: VERSION,
     DeviceID: DEVICE_ID,
     DeviceAuth: "phospharr",
     BaseURL: baseUrl,
@@ -44,11 +45,17 @@ export function lineupStatus() {
   };
 }
 
+// Tuner consumers (Emby/Plex/Jellyfin) get only channels with at least one
+// not-provably-dead source — a channel every source of which the health probe
+// has marked dead would just spin forever in their players. The app UI still
+// shows such channels (with a dead badge) so they can be watched for recovery.
+const hasUsableSource = sql`exists (select 1 from ${streams} where ${streams.channelId} = ${channels.id} and ${ne(streams.health, "dead")})`;
+
 export async function lineup(baseUrl: string) {
   const rows = await db
     .select()
     .from(channels)
-    .where(and(eq(channels.isHidden, false), isNotNull(channels.number)))
+    .where(and(eq(channels.isHidden, false), isNotNull(channels.number), hasUsableSource))
     .orderBy(channels.number);
 
   const list = rows.map((ch) => ({
@@ -70,7 +77,7 @@ export async function playlistM3U(baseUrl: string): Promise<string> {
   const rows = await db
     .select()
     .from(channels)
-    .where(and(eq(channels.isHidden, false), isNotNull(channels.number)))
+    .where(and(eq(channels.isHidden, false), isNotNull(channels.number), hasUsableSource))
     .orderBy(channels.number);
   const out = ["#EXTM3U"];
   if (mosaicActive()) {

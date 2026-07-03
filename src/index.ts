@@ -3,6 +3,7 @@ import app, { websocket } from "./api/server.ts";
 import { primePool } from "./ingest/sync.ts";
 import { getSettings, setSetting } from "./settings.ts";
 import { startEpgScheduler } from "./epg/scheduler.ts";
+import { startHealthProbe } from "./health/probe.ts";
 import { reconcileTunnels } from "./net/tunnel.ts";
 
 const port = Number(process.env.PORT ?? 7777);
@@ -20,6 +21,7 @@ if (!settings["access.streamKey"]) {
   await getSettings(); // re-prime cache with the new key
 }
 startEpgScheduler(); // periodic XMLTV pulls per features.epgAutoRefresh / epg.refreshHours
+startHealthProbe(); // background stream probes per features.healthProbe
 reconcileTunnels().catch((e) => console.error("[vpn] reconcile failed", e)); // dial autostart VPNs
 {
   const { reconcileAutoHides } = await import("./content/filter.ts"); // apply adult + hidden-category hides

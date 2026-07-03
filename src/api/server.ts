@@ -26,6 +26,7 @@ import { clientIp, isLocalIp, externalAllowed } from "../net/access.ts";
 import { exportXmltv } from "../epg/export.ts";
 import { buildView } from "./view.ts";
 import { getGuideSnapshot } from "../epg/snapshot.ts";
+import { VERSION } from "../version.ts";
 import { getSettings, getSetting, setSetting, cachedSetting, envLockedKeys, capabilities, type Settings } from "../settings.ts";
 import { recordView, getAnalytics, recentChannels } from "../analytics.ts";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
@@ -225,7 +226,7 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
-app.get("/api/health", (c) => c.json({ name: "Phospharr", version: "0.1.0", status: "ok" }));
+app.get("/api/health", (c) => c.json({ name: "Phospharr", version: VERSION, status: "ok" }));
 
 // ─── Analytics ───
 app.get("/api/analytics", (c) => ensureAdmin(c) ?? c.json(getAnalytics()));

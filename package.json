@@ -1,6 +1,6 @@
 {
   "name": "phospharr",
-  "version": "0.1.0",
+  "version": "1.0.0-rc.1",
   "description": "Self-hosted IPTV manager + viewer that feels like a real TV. Canonical channel layer, slot-pool scheduling across providers, multiplexing stream proxy, HDHR emulation, merged EPG.",
   "type": "module",
   "license": "MIT",
@@ -12,7 +12,8 @@
     "db:studio": "drizzle-kit studio",
     "seed": "bun scripts/seed.ts",
     "vpn:helpers": "bun scripts/get-vpn-helpers.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests/"
   },
   "dependencies": {
     "drizzle-orm": "^0.36.4",

@@ -89,9 +89,13 @@ export function unregisterStream(shareId: number, ac: AbortController) {
 }
 export function killShareStreams(shareId: number) {
   const set = aborters.get(shareId);
-  if (!set) return;
-  for (const ac of set) { try { ac.abort(); } catch { /* already aborted */ } }
-  aborters.delete(shareId);
+  if (set) {
+    for (const ac of set) { try { ac.abort(); } catch { /* already aborted */ } }
+    aborters.delete(shareId);
+  }
+  // The aborts above release the viewer slots as connections unwind; drop the
+  // counter eagerly too so a revoked/deleted share never pins a stale count.
+  liveByShare.delete(shareId);
 }
 
 /** A share is usable only if it exists, isn't revoked, and hasn't expired. */

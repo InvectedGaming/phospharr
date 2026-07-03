@@ -96,6 +96,16 @@ Point Plex/Jellyfin Live TV at `http://<host>:7777` as an HDHomeRun device.
 The image bundles Bun + ffmpeg; the DB and DVR recordings persist in a `phospharr-data`
 volume. First run creates the schema automatically.
 
+**Pre-built image** (published on every tagged release):
+
+```bash
+docker run -d --name phospharr -p 7777:7777 \
+  -v phospharr-data:/data \
+  ghcr.io/invectedgaming/phospharr:latest
+```
+
+**Or build from source:**
+
 ```bash
 cp .env.example .env          # optional — sensible defaults work as-is
 docker compose up -d          # → http://localhost:7777
@@ -243,13 +253,18 @@ The whole UI is driven by one aggregated endpoint, `GET /api/view`.
 
 ## Roadmap
 
-- **Phospharr UI polish** — Home / Now-Playing / EPG-Matcher screens (the last stub in
-  the rail), real `<video>` playback via HLS, instant-zap surf.
+Shipped since the original roadmap: **health probes** (a polite background loop
+ffprobes every source through its proper VPN egress, feeds the UI badges, and drops
+provably-dead channels from the tuner outputs) and **composite multiview** (the
+GPU-composited mosaic is a real tunable channel *and* a fullscreen TV display page,
+with instant zmq-driven audio switching).
+
+Still ahead:
+
+- **EPG-driven mosaics** — auto-generate the multiview from the guide ("4 NFL games
+  live now").
 - **Go data plane** — move the byte pump to Go: zero-copy fan-out, MPEG-TS PID
   continuity, ffmpeg pool (passthrough default, transcode on demand), HLS/fMP4 out.
-- **Health probes** — ffprobe on ingest + schedule → auto-hide dead/sub-SD sources.
-- **Composite multiview** — server-side ffmpeg mosaic as a real tunable channel,
-  auto-generated from EPG ("4 NFL games live now").
 - **Plugin system** — typed hooks (`onChannelIngest`, `onRename`, `onEpgMatch`,
   `onStreamProbe`, `onFailover`), source providers, output targets — sandboxed via RPC.
 - **Postgres option** for larger installs; **Schedules Direct** EPG source.
