@@ -8,28 +8,29 @@ import { classify, localNetwork, GENRES, type Taxonomy } from "./taxonomy.ts";
  * cable plan, so surfing and the guide read sensibly:
  *
  *     1–  99  reserved for manual pins (never auto-assigned)
- *   100– 199  News
- *   200– 399  Sports (+ PPV events at the top of the block)
- *   400– 999  Networks by genre (Movies → Entertainment → … alphabetical inside)
- *  1000–1999  Locals — ABC, NBC, CBS, FOX, CW, PBS, then misc; by market inside
- *  2000–6899  24/7 loops — grouped by genre, alphabetical inside
- *  7000–7899  International
+ *   100– 249  News
+ *   250– 449  Sports (+ PPV events)
+ *   450–1499  Networks by genre (Movies → Entertainment → … alphabetical inside)
+ *  1500–2999  Locals — ABC, NBC, CBS, FOX, CW, PBS, then misc; by market inside
+ *  3000–7999  24/7 loops — grouped by genre, alphabetical inside
  *       8000  Mosaic (virtual — src/tuner/hdhr.ts)
+ *  8100–9999  International
  *
  * Numbers are STICKY: syncs only assign numbers to NEW channels (next free slot
  * in their block). reflowLineup() is the explicit, admin-triggered full re-sort.
- * If a block ever fills, assignment overflows past its end rather than failing.
+ * Assignment is collision-proof: a block that outgrows its range spills into the
+ * next free numbers rather than failing the unique index.
  */
 
 type Block = { start: number; end: number };
 
 function blockFor(t: Taxonomy): Block {
-  if (t.kind === "local") return { start: 1000, end: 1999 };
-  if (t.kind === "loop") return { start: 2000, end: 6899 };
-  if (t.kind === "intl") return { start: 7000, end: 7899 };
-  if (t.kind === "event" || t.genre === "Sports") return { start: 200, end: 399 };
-  if (t.genre === "News") return { start: 100, end: 199 };
-  return { start: 400, end: 999 };
+  if (t.kind === "local") return { start: 1500, end: 2999 };
+  if (t.kind === "loop") return { start: 3000, end: 7999 };
+  if (t.kind === "intl") return { start: 8100, end: 9999 };
+  if (t.kind === "event" || t.genre === "Sports") return { start: 250, end: 449 };
+  if (t.genre === "News") return { start: 100, end: 249 };
+  return { start: 450, end: 1499 };
 }
 
 // Order channels WITHIN a block: locals by network then market/name; everything
@@ -76,13 +77,19 @@ export async function reflowLineup(): Promise<{ channels: number }> {
     b.rows.push(r);
     buckets.set(block.start, b);
   }
-  // Two passes so the unique index on number never collides mid-flight.
+  // Park everyone on unique negatives first so the unique index can't collide
+  // mid-flight, then assign blocks in ascending order with a global used-set —
+  // an overflowing block spills into the next free numbers instead of failing.
   await db.update(channels).set({ number: sql`-${channels.id}` });
-  for (const { block, rows: rs } of buckets.values()) {
+  const used = new Set<number>([8000]); // the mosaic's virtual number stays reserved
+  const ordered = [...buckets.values()].sort((a, b) => a.block.start - b.block.start);
+  for (const { block, rows: rs } of ordered) {
     rs.sort(blockSort);
     let n = block.start;
     for (const r of rs) {
-      await db.update(channels).set({ number: n++ }).where(eq(channels.id, r.id));
+      while (used.has(n)) n++;
+      used.add(n);
+      await db.update(channels).set({ number: n }).where(eq(channels.id, r.id));
     }
   }
   return { channels: rows.length };
@@ -94,6 +101,7 @@ export async function assignNumbersInBlocks(ids: number[]): Promise<void> {
   const used = new Set<number>(
     (await db.select({ n: channels.number }).from(channels).where(sql`${channels.number} IS NOT NULL`)).map((r) => Math.floor(r.n!)),
   );
+  used.add(8000); // mosaic's virtual number — no DB row, still reserved
   for (const id of ids) {
     const [row] = await db
       .select({ name: channels.name, category: channels.category, kind: channels.kind, genre: channels.genre })
