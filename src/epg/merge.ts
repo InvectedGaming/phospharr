@@ -73,7 +73,16 @@ function bindCanonicalId(
   const cid = prog.channelId.toLowerCase();
   if (idx.byEpgId.has(cid)) return idx.byEpgId.get(cid)!; // tvg-id match (the common path)
   if (idx.byCanonical.has(cid)) return cid; // xmltv id == canonicalId
-  return idx.bySlug.get(normalizeName(displayName).slug) ?? null; // fall back to name
+  const direct = idx.bySlug.get(normalizeName(displayName).slug); // fall back to name
+  if (direct) return direct;
+  // Feeds often prefix a bare country word with NO separator ("USA NFL Sunday
+  // 705") which normalizeName can't strip (it requires "US|"-style separators),
+  // so the slug keeps the country and misses. Retry without the leading token —
+  // only as a last resort, so "USA Network" (whose direct slug already matched
+  // above) can never be mis-bound.
+  const m = displayName.match(/^\s*(?:usa?|uk|ca|au|nz|de|fr|es|it|nl|pt|mx|br)\s+(.{3,})$/i);
+  if (m) return idx.bySlug.get(normalizeName(m[1]).slug) ?? null;
+  return null;
 }
 
 export interface EpgSyncResult {

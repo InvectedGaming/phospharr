@@ -48,8 +48,10 @@ export async function exportXmltv(): Promise<string> {
     canonical_id: string; title: string; description: string | null;
     start_time: number; end_time: number; category: string | null;
   }>;
+  const covered = new Set<string>();
   for (const p of rows) {
     if (!seen.has(p.canonical_id)) continue; // only channels we actually exported
+    covered.add(p.canonical_id);
     parts.push(
       `<programme start="${xmltvTime(p.start_time)}" stop="${xmltvTime(p.end_time)}" channel="${esc(p.canonical_id)}">` +
         `<title>${esc(p.title)}</title>` +
@@ -57,6 +59,25 @@ export async function exportXmltv(): Promise<string> {
         (p.category ? `<category>${esc(p.category)}</category>` : "") +
         "</programme>",
     );
+  }
+
+  // Synthetic filler for channels with no real guide data — overwhelmingly 24/7
+  // loop channels the provider publishes no schedule for. Without it, Emby /
+  // Jellyfin render blank "No information" rows that read like broken EPG
+  // mapping. Emit hour-aligned 4h blocks titled with the channel name so the
+  // guide is fully populated and the channel is identifiable at a glance.
+  const nameByCanonical = new Map(chans.map((c) => [c.canonicalId!, c.name]));
+  const blockSec = 4 * 3600;
+  const fillStart = Math.floor((now - WINDOW_BEHIND) / 3600) * 3600;
+  for (const cid of seen) {
+    if (covered.has(cid)) continue;
+    const title = nameByCanonical.get(cid) ?? cid;
+    for (let t = fillStart; t < now + WINDOW_AHEAD; t += blockSec) {
+      parts.push(
+        `<programme start="${xmltvTime(t)}" stop="${xmltvTime(t + blockSec)}" channel="${esc(cid)}">` +
+          `<title>${esc(title)}</title><category>24/7</category></programme>`,
+      );
+    }
   }
   parts.push("</tv>");
   return parts.join("\n");
