@@ -109,52 +109,69 @@ async function runEpgSync(sources: EpgSource[]): Promise<EpgSyncResult[]> {
   const upsert = sqlite.prepare(UPSERT_SQL);
   const results: EpgSyncResult[] = [];
 
+  // Batched writes in SHORT transactions instead of one spanning the whole feed.
+  // Why: the stream yields to the event loop between chunks (see streamXmltv), and
+  // a feed-spanning BEGIN on the app's shared connection would swallow any foreign
+  // write that interleaves during a yield — rolled back with the sync on failure.
+  // A few-thousand-row sync transaction is a couple of ms; upserts are idempotent,
+  // so a mid-feed failure just leaves earlier batches applied (next sync repairs).
+  const BATCH_ROWS = 2000;
+
   for (const { url, proxy } of sources) {
     const stream = await fetchXmltvStream(url, egress(proxy));
     const nameById = new Map<string, string>();
     let bound = 0;
     let skipped = 0;
 
-    // One write transaction spans the whole stream: ~1 fsync instead of one per
-    // chunk. Readers keep working (WAL); the only blocked party is other writers.
-    sqlite.exec("BEGIN IMMEDIATE");
-    try {
-      await streamXmltv(stream, {
-        onChannel: (c) => nameById.set(c.id.toLowerCase(), c.displayName),
-        onProgramme: (p: XmltvProgramme) => {
-          const startMs = p.start.getTime();
-          const stopMs = p.stop.getTime();
-          if (Number.isNaN(startMs) || Number.isNaN(stopMs)) {
-            skipped++;
-            return;
-          }
-          const displayName = nameById.get(p.channelId.toLowerCase()) ?? p.channelId;
-          const canonicalId = bindCanonicalId(p, displayName, idx);
-          if (!canonicalId) {
-            skipped++;
-            return;
-          }
-          bound++;
-          upsert.run(
-            canonicalId,
-            p.title,
-            p.subtitle ?? null,
-            p.description ?? null,
-            Math.floor(startMs / 1000),
-            Math.floor(stopMs / 1000),
-            p.category ?? null,
-            url,
-            p.iconUrl ?? null,
-          );
-        },
-      });
-      // Bound table growth: drop programmes that ended well in the past.
-      db.delete(programs).where(lt(programs.endTime, new Date(Date.now() - PRUNE_BEHIND_MS))).run();
-      sqlite.exec("COMMIT");
-    } catch (e) {
-      sqlite.exec("ROLLBACK");
-      throw e;
-    }
+    type UpsertArgs = [string, string, string | null, string | null, number, number, string | null, string, string | null];
+    let batch: UpsertArgs[] = [];
+    const flush = () => {
+      if (!batch.length) return;
+      // Fully synchronous (no awaits inside) — nothing else can join this transaction.
+      sqlite.exec("BEGIN IMMEDIATE");
+      try {
+        for (const args of batch) upsert.run(...args);
+        sqlite.exec("COMMIT");
+      } catch (e) {
+        sqlite.exec("ROLLBACK");
+        throw e;
+      }
+      batch = [];
+    };
+
+    await streamXmltv(stream, {
+      onChannel: (c) => nameById.set(c.id.toLowerCase(), c.displayName),
+      onProgramme: (p: XmltvProgramme) => {
+        const startMs = p.start.getTime();
+        const stopMs = p.stop.getTime();
+        if (Number.isNaN(startMs) || Number.isNaN(stopMs)) {
+          skipped++;
+          return;
+        }
+        const displayName = nameById.get(p.channelId.toLowerCase()) ?? p.channelId;
+        const canonicalId = bindCanonicalId(p, displayName, idx);
+        if (!canonicalId) {
+          skipped++;
+          return;
+        }
+        bound++;
+        batch.push([
+          canonicalId,
+          p.title,
+          p.subtitle ?? null,
+          p.description ?? null,
+          Math.floor(startMs / 1000),
+          Math.floor(stopMs / 1000),
+          p.category ?? null,
+          url,
+          p.iconUrl ?? null,
+        ]);
+        if (batch.length >= BATCH_ROWS) flush();
+      },
+    });
+    flush();
+    // Bound table growth: drop programmes that ended well in the past.
+    db.delete(programs).where(lt(programs.endTime, new Date(Date.now() - PRUNE_BEHIND_MS))).run();
 
     results.push({ source: url, programmesBound: bound, programmesSkipped: skipped });
   }

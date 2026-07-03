@@ -123,10 +123,17 @@ export async function streamXmltv(
 
   const reader = stream.getReader();
   const decoder = new TextDecoder();
+  let chunks = 0;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     if (value) parser.write(decoder.decode(value, { stream: true }));
+    // `reader.read()` on an already-buffered stream resolves as a MICROTASK, so a
+    // feed that downloads faster than it parses runs as one unbroken chain that
+    // never returns to the event loop — HTTP serving starves for the whole feed
+    // (the 64s freeze / 504s during EPG sync). A real timer yield every few
+    // chunks lets pending requests run between parse slices.
+    if (++chunks % 4 === 0) await Bun.sleep(0);
   }
   parser.write(decoder.decode());
   parser.end();
