@@ -772,7 +772,7 @@ function guideScreen() {
   // Low tint so the video shows through; backdrop-filter does the legibility work.
   // On phones the ambient video behind a dense grid washes everything out, so use
   // a much heavier scrim (just a faint glow shows through) for legibility.
-  const stickyBg = ambient ? (mob ? "rgba(10,11,14,0.74)" : "rgba(14,16,20,0.52)") : "#0c0d0e";
+  const stickyBg = ambient ? (mob ? "rgba(10,11,14,0.74)" : "rgba(14,16,20,0.28)") : "#0c0d0e";
   const frost = ambient ? ";backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)" : "";
   const scrollerAmbientBg = mob ? "rgba(8,9,11,0.76)" : "rgba(11,12,15,0.3)";
 
@@ -1158,7 +1158,7 @@ function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
   const colBg = ambient
     ? (mob
         ? "linear-gradient(90deg, rgba(9,10,13,0.84) 0%, rgba(9,10,13,0.84) 52%, rgba(9,10,13,0.97) 100%)"
-        : "linear-gradient(90deg, rgba(13,15,19,0.55) 0%, rgba(13,15,19,0.55) 46%, rgba(13,15,19,0.9) 100%)")
+        : "linear-gradient(90deg, rgba(13,15,19,0.34) 0%, rgba(13,15,19,0.34) 46%, rgba(13,15,19,0.86) 100%)")
     : "#0c0d0e";
   return h("div", { style: { display: "flex", height: ROWH + "px", borderBottom: "1px solid rgba(255,255,255,0.045)" } },
     h("div", { onClick: () => openPlayer(ch.id), title: g ? "Watch " + g.network : "Watch " + ch.name, style: { width: COLW + "px", flex: "none", position: "sticky", left: 0, zIndex: 6, background: colBg, backdropFilter: ambient ? "blur(18px)" : undefined, borderRight: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: mob ? "9px" : "11px", padding: mob ? "0 10px" : "0 16px", cursor: "pointer" } },
