@@ -14,6 +14,8 @@ export interface ViewChannel {
   name: string;
   canonicalId: string | null;
   category: string | null;
+  kind: string | null;
+  genre: string | null;
   logoUrl: string | null;
   isHidden: boolean;
   isFavorite: boolean;
@@ -99,6 +101,8 @@ export async function buildView(user?: User | null) {
       name: ch.name,
       canonicalId: ch.canonicalId,
       category: ch.category,
+      kind: ch.kind,
+      genre: ch.genre,
       logoUrl: ch.logoUrl,
       isHidden: ch.isHidden,
       isFavorite: ch.isFavorite,

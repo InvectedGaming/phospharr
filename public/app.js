@@ -148,6 +148,7 @@ const state = {
   tvUrl: null, // /mosaic/tv link to open on a TV browser (mirrors this tab)
   density: "comfortable", // guide row density: 'comfortable' | 'compact'
   guideOnlyWithEpg: true, // guide shows only channels that have program data
+  genreFilter: null, // guide genre dropdown (null = all; "24/7" = every loop channel)
   networkGroup: localStorage.getItem("phospharr.netgroup") !== "off", // collapse affiliate clusters into one row
   networkSelection: loadNetSel(), // per-network: which affiliate/market is active
   previews: prefDefault("phospharr.previews"), // auto-play live preview in the guide (off by default on phones)
@@ -314,12 +315,15 @@ async function loadView() {
       }));
     }
 
-    // hydrate channels with genre/colour/mono
+    // hydrate channels with palette/colour/mono. The PALETTE bucket (pal) is a
+    // client-side visual grouping and must not overwrite ch.genre — that's the
+    // server's taxonomy (channels.genre via the classifier), which drives the
+    // guide's genre filter.
     data.channelsById = {};
     for (const ch of data.channels) {
-      ch.genre = toGenre(ch.category);
-      ch.color = SOLIDS[ch.genre];
-      ch.grad = GRADS[ch.genre];
+      ch.pal = toGenre(ch.category);
+      ch.color = SOLIDS[ch.pal];
+      ch.grad = GRADS[ch.pal];
       ch.mono = initials(ch.name);
       data.channelsById[ch.id] = ch;
     }
@@ -564,8 +568,29 @@ function guideVisible() {
     const withEpg = v.filter((ch) => d.guide[ch.id] && d.guide[ch.id].length);
     if (withEpg.length) v = withEpg; // don't filter to empty if no EPG synced yet
   }
+  // Genre filter (the "All genres" dropdown). "24/7" is a virtual entry matching
+  // every loop channel regardless of its genre.
+  if (state.genreFilter) {
+    v = state.genreFilter === "24/7"
+      ? v.filter((c) => c.kind === "loop")
+      : v.filter((c) => c.genre === state.genreFilter);
+  }
   if (state.networkGroup !== false) v = groupByNetwork(v);
   return v;
+}
+
+// Distinct genres present in the lineup (for the guide's genre dropdown).
+function availableGenres() {
+  const set = new Set();
+  let hasLoops = false;
+  for (const c of state.data.channels) {
+    if (c.isHidden) continue;
+    if (c.genre) set.add(c.genre);
+    if (c.kind === "loop") hasLoops = true;
+  }
+  const list = [...set].sort();
+  if (hasLoops) list.push("24/7");
+  return list;
 }
 
 // Star / unstar a channel. Optimistic: channelsById shares object refs with the
@@ -673,6 +698,22 @@ function guideFilterToggle() {
   return h("div", { style: "display:flex;padding:3px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:10px;gap:2px" },
     h("button", { style: seg(only), onClick: () => set({ guideOnlyWithEpg: true, selectedCellId: null }), title: "Only channels with guide data" }, "With guide"),
     h("button", { style: seg(!only), onClick: () => set({ guideOnlyWithEpg: false, selectedCellId: null }), title: "All channels" }, "All"));
+}
+
+// Genre dropdown for the guide — populated from the lineup's actual taxonomy
+// (channels.genre via the classifier), plus a virtual "24/7" catch-all for loops.
+function genreSelect() {
+  const genres = availableGenres();
+  const active = !!state.genreFilter;
+  const sel = h("select", {
+    title: "Filter the guide by genre",
+    onChange: (e) => set({ genreFilter: e.target.value || null, selectedCellId: null }),
+    style: "appearance:none;-webkit-appearance:none;height:36px;padding:0 30px 0 14px;border-radius:9px;border:1px solid " + (active ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.1)") + ";background:" + (active ? "rgba(84,182,255,0.16)" : "rgba(255,255,255,0.04)") + ";color:#dfe3e7;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer",
+  },
+    h("option", { value: "", selected: !state.genreFilter, style: "background:#16181c" }, "All genres"),
+    ...genres.map((g) => h("option", { value: g, selected: state.genreFilter === g, style: "background:#16181c" }, g === "24/7" ? "24/7 channels" : g)));
+  return h("div", { style: "position:relative" }, sel,
+    h("span", { style: "position:absolute;right:11px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:9px;color:#9aa0a6" }, "▾"));
 }
 
 // Shared toggle handlers (used by both the desktop inline buttons and the mobile
@@ -791,6 +832,7 @@ function guideScreen() {
         return h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
           favBtn,
           previewBtn,
+          genreSelect(),
           h("button", { onClick: () => set({ guideOptionsOpen: true }), style: "height:36px;padding:0 14px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer" },
             icon("sliders-horizontal", 15, 0.8), "Options"),
           jumpBtn);
@@ -805,7 +847,7 @@ function guideScreen() {
         guideFilterToggle(),
         densityToggle(),
         jumpBtn,
-        h("button", { style: "height:36px;padding:0 15px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#dfe3e7;font-size:13px;font-weight:600;cursor:pointer" }, "All genres"));
+        genreSelect());
     })();
   // On phones the "Guide" title + lineup stats are dropped to reclaim vertical
   // space (the stats live in Settings instead); only the controls remain.

@@ -78,6 +78,13 @@
       "when": 1782346873766,
       "tag": "0010_add_vpns",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1783053802364,
+      "tag": "0011_right_slayback",
+      "breakpoints": true
     }
   ]
 }

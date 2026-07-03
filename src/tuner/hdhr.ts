@@ -86,12 +86,18 @@ export async function playlistM3U(baseUrl: string): Promise<string> {
   }
   for (const ch of rows) {
     const tvgId = ch.canonicalId ?? ch.epgChannelId ?? String(ch.id);
+    // Clean taxonomy group (Emby/TiviMate group channels by this) — falls back
+    // to the raw provider category for channels that predate the classifier.
+    const group = ch.kind === "loop" ? `24/7 ${ch.genre ?? ""}`.trim()
+      : ch.kind === "local" ? "Locals"
+      : ch.kind === "intl" ? "International"
+      : ch.genre ?? ch.category ?? "";
     const attrs = [
       `tvg-id="${xmlAttr(tvgId)}"`,
       `tvg-chno="${ch.number}"`,
       `tvg-name="${xmlAttr(ch.name)}"`,
       ch.logoUrl ? `tvg-logo="${xmlAttr(ch.logoUrl)}"` : "",
-      ch.category ? `group-title="${xmlAttr(ch.category)}"` : "",
+      group ? `group-title="${xmlAttr(group)}"` : "",
     ].filter(Boolean).join(" ");
     out.push(`#EXTINF:-1 ${attrs},${ch.name}`);
     out.push(`${baseUrl}/stream/${ch.id}`);

@@ -54,7 +54,11 @@ export const channels = sqliteTable(
     name: text("name").notNull(), // clean display name
     number: real("number"), // assigned lineup number (real allows 5.1 sub-channels)
     logoUrl: text("logo_url"),
-    category: text("category"), // 'sports' | 'news' | 'movies' | 'kids' | ...
+    category: text("category"), // RAW provider group-title ("24/7 Drama", "USA Local - ABC") — adult filter keys off this
+    // Structured taxonomy (derived by src/content/taxonomy.ts at ingest):
+    kind: text("kind", { enum: ["network", "local", "loop", "intl", "event"] }), // what the channel IS
+    genre: text("genre"), // normalized: Sports | News | Movies | Drama | ... (see taxonomy.ts GENRES)
+    taxLocked: integer("tax_locked", { mode: "boolean" }).notNull().default(false), // admin edited — classifier must not clobber
     isHidden: integer("is_hidden", { mode: "boolean" }).notNull().default(false),
     isFavorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
     hiddenReason: text("hidden_reason"), // 'dead' | 'sub-sd' | 'duplicate' | 'rule:<id>' | null

@@ -791,11 +791,25 @@ app.patch("/api/channels/:id", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
-  const allowed = ["name", "number", "category", "isHidden", "isFavorite", "logoUrl"];
+  const allowed = ["name", "number", "category", "isHidden", "isFavorite", "logoUrl", "kind", "genre"];
   const updates: Record<string, unknown> = {};
   for (const k of allowed) if (k in body) updates[k] = body[k];
+  // A manual kind/genre edit locks the channel's taxonomy so the classifier
+  // never clobbers it on re-sync.
+  if ("kind" in body || "genre" in body) updates.taxLocked = true;
   const [row] = await db.update(channels).set(updates).where(eq(channels.id, id)).returning();
   return c.json(row);
+});
+
+// Re-classify every non-locked channel, then renumber the whole lineup into
+// cable-style blocks (see src/content/lineup.ts). Admin-triggered — numbers are
+// otherwise sticky across syncs.
+app.post("/api/lineup/reflow", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const { classifyAll, reflowLineup } = await import("../content/lineup.ts");
+  const classified = await classifyAll();
+  const { channels: renumbered } = await reflowLineup();
+  return c.json({ classified, renumbered });
 });
 
 app.get("/api/channels/:id/sources", async (c) => {

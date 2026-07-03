@@ -7,6 +7,8 @@ import { egress, providerEgress } from "../net/egress.ts";
 import { matchCanonical, qualityScore } from "../canonical/matcher.ts";
 import { pool } from "../scheduler/pool.ts";
 import { reconcileAutoHides } from "../content/filter.ts";
+import { classify } from "../content/taxonomy.ts";
+import { assignNumbersInBlocks } from "../content/lineup.ts";
 import type { RawEntry } from "./types.ts";
 
 /**
@@ -74,6 +76,7 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
     // Upsert the canonical channel.
     let channelId = channelIdByCanonical.get(match.canonicalId);
     if (!channelId) {
+      const tax = classify(entry.groupTitle, match.display); // structured kind/genre from the raw group
       const [ins] = await db
         .insert(channels)
         .values({
@@ -82,6 +85,8 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
           name: match.display,
           logoUrl: entry.logoUrl,
           category: entry.groupTitle,
+          kind: tax.kind,
+          genre: tax.genre,
         })
         .returning({ id: channels.id });
       channelId = ins.id;
@@ -141,22 +146,14 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
   };
 }
 
-/** Assign sequential lineup numbers to any channel missing one. */
+/** New channels get a number in their taxonomy block (sticky — see content/lineup.ts). */
 async function assignChannelNumbers() {
-  const numbered = await db
-    .select({ max: sql<number>`COALESCE(MAX(${channels.number}), 0)` })
-    .from(channels);
-  let next = Math.floor(numbered[0]?.max ?? 0) + 1;
-
   const unnumbered = await db
     .select({ id: channels.id })
     .from(channels)
     .where(sql`${channels.number} IS NULL`)
     .orderBy(channels.name);
-
-  for (const ch of unnumbered) {
-    await db.update(channels).set({ number: next++ }).where(eq(channels.id, ch.id));
-  }
+  await assignNumbersInBlocks(unnumbered.map((c) => c.id));
 }
 
 // Small helper to keep the upsert readable.
