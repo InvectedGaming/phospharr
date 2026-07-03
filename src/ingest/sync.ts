@@ -3,7 +3,7 @@ import { db } from "../db/index.ts";
 import { providers, channels, streams, type Provider } from "../db/schema.ts";
 import { fetchM3U } from "./m3u.ts";
 import { fetchXtream } from "./xtream.ts";
-import { egress } from "../net/egress.ts";
+import { egress, providerEgress } from "../net/egress.ts";
 import { matchCanonical, qualityScore } from "../canonical/matcher.ts";
 import { pool } from "../scheduler/pool.ts";
 import { reconcileAutoHides } from "../content/filter.ts";
@@ -16,7 +16,11 @@ import type { RawEntry } from "./types.ts";
  */
 
 async function fetchEntries(p: Provider): Promise<RawEntry[]> {
-  const opts = egress(p.proxyUrl || undefined); // VPN passthrough per-source
+  // Resolve a `vpn:<id>` pin to the tunnel's HTTP bridge — the raw pin string is
+  // not a proxy URL fetch can use. Fail closed while the pinned VPN is down.
+  const eg = providerEgress(p.id);
+  if (eg.blocked) throw new Error(`egress blocked: ${eg.reason}`);
+  const opts = egress(eg.proxy); // VPN passthrough per-source
   if (p.type === "m3u") return fetchM3U(p.url, opts);
   if (p.type === "xtream") {
     if (!p.username || !p.password) throw new Error(`Xtream provider ${p.id} missing credentials`);

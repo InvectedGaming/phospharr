@@ -3,7 +3,7 @@ import { db, sqlite } from "../db/index.ts";
 import { channels, programs, providers } from "../db/schema.ts";
 import { fetchXmltvStream, streamXmltv, type XmltvProgramme } from "./xmltv.ts";
 import { xtreamEpgUrl } from "../ingest/xtream.ts";
-import { egress } from "../net/egress.ts";
+import { egress, providerEgress } from "../net/egress.ts";
 import { normalizeName } from "../canonical/normalize.ts";
 import { PRUNE_BEHIND_MS } from "./window.ts";
 import { invalidateGuideSnapshot } from "./snapshot.ts";
@@ -25,7 +25,16 @@ export async function providerEpgUrls(providerId?: number): Promise<EpgSource[]>
           ? xtreamEpgUrl(p.url, p.username, p.password)
           : null;
       if (!url) return null;
-      return { url, proxy: p.proxyUrl || undefined }; // route VPN providers' EPG too
+      // Resolve the egress NOW — `proxy_url` may be a `vpn:<id>` pin, which fetch
+      // can't use raw (passing it verbatim made every VPN-pinned provider's EPG
+      // sync die with "Unable to connect"). Fail closed: skip the feed while the
+      // pinned VPN is down rather than leak a direct request to the provider.
+      const eg = providerEgress(p.id);
+      if (eg.blocked) {
+        console.error(`[epg] skipping ${p.name}: ${eg.reason}`);
+        return null;
+      }
+      return { url, proxy: eg.proxy };
     })
     .filter((s): s is EpgSource => !!s);
 }
