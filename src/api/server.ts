@@ -932,6 +932,8 @@ async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: n
     "-hide_banner", "-loglevel", "error",
     ...("proxy" in eg && eg.proxy ? ["-http_proxy", eg.proxy] : []),
     ...(t > 0 ? ["-ss", String(t)] : []),
+    // tight probe: don't sniff megabytes of a remote MKV before the first frame
+    "-analyzeduration", "2000000", "-probesize", "2000000", "-fflags", "+genpts",
     "-i", url,
     "-map", "0:v:0", "-map", "0:a:0?",
     "-c:v", "copy", "-c:a", "aac", "-ac", "2", "-b:a", "160k",
