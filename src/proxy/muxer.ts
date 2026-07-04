@@ -230,6 +230,13 @@ class Muxer {
     return false;
   }
 
+  /** Total viewers currently attached to this channel (web, Emby, HDHR, HLS…). */
+  viewers(channelId: number): number {
+    let n = 0;
+    for (const m of this.active.values()) if (m.channelId === channelId) n += m.viewerCount;
+    return n;
+  }
+
   /** Tear down a channel's mux if it has no viewers (used to evict warm holds). */
   dropIdle(channelId: number): void {
     for (const [id, m] of this.active) {

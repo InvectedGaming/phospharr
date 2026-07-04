@@ -853,6 +853,30 @@ app.get("/api/guide/:canonicalId/now", async (c) => {
   return c.json(await nowNext(canonicalId));
 });
 
+// ─── Watch-party chat: an ephemeral WebSocket room per channel ───
+import { chat } from "../chat.ts";
+chat.setWatchingFn((channelId) => muxer.viewers(channelId));
+let chatSeq = 0;
+app.get("/ws/chat/:channelId", upgradeWebSocket((c) => {
+  // WS routes sit outside the /api/* session middleware — resolve the user here.
+  const user = userForToken(getCookie(c, SESSION_COOKIE));
+  const channelId = Number(c.req.param("channelId"));
+  const id = ++chatSeq;
+  return {
+    onOpen(_evt, ws) {
+      if (!user || !Number.isFinite(channelId)) { ws.close(); return; }
+      chat.join(channelId, { id, name: user.username, send: (json) => ws.send(json) });
+    },
+    onMessage(evt) {
+      if (!user) return;
+      chat.message(channelId, id, String(evt.data));
+    },
+    onClose() {
+      chat.leave(channelId, id);
+    },
+  };
+}));
+
 // ─── HLS: native playback for MSE-less devices (iOS Safari, Cast, AirPlay) ───
 app.get("/hls/:channelId/index.m3u8", async (c) => {
   const auth = streamAuth(c);

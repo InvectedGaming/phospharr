@@ -4001,6 +4001,7 @@ function disarmPlayerAutohide() {
 function closePlayer() {
   disarmPlayerAutohide();
   cancelNumberEntry();
+  closeChat();
   clearSleepTimer();
   stopTimeshiftTick();
   resetTimeshift();
@@ -4207,6 +4208,7 @@ function buildPlayerChrome(channelId) {
       h("div", { style: "flex:1" }),
       h("div", { style: "display:flex;gap:8px" },
         lastBtn,
+        topBtn(icon("message-square", 17, 0.85), () => toggleChat(channelId), { title: "Watch-party chat (everyone on this channel)", active: chatOpen }),
         sleepWrap,
         topBtn(icon("chevron-up", 18, 0.85), surf(-1), { title: "Channel up" }),
         topBtn(icon("chevron-down", 18, 0.85), surf(1), { title: "Channel down" }),
@@ -4251,6 +4253,7 @@ function openPlayer(channelId) {
     void fresh.offsetWidth;
     showPlayerChrome(); // reveal the new chrome and restart the idle countdown
     startTimeshiftTick();
+    if (chatOpen) openChat(channelId); // follow the surf into the new channel's room
     return;
   }
 
@@ -4321,8 +4324,102 @@ function openPlayer(channelId) {
   }, 300);
 }
 
+// ===== Watch-party chat =====
+// A per-channel room over WebSocket: everyone in the app watching this channel.
+// Presence blends chatters with the muxer's TRUE watcher count (Emby/TV included).
+let chatOpen = false;
+let chatWs = null;
+let chatEl = null;
+let chatChannelId = null;
+
+function chatConnect(channelId) {
+  if (chatWs) { try { chatWs.close(); } catch (e) { /* noop */ } chatWs = null; }
+  chatChannelId = channelId;
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/chat/" + channelId);
+  chatWs = ws;
+  ws.onmessage = (ev) => {
+    let d = null;
+    try { d = JSON.parse(ev.data); } catch (e) { return; }
+    if (!chatEl) return;
+    if (d.type === "history") { for (const m of d.items || []) chatAppend(m.user, m.text, m.ts); }
+    else if (d.type === "msg") chatAppend(d.user, d.text, d.ts);
+    else if (d.type === "info") chatAppend(null, d.text, d.ts);
+    else if (d.type === "presence") {
+      const p = chatEl.querySelector("#aerChatPresence");
+      if (p) p.textContent = d.watching + " watching · " + d.chat + " in chat";
+    }
+  };
+  // Auto-reconnect while the panel stays open (server restarts, network blips).
+  ws.onclose = () => { if (chatOpen && chatWs === ws) setTimeout(() => { if (chatOpen && chatWs === ws) chatConnect(chatChannelId); }, 3000); };
+}
+
+function chatAppend(user, text, ts) {
+  const list = chatEl && chatEl.querySelector("#aerChatMsgs");
+  if (!list) return;
+  const time = new Date(ts || Date.now());
+  const hh = time.getHours() % 12 || 12;
+  const stamp = hh + ":" + String(time.getMinutes()).padStart(2, "0");
+  list.appendChild(user == null
+    ? h("div", { style: "padding:3px 2px;font-size:11.5px;color:#5c6166;font-style:italic" }, text)
+    : h("div", { style: "padding:4px 2px;font-size:13px;line-height:1.4;word-break:break-word" },
+        h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:10px;color:#4a5058;margin-right:7px" }, stamp),
+        h("span", { style: "font-weight:700;color:" + nameColor(user) + ";margin-right:7px" }, user),
+        h("span", { style: "color:#d5d9dd" }, text)));
+  while (list.childNodes.length > 200) list.removeChild(list.firstChild);
+  list.scrollTop = list.scrollHeight;
+}
+
+// Stable per-name color (Twitch-style) from a tiny hash.
+function nameColor(name) {
+  const palette = ["#54b6ff", "#2fae5c", "#f5c446", "#e24fc4", "#2fc0cf", "#e2873f", "#9b6bff", "#ff8d84"];
+  let x = 0;
+  for (let i = 0; i < name.length; i++) x = (x * 31 + name.charCodeAt(i)) >>> 0;
+  return palette[x % palette.length];
+}
+
+function openChat(channelId) {
+  closeChat();
+  chatOpen = true;
+  const input = h("input", { placeholder: "Say something…", maxlength: "400", style: "flex:1;min-width:0;height:38px;padding:0 12px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:#eef0f2;font-size:13px;font-family:inherit;outline:none" });
+  const sendMsg = () => {
+    const v = input.value.trim();
+    if (!v || !chatWs || chatWs.readyState !== 1) return;
+    chatWs.send(v);
+    input.value = "";
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendMsg(); e.stopPropagation(); });
+  chatEl = h("div", { style: "position:fixed;top:0;right:0;bottom:0;width:min(320px,86vw);z-index:4;display:flex;flex-direction:column;background:rgba(10,12,15,0.86);border-left:1px solid rgba(255,255,255,0.1);backdrop-filter:blur(14px);animation:aerFadeIn .18s ease" },
+    h("div", { style: "flex:none;display:flex;align-items:center;gap:9px;padding:14px 14px 10px" },
+      icon("message-square", 15, 0.8),
+      h("div", { style: "flex:1;min-width:0" },
+        h("div", { style: "font-size:13.5px;font-weight:700" }, "Watch party"),
+        h("div", { id: "aerChatPresence", style: "font-size:11px;color:#8c9298;margin-top:1px" }, "connecting…")),
+      h("button", { onClick: closeChat, style: "width:28px;height:28px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("x", 13, 0.7))),
+    h("div", { id: "aerChatMsgs", style: "flex:1;min-height:0;overflow-y:auto;padding:4px 14px" }),
+    h("div", { style: "flex:none;display:flex;gap:8px;padding:10px 14px calc(12px + env(safe-area-inset-bottom, 0px))" },
+      input,
+      h("button", { onClick: sendMsg, style: "flex:none;height:38px;padding:0 14px;border-radius:9px;border:none;background:#54b6ff;color:#06121c;font-size:13px;font-weight:800;cursor:pointer" }, "Send")));
+  document.body.appendChild(chatEl);
+  chatConnect(channelId);
+  refreshPlayerChrome(); // chat button lights up
+}
+
+function closeChat() {
+  chatOpen = false;
+  if (chatWs) { try { chatWs.close(); } catch (e) { /* noop */ } chatWs = null; }
+  if (chatEl) { chatEl.remove(); chatEl = null; }
+}
+
+function toggleChat(channelId) {
+  if (chatOpen) { closeChat(); refreshPlayerChrome(); }
+  else openChat(channelId);
+}
+
 document.addEventListener("keydown", (e) => {
   if (!playerEl) return;
+  // Typing in the chat (or any field) must never zap channels / toggle playback.
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
   if (e.key >= "0" && e.key <= "9") { pushDigit(e.key); return; } // remote-style number entry
   if (e.key === "Enter" && numberEntry) { commitNumberEntry(); return; }
   if (e.key === "Escape") { if (numberEntry) { cancelNumberEntry(); return; } closePlayer(); }
