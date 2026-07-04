@@ -149,6 +149,7 @@ const state = {
   density: "comfortable", // guide row density: 'comfortable' | 'compact'
   guideOnlyWithEpg: true, // guide shows only channels that have program data
   genreFilter: null, // guide genre dropdown (null = all; "24/7" = every loop channel)
+  tvMode: prefOn("phospharr.tvmode"), // launch straight into the last channel, like turning on a TV
   networkGroup: localStorage.getItem("phospharr.netgroup") !== "off", // collapse affiliate clusters into one row
   networkSelection: loadNetSel(), // per-network: which affiliate/market is active
   previews: prefDefault("phospharr.previews"), // auto-play live preview in the guide (off by default on phones)
@@ -337,6 +338,41 @@ async function loadView() {
   // Don't re-render under an open fullscreen player — it would tear down the
   // chrome-fade / the warm video. closePlayer() renders fresh on exit.
   if (!playerEl) render();
+  tvBoot();
+}
+
+// TV mode: the FIRST load behaves like turning on a TV — the last-watched
+// channel opens fullscreen immediately. Autoplay policy blocks unmuted playback
+// without a gesture, so if play is refused we start muted and any click/keypress
+// restores sound.
+let tvBooted = false;
+function tvBoot() {
+  if (tvBooted) return;
+  tvBooted = true;
+  if (!state.tvMode || playerEl || !state.data) return;
+  let last = null;
+  try { last = Number(localStorage.getItem("phospharr.lastChannel")); } catch { /* private */ }
+  const ch = last && state.data.channelsById[last];
+  if (!ch || ch.isHidden) return;
+  setTimeout(() => {
+    if (playerEl) return;
+    openPlayer(ch.id);
+    setTimeout(() => {
+      const v = playerVideo();
+      if (!v || !v.paused) return;
+      v.muted = true;
+      v.play().catch(() => { /* still blocked — the poster stays until a tap */ });
+      setPlayerStatus("Muted — click or press any key for sound");
+      const unmute = () => {
+        v.muted = false;
+        setPlayerStatus("");
+        document.removeEventListener("click", unmute);
+        document.removeEventListener("keydown", unmute);
+      };
+      document.addEventListener("click", unmute, { once: true });
+      document.addEventListener("keydown", unmute, { once: true });
+    }, 800);
+  }, 350);
 }
 
 // programs for a channel within the window (synthesize a filler when EPG is thin)
@@ -723,6 +759,16 @@ function toggleNetGroup() { const next = state.networkGroup === false; try { loc
 function toggleAmbient() { const next = !(state.ambient !== false); try { localStorage.setItem("phospharr.ambient", next ? "on" : "off"); } catch { /* private */ } set({ ambient: next }); }
 function toggleFavoritesOnly() { set({ favoritesOnly: !state.favoritesOnly, selectedCellId: null }); }
 
+// Read an on/off localStorage pref (default off).
+function prefOn(k) {
+  try { return localStorage.getItem(k) === "on"; } catch { return false; }
+}
+function toggleTvMode() {
+  const next = !state.tvMode;
+  try { localStorage.setItem("phospharr.tvmode", next ? "on" : "off"); } catch { /* private */ }
+  set({ tvMode: next });
+}
+
 // iOS-style on/off pill used in the Guide-options sheet.
 function pillSwitch(on) {
   return h("div", { style: "flex:none;width:44px;height:26px;border-radius:13px;background:" + (on ? AC : "rgba(255,255,255,0.16)") + ";position:relative;transition:background .18s" },
@@ -766,7 +812,9 @@ function guideOptionsSheet() {
       divider(),
       toggleRow("Network grouping", "Collapse local affiliates into one row.", state.networkGroup !== false, toggleNetGroup),
       divider(),
-      toggleRow("Ambient backdrop", "Play the focused channel behind the grid.", state.ambient !== false, toggleAmbient)));
+      toggleRow("Ambient backdrop", "Play the focused channel behind the grid.", state.ambient !== false, toggleAmbient),
+      divider(),
+      toggleRow("TV mode", "Open on your last channel at launch, like turning on a TV.", state.tvMode, toggleTvMode)));
 }
 
 // The guide hero/detail card auto-hides on phones after a short idle so the grid
@@ -844,6 +892,7 @@ function guideScreen() {
         iconBtn(state.previews !== false, state.previews !== false ? "monitor-play" : "monitor-off", state.previews !== false ? "Live preview on — click to stop background video" : "Live preview off — click to enable", togglePreviews),
         iconBtn(state.networkGroup !== false, "layers", "Group network affiliates (collapse local stations into one row)", toggleNetGroup),
         iconBtn(state.ambient !== false, "clapperboard", "Ambient backdrop", toggleAmbient),
+        iconBtn(state.tvMode, "power", "TV mode — open on your last channel at launch", toggleTvMode),
         guideFilterToggle(),
         densityToggle(),
         jumpBtn,
@@ -3726,6 +3775,7 @@ function stealTilePlayer(channelId) {
 
 function openPlayer(channelId) {
   if (!state.data || !state.data.channelsById[channelId]) return;
+  try { localStorage.setItem("phospharr.lastChannel", String(channelId)); } catch { /* private */ }
 
   // Already fullscreen → channel surf: swap the source on the existing player
   // video and refresh the chrome. No FLIP (we're already full-bleed).
