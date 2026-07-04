@@ -4071,6 +4071,16 @@ function setPlayerStatus(msg) {
 
 function attachMpegts(video, channelId, transcode, behindSec) {
   if (!window.mpegts || !mpegts.isSupported()) {
+    // No MSE (iOS/iPadOS Safari) → the server's HLS output plays NATIVELY.
+    // Session cookie rides along same-origin, so no key juggling in-app.
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      destroyMpegts();
+      setPlayerStatus("Connecting…");
+      video.src = location.origin + "/hls/" + channelId + "/index.m3u8";
+      video.play().catch(() => {});
+      video.addEventListener("playing", () => setPlayerStatus(""), { once: true });
+      return;
+    }
     setPlayerStatus("This browser can't play live TS (no Media Source Extensions).");
     return;
   }

@@ -853,6 +853,34 @@ app.get("/api/guide/:canonicalId/now", async (c) => {
   return c.json(await nowNext(canonicalId));
 });
 
+// ─── HLS: native playback for MSE-less devices (iOS Safari, Cast, AirPlay) ───
+app.get("/hls/:channelId/index.m3u8", async (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
+  const channelId = Number(c.req.param("channelId"));
+  if (!Number.isFinite(channelId)) return c.text("bad channel id", 400);
+  const { playlist } = await import("../proxy/hls.ts");
+  let text = await playlist(channelId);
+  if (!text) return c.text("channel unavailable", 503);
+  // Key-based clients (no cookie): segment fetches need the key too — append it
+  // to every URI line so the playlist is self-sufficient.
+  const key = c.req.query("key");
+  if (key) text = text.split("\n").map((l) => {
+    if (l.startsWith("#EXT-X-MAP:")) return l.replace(/URI="([^"]+)"/, (_, u) => `URI="${u}?key=${encodeURIComponent(key)}"`);
+    return l && !l.startsWith("#") ? l + "?key=" + encodeURIComponent(key) : l;
+  }).join("\n");
+  return c.text(text, 200, { "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" });
+});
+app.get("/hls/:channelId/:file", async (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
+  const channelId = Number(c.req.param("channelId"));
+  const { segment } = await import("../proxy/hls.ts");
+  const f = segment(channelId, c.req.param("file"));
+  if (!f) return c.text("not found", 404);
+  return new Response(f, { headers: { "Content-Type": c.req.param("file").endsWith(".mp4") ? "video/mp4" : "video/iso.segment", "Cache-Control": "no-store" } });
+});
+
 // ─── VOD: movie + series catalogs (browse, detail, playback) ───
 const vodPage = (q: string | undefined, cat: string | undefined, offset: number, limit: number) => ({
   q: (q ?? "").trim(), cat: (cat ?? "").trim(), offset: Math.max(0, offset || 0), limit: Math.min(120, Math.max(1, limit || 60)),
