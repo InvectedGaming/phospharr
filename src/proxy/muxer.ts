@@ -1,5 +1,5 @@
 import { pool } from "../scheduler/pool.ts";
-import { selectStream, markLive, markDead } from "../scheduler/selector.ts";
+import { selectStream, rankedStreams, markLive, markDead } from "../scheduler/selector.ts";
 import { cachedSetting } from "../settings.ts";
 import { providerEgress } from "../net/egress.ts";
 import { TsPreroll } from "../proxy/tspreroll.ts";
@@ -28,20 +28,26 @@ type Subscriber = {
 };
 
 class ChannelMux {
-  readonly stream: Stream;
+  stream: Stream; // current source — REPLACED in-place on mid-watch failover
+  readonly channelId: number;
   private subs = new Map<number, Subscriber>();
   private subSeq = 0;
   private abort = new AbortController();
   private graceTimer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
+  private stopping = false;
+  private failed = new Set<number>(); // stream ids that already failed this session
   private onTeardown: () => void;
+  private onRekey: (oldStreamId: number, newStreamId: number) => void;
   // Rolling keyframe buffer: lets a new viewer start on a decodable keyframe
   // instantly instead of waiting out a GOP. Persists while the mux is warm.
   private pre = new TsPreroll();
 
-  constructor(stream: Stream, onTeardown: () => void) {
+  constructor(stream: Stream, onTeardown: () => void, onRekey: (o: number, n: number) => void) {
     this.stream = stream;
+    this.channelId = stream.channelId;
     this.onTeardown = onTeardown;
+    this.onRekey = onRekey;
   }
 
   get viewerCount() {
@@ -54,11 +60,54 @@ class ChannelMux {
     if (!pool.acquire(this.stream.providerId)) return false;
     this.started = true;
     markLive(this.stream.id);
-    // A pump failure (provider down, bad VPN proxy, etc.) must tear down HARD —
-    // even with viewers attached — so it can't linger as a zombie that new
-    // tune-ins multiplex onto and get nothing. Clients get EOF and re-select.
-    this.pump().catch(() => this.teardown(true));
+    void this.run();
     return true;
+  }
+
+  /**
+   * Supervisor: pump the upstream; if it dies WITH viewers attached, fail over
+   * to the channel's next-ranked source in place — same subscribers, one brief
+   * blip — like a real TV network switching to a backup feed. Only when every
+   * source is exhausted do clients get EOF (and re-select on their own).
+   */
+  private async run(): Promise<void> {
+    while (true) {
+      try {
+        await this.pump();
+      } catch { /* upstream failed — fall through to failover */ }
+      if (this.stopping) return; // teardown() already ran (idle reap / kill)
+      if (this.subs.size === 0) { this.teardown(true); return; }
+      const next = await this.nextSource();
+      if (!next) {
+        console.log(`[muxer] channel ${this.channelId}: source ${this.stream.id} died, no alternates — dropping ${this.subs.size} viewer(s)`);
+        this.teardown(true);
+        return;
+      }
+      console.log(`[muxer] channel ${this.channelId}: failover ${this.stream.id} → ${next.id}`);
+      const old = this.stream;
+      this.stream = next;
+      this.abort = new AbortController();
+      this.pre = new TsPreroll(); // fresh keyframe alignment for the new source
+      markLive(next.id);
+      this.onRekey(old.id, next.id);
+    }
+  }
+
+  /** Pick the next untried source with a free slot (our old slot is released first). */
+  private async nextSource(): Promise<Stream | null> {
+    this.failed.add(this.stream.id);
+    pool.release(this.stream.providerId);
+    markDead(this.stream.id);
+    this.started = false; // slot released — teardown must not release again
+    const ranked = await rankedStreams(this.channelId);
+    for (const s of ranked) {
+      if (this.failed.has(s.id)) continue;
+      if (pool.acquire(s.providerId)) {
+        this.started = true;
+        return s;
+      }
+    }
+    return null;
   }
 
   private async pump() {
@@ -91,7 +140,7 @@ class ChannelMux {
         }
       }
     }
-    this.teardown();
+    // Upstream EOF: fall back to run(), which fails over or tears down.
   }
 
   attach(sub: Omit<Subscriber, "id">, sendPreroll = true): number {
@@ -123,10 +172,16 @@ class ChannelMux {
     }
   }
 
+  /** Hard stop (evicting a viewerless warm hold). */
+  stop() {
+    this.teardown(true);
+  }
+
   private teardown(force = false) {
     if (this.graceTimer) clearTimeout(this.graceTimer);
     this.graceTimer = null;
     if (!force && this.subs.size > 0) return; // someone re-attached during grace
+    this.stopping = true; // tells the failover supervisor this death is intentional
     try {
       this.abort.abort();
     } catch {
@@ -146,18 +201,45 @@ class ChannelMux {
 class Muxer {
   /** Active muxes keyed by streamId (the multiplex key). */
   private active = new Map<number, ChannelMux>();
+  // Installed by the prewarm module: frees a warm-held slot so a REAL viewer's
+  // tune can never lose to speculative prewarming. Returns true if it freed one.
+  private evictor: (() => boolean) | null = null;
+
+  setEvictor(fn: () => boolean) { this.evictor = fn; }
+
+  /** Is some mux (any source) already live for this channel? */
+  hasChannel(channelId: number): boolean {
+    for (const m of this.active.values()) if (m.channelId === channelId) return true;
+    return false;
+  }
+
+  /** Tear down a channel's mux if it has no viewers (used to evict warm holds). */
+  dropIdle(channelId: number): void {
+    for (const [id, m] of this.active) {
+      if (m.channelId === channelId && m.viewerCount === 0) {
+        m.stop();
+        this.active.delete(id);
+      }
+    }
+  }
 
   /**
    * Open a viewer stream for a channel. Returns a ReadableStream (MPEG-TS
    * passthrough) or null if the pool is full / no playable source.
    */
   async open(channelId: number, signal?: AbortSignal, opts?: { preroll?: boolean }): Promise<ReadableStream<Uint8Array> | null> {
-    const selection = await selectStream(channelId);
+    let selection = await selectStream(channelId);
+    if (!selection && this.evictor?.()) selection = await selectStream(channelId); // free a prewarm slot, retry once
     if (!selection) return null;
 
     let mux = this.active.get(selection.stream.id);
     if (!mux) {
-      mux = new ChannelMux(selection.stream, () => this.active.delete(selection.stream.id));
+      const created = new ChannelMux(
+        selection.stream,
+        () => { for (const [id, m] of this.active) if (m === created) this.active.delete(id); },
+        (oldId, newId) => { if (this.active.get(oldId) === created) this.active.delete(oldId); this.active.set(newId, created); },
+      );
+      mux = created;
       this.active.set(selection.stream.id, mux);
       const ok = await mux.start();
       if (!ok) {

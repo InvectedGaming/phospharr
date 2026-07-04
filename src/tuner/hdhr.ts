@@ -1,6 +1,7 @@
 import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { channels, streams } from "../db/schema.ts";
+import { pool } from "../scheduler/pool.ts";
 import { VERSION } from "../version.ts";
 
 // Channel 1: the live mosaic composite. ALWAYS listed — tuner consumers (Emby,
@@ -19,7 +20,15 @@ const MOSAIC_NUMBER = 1;
  */
 
 const DEVICE_ID = "PHOSPHARR1";
-const TUNER_COUNT = Number(process.env.HDHR_TUNER_COUNT ?? 8);
+// Report the REAL capacity (sum of provider connection budgets) so Emby/Plex
+// schedule DVR against what we can actually serve instead of over-subscribing
+// and erroring mid-recording. Env still overrides for odd setups.
+function tunerCount(): number {
+  if (process.env.HDHR_TUNER_COUNT) return Number(process.env.HDHR_TUNER_COUNT);
+  const snap = pool.snapshot();
+  const total = Object.values(snap).reduce((n, s) => n + s.max, 0);
+  return Math.max(1, total);
+}
 
 export function discover(baseUrl: string) {
   return {
@@ -32,7 +41,7 @@ export function discover(baseUrl: string) {
     DeviceAuth: "phospharr",
     BaseURL: baseUrl,
     LineupURL: `${baseUrl}/lineup.json`,
-    TunerCount: TUNER_COUNT,
+    TunerCount: tunerCount(),
   };
 }
 
@@ -94,7 +103,8 @@ export async function playlistM3U(baseUrl: string): Promise<string> {
       `tvg-id="${xmlAttr(tvgId)}"`,
       `tvg-chno="${ch.number}"`,
       `tvg-name="${xmlAttr(ch.name)}"`,
-      ch.logoUrl ? `tvg-logo="${xmlAttr(ch.logoUrl)}"` : "",
+      // our cached logo proxy, not the provider's flaky CDN
+      ch.logoUrl ? `tvg-logo="${xmlAttr(`${baseUrl}/logo/${ch.id}`)}"` : "",
       group ? `group-title="${xmlAttr(group)}"` : "",
     ].filter(Boolean).join(" ");
     out.push(`#EXTINF:-1 ${attrs},${ch.name}`);

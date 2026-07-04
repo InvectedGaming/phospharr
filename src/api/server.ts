@@ -27,6 +27,8 @@ import { exportXmltv } from "../epg/export.ts";
 import { buildView } from "./view.ts";
 import { getGuideSnapshot } from "../epg/snapshot.ts";
 import { VERSION } from "../version.ts";
+import * as prewarm from "../proxy/prewarm.ts";
+import { getLogo } from "../tuner/logocache.ts";
 import { getSettings, getSetting, setSetting, cachedSetting, envLockedKeys, capabilities, type Settings } from "../settings.ts";
 import { recordView, getAnalytics, recentChannels } from "../analytics.ts";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
@@ -321,6 +323,8 @@ async function serveStream(c: Context<Env>, channelId: number, transcode: boolea
   const body = transcode ? await transcoder.open(channelId, c.req.raw.signal) : await muxer.open(channelId, c.req.raw.signal);
   if (!body) return c.text(transcode ? "transcoder unavailable or no playable source" : "all tuners busy or no playable source", 503);
   trackSession(c, channelId, transcode ? "transcode" : "passthrough");
+  // Real watches (not tile previews) prime the surf ring around this channel.
+  if (c.req.query("as") !== "preview") prewarm.onTune(channelId);
   return new Response(body, { headers: STREAM_HEADERS });
 }
 
@@ -525,11 +529,22 @@ app.get("/t/:key/playlist.m3u", async (c) => {
     headers: { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" },
   });
 });
-// XMLTV guide export for the same consumers.
+// XMLTV guide export for the same consumers (channel icons point at our logo cache).
 app.get("/t/:key/epg.xml", async (c) => {
   const d = tunerDenied(c); if (d) return d;
-  return new Response(await exportXmltv(), {
+  return new Response(await exportXmltv(`${baseUrl(c)}/t/${c.req.param("key")}`), {
     headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" },
+  });
+});
+// Cached channel logos — fetched from the provider once, then served locally.
+app.get("/t/:key/logo/:channelId", async (c) => {
+  const d = tunerDenied(c); if (d) return d;
+  const channelId = Number(c.req.param("channelId"));
+  if (!Number.isFinite(channelId)) return c.text("bad channel id", 400);
+  const logo = await getLogo(channelId);
+  if (!logo) return c.text("no logo", 404);
+  return new Response(logo.bytes, {
+    headers: { "Content-Type": logo.type, "Cache-Control": "public, max-age=604800, immutable", "X-Robots-Tag": "noindex" },
   });
 });
 

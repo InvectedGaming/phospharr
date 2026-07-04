@@ -3,9 +3,15 @@ import { db, sqlite } from "../db/index.ts";
 import { channels } from "../db/schema.ts";
 
 /**
- * XMLTV export for external consumers (TiviMate, Jellyfin M3U tuner, …). Channel
+ * XMLTV export for external consumers (Emby, Jellyfin, TiviMate, …). Channel
  * ids are canonicalIds so they bind to the M3U playlist's tvg-id. Bounded to a
  * rolling window to keep the payload sane.
+ *
+ * Enriched for consumer UIs: sub-titles, season/episode (xmltv_ns), programme
+ * icons, and a FIRST <category> drawn from the keyword set Emby color-codes its
+ * guide with (Sports / News / Movie / Kids / Series) — mapped from the
+ * programme's own category, else the channel's taxonomy genre. The original
+ * category is kept as a second <category>.
  */
 
 const WINDOW_BEHIND = 2 * 3600;
@@ -20,14 +26,24 @@ function xmltvTime(unixSec: number): string {
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())} +0000`;
 }
 
+// The category vocabulary Emby (and Jellyfin) recognize for guide cell colors.
+function embyCategory(programCategory: string | null, channelGenre: string | null): string {
+  const t = ((programCategory ?? "") + " " + (channelGenre ?? "")).toLowerCase();
+  if (/sport/.test(t)) return "Sports";
+  if (/news/.test(t)) return "News";
+  if (/kids|child|animation|cartoon/.test(t)) return "Kids";
+  if (/movie|film|cinema/.test(t)) return "Movie";
+  return "Series";
+}
+
 const progStmt = sqlite.prepare(
-  "SELECT canonical_id, title, description, start_time, end_time, category FROM programs WHERE end_time > ? AND start_time < ? ORDER BY canonical_id, start_time",
+  "SELECT canonical_id, title, subtitle, description, start_time, end_time, category, season, episode, icon_url FROM programs WHERE end_time > ? AND start_time < ? ORDER BY canonical_id, start_time",
 );
 
-export async function exportXmltv(): Promise<string> {
+export async function exportXmltv(logoBase?: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const chans = db
-    .select({ name: channels.name, canonicalId: channels.canonicalId, logoUrl: channels.logoUrl })
+    .select({ id: channels.id, name: channels.name, canonicalId: channels.canonicalId, logoUrl: channels.logoUrl, genre: channels.genre, kind: channels.kind })
     .from(channels)
     .where(and(eq(channels.isHidden, false), isNotNull(channels.canonicalId)))
     .all();
@@ -38,29 +54,42 @@ export async function exportXmltv(): Promise<string> {
   // blocks below so tuner consumers show a titled guide instead of a blank.
   seen.add("phospharr.mosaic");
   parts.push('<channel id="phospharr.mosaic"><display-name>Mosaic</display-name></channel>');
+  const genreByCanonical = new Map<string, string | null>();
   for (const ch of chans) {
     if (!ch.canonicalId || seen.has(ch.canonicalId)) continue;
     seen.add(ch.canonicalId);
+    genreByCanonical.set(ch.canonicalId, ch.genre);
+    // With a logoBase (the tuner's /t/<key> root), point icons at our cached
+    // logo proxy — instant, complete art instead of 6k flaky provider URLs.
+    const icon = ch.logoUrl ? (logoBase ? `${logoBase}/logo/${ch.id}` : ch.logoUrl) : null;
     parts.push(
       `<channel id="${esc(ch.canonicalId)}"><display-name>${esc(ch.name)}</display-name>` +
-        (ch.logoUrl ? `<icon src="${esc(ch.logoUrl)}"/>` : "") +
+        (icon ? `<icon src="${esc(icon)}"/>` : "") +
         "</channel>",
     );
   }
 
   const rows = progStmt.all(now - WINDOW_BEHIND, now + WINDOW_AHEAD) as Array<{
-    canonical_id: string; title: string; description: string | null;
+    canonical_id: string; title: string; subtitle: string | null; description: string | null;
     start_time: number; end_time: number; category: string | null;
+    season: number | null; episode: number | null; icon_url: string | null;
   }>;
   const covered = new Set<string>();
   for (const p of rows) {
     if (!seen.has(p.canonical_id)) continue; // only channels we actually exported
     covered.add(p.canonical_id);
+    const emby = embyCategory(p.category, genreByCanonical.get(p.canonical_id) ?? null);
+    // xmltv_ns is 0-based: "season-1 . episode-1 ."
+    const ep = p.season != null && p.episode != null ? `${p.season - 1}.${p.episode - 1}.` : null;
     parts.push(
       `<programme start="${xmltvTime(p.start_time)}" stop="${xmltvTime(p.end_time)}" channel="${esc(p.canonical_id)}">` +
         `<title>${esc(p.title)}</title>` +
+        (p.subtitle ? `<sub-title>${esc(p.subtitle)}</sub-title>` : "") +
         (p.description ? `<desc>${esc(p.description)}</desc>` : "") +
-        (p.category ? `<category>${esc(p.category)}</category>` : "") +
+        `<category>${emby}</category>` +
+        (p.category && p.category !== emby ? `<category>${esc(p.category)}</category>` : "") +
+        (ep ? `<episode-num system="xmltv_ns">${ep}</episode-num>` : "") +
+        (p.icon_url ? `<icon src="${esc(p.icon_url)}"/>` : "") +
         "</programme>",
     );
   }
@@ -69,7 +98,9 @@ export async function exportXmltv(): Promise<string> {
   // loop channels the provider publishes no schedule for. Without it, Emby /
   // Jellyfin render blank "No information" rows that read like broken EPG
   // mapping. Emit hour-aligned 4h blocks titled with the channel name so the
-  // guide is fully populated and the channel is identifiable at a glance.
+  // guide is fully populated and the channel is identifiable at a glance. The
+  // first category is the Emby color keyword from the channel's genre, so even
+  // filler rows are color-coded (a 24/7 Kids loop reads as Kids).
   const nameByCanonical = new Map(chans.map((c) => [c.canonicalId!, c.name]));
   nameByCanonical.set("phospharr.mosaic", "Mosaic — compose in Phospharr");
   const blockSec = 4 * 3600;
@@ -77,10 +108,11 @@ export async function exportXmltv(): Promise<string> {
   for (const cid of seen) {
     if (covered.has(cid)) continue;
     const title = nameByCanonical.get(cid) ?? cid;
+    const emby = embyCategory(null, genreByCanonical.get(cid) ?? null);
     for (let t = fillStart; t < now + WINDOW_AHEAD; t += blockSec) {
       parts.push(
         `<programme start="${xmltvTime(t)}" stop="${xmltvTime(t + blockSec)}" channel="${esc(cid)}">` +
-          `<title>${esc(title)}</title><category>24/7</category></programme>`,
+          `<title>${esc(title)}</title><category>${emby}</category><category>24/7</category></programme>`,
       );
     }
   }
