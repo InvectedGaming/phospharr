@@ -3,7 +3,7 @@ name: Android APK
 on:
   push:
     branches: [main]
-    paths: ["android/**", ".github/workflows/android.yml"]
+    tags: ["v*"] # tags build + attach the APK to the GitHub Release
   pull_request:
     paths: ["android/**"]
   workflow_dispatch:
