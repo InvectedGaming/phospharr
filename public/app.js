@@ -2481,6 +2481,8 @@ function playVod(baseUrl, meta) {
   let startedAt = Date.now();
   const video = h("video", { autoplay: true, playsinline: true, style: "width:100%;height:100%;object-fit:contain;background:#000" });
   const statusEl = h("div", { style: "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;font-size:13.5px;color:#cfd3d8;background:rgba(8,10,12,0.7);padding:9px 18px;border-radius:10px;backdrop-filter:blur(6px);pointer-events:none" }, "Loading…");
+  // an empty pill still paints its background — hide the element entirely when blank
+  const setStatus = (t) => { statusEl.textContent = t || ""; statusEl.style.display = t ? "block" : "none"; };
   const posEl = h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#cfd3d8;min-width:60px;text-align:center" }, "0:00");
   const fmtPos = (s) => { const m = Math.floor(s / 60); return Math.floor(m / 60) > 0 ? Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0") + ":" + String(Math.floor(s % 60)).padStart(2, "0") : m + ":" + String(Math.floor(s % 60)).padStart(2, "0"); };
   const nowPos = () => offset + (video.currentTime || 0);
@@ -2489,11 +2491,11 @@ function playVod(baseUrl, meta) {
   const connect = (t) => {
     offset = Math.max(0, t);
     if (vodLivePlayer) { try { vodLivePlayer.destroy(); } catch (e) { /* noop */ } vodLivePlayer = null; }
-    if (!window.mpegts || !mpegts.isSupported()) { statusEl.textContent = "This browser can't play video (no MSE)."; return; }
+    if (!window.mpegts || !mpegts.isSupported()) { setStatus("This browser can't play video (no MSE)."); return; }
     // ABSOLUTE url — mpegts.js fetches inside a Web Worker, which can't resolve
     // a relative path (same trap the live player hit).
     const url = location.origin + baseUrl + "?t=" + Math.round(offset) + (transcode ? "&tc=1" : "");
-    statusEl.textContent = transcode ? "Transcoding…" : "Loading…";
+    setStatus(transcode ? "Transcoding…" : "Loading…");
     const p = mpegts.createPlayer(
       { type: "mpegts", isLive: true, url, withCredentials: true },
       { enableWorker: true, liveBufferLatencyChasing: false, lazyLoad: false, autoCleanupSourceBuffer: true });
@@ -2508,12 +2510,12 @@ function playVod(baseUrl, meta) {
         connect(offset);
         return;
       }
-      statusEl.textContent = "Playback error: " + (msg || detail);
+      setStatus("Playback error: " + (msg || detail));
     });
     p.load();
     video.play().catch(() => {});
   };
-  video.addEventListener("playing", () => { statusEl.textContent = ""; });
+  video.addEventListener("playing", () => setStatus(""));
   const seek = (delta) => connect(nowPos() + delta);
   const close = () => {
     clearInterval(posTick);
