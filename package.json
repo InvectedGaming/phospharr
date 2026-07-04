@@ -1,6 +1,6 @@
 {
   "name": "phospharr",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "description": "Self-hosted IPTV manager + viewer that feels like a real TV. Canonical channel layer, slot-pool scheduling across providers, multiplexing stream proxy, HDHR emulation, merged EPG.",
   "type": "module",
   "license": "MIT",

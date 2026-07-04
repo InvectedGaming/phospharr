@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
-import { and, eq, gt, lte, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lt, lte, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { providers, channels, streams, rules, programs, vpns } from "../db/schema.ts";
+import { providers, channels, streams, rules, programs, vpns, dvrRules, recordings, userFavorites, reminders } from "../db/schema.ts";
+import { dvrOverview, scheduleRecording, cancelRecording, deleteRule } from "../dvr/recorder.ts";
 import { startVpn, stopVpn, vpnStatus } from "../net/tunnel.ts";
 import { syncProvider } from "../ingest/sync.ts";
 import { fetchM3U } from "../ingest/m3u.ts";
@@ -262,6 +263,19 @@ app.patch("/api/settings", async (c) => {
 // Channels + health + source counts (the guide is served separately).
 // Non-admins get a lineup filtered to what their restrictions allow.
 app.get("/api/view", async (c) => c.json(await buildView(c.get("user"))));
+
+// Per-user favorites — every signed-in user gets their own stars (the old
+// channels.isFavorite is only a legacy fallback for pre-profile data).
+app.post("/api/favorites/:channelId", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json({ error: "sign in" }, 401);
+  const channelId = Number(c.req.param("channelId"));
+  if (!Number.isFinite(channelId)) return c.json({ error: "bad channel id" }, 400);
+  const b = (await c.req.json().catch(() => ({}))) as { on?: boolean };
+  if (b.on) await db.insert(userFavorites).values({ userId: u.id, channelId }).onConflictDoNothing();
+  else await db.delete(userFavorites).where(and(eq(userFavorites.userId, u.id), eq(userFavorites.channelId, channelId)));
+  return c.json({ ok: true, on: !!b.on });
+});
 
 // Full detail for one program (on-demand — keeps the guide snapshot lean).
 app.get("/api/program", async (c) => {
@@ -836,6 +850,90 @@ app.get("/api/channels/:id/sources", async (c) => {
 app.get("/api/guide/:canonicalId/now", async (c) => {
   const canonicalId = c.req.param("canonicalId");
   return c.json(await nowNext(canonicalId));
+});
+
+// ─── Reminders ("tell me when this starts") ───
+app.get("/api/reminders", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json({ error: "sign in" }, 401);
+  // lazy GC: reminders whose program started >5 min ago are spent
+  await db.delete(reminders).where(and(eq(reminders.userId, u.id), lt(reminders.startTime, new Date(Date.now() - 5 * 60_000))));
+  return c.json(await db.select().from(reminders).where(eq(reminders.userId, u.id)).orderBy(asc(reminders.startTime)));
+});
+app.post("/api/reminders", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json({ error: "sign in" }, 401);
+  const b = (await c.req.json().catch(() => ({}))) as Partial<{ channelId: number; title: string; startTime: number }>;
+  if (!b.channelId || !b.title || !b.startTime) return c.json({ error: "channelId, title, startTime required" }, 400);
+  const [row] = await db
+    .insert(reminders)
+    .values({ userId: u.id, channelId: Number(b.channelId), title: String(b.title), startTime: new Date(Number(b.startTime)), createdAt: new Date() })
+    .returning();
+  return c.json(row);
+});
+app.delete("/api/reminders/:id", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json({ error: "sign in" }, 401);
+  await db.delete(reminders).where(and(eq(reminders.id, Number(c.req.param("id"))), eq(reminders.userId, u.id)));
+  return c.json({ ok: true });
+});
+
+// ─── DVR ───
+app.get("/api/dvr", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  return c.json(await dvrOverview());
+});
+app.post("/api/dvr/record", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const b = (await c.req.json().catch(() => ({}))) as Partial<{ channelId: number; canonicalId: string; title: string; subtitle: string; startTime: number; endTime: number }>;
+  if (!b.channelId || !b.title || !b.startTime || !b.endTime) return c.json({ error: "channelId, title, startTime, endTime required" }, 400);
+  const row = await scheduleRecording({
+    channelId: Number(b.channelId), canonicalId: b.canonicalId ?? null, title: String(b.title),
+    subtitle: b.subtitle ?? null, startTime: new Date(Number(b.startTime)), endTime: new Date(Number(b.endTime)),
+  });
+  if (!row) return c.json({ error: "already scheduled" }, 409);
+  return c.json(row);
+});
+app.delete("/api/dvr/recordings/:id", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  return c.json({ ok: await cancelRecording(Number(c.req.param("id"))) });
+});
+app.post("/api/dvr/rules", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const b = (await c.req.json().catch(() => ({}))) as Partial<{ titleMatch: string; canonicalId: string }>;
+  if (!b.titleMatch?.trim()) return c.json({ error: "titleMatch required" }, 400);
+  const [row] = await db.insert(dvrRules).values({ titleMatch: b.titleMatch.trim(), canonicalId: b.canonicalId ?? null, createdAt: new Date() }).returning();
+  return c.json(row);
+});
+app.delete("/api/dvr/rules/:id", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  await deleteRule(Number(c.req.param("id")), c.req.query("cancel") === "1");
+  return c.json({ ok: true });
+});
+// Recording playback (session cookie or stream key) with Range support so the
+// player can seek. Raw MPEG-TS — mpegts.js/VLC/ffmpeg all take it directly.
+app.get("/dvr/:id", async (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
+  const rec = db.select().from(recordings).where(eq(recordings.id, Number(c.req.param("id")))).get();
+  if (!rec?.filePath) return c.text("not found", 404);
+  const f = Bun.file(rec.filePath);
+  if (!(await f.exists())) return c.text("file missing", 404);
+  const size = f.size;
+  const range = c.req.header("range")?.match(/bytes=(\d*)-(\d*)/);
+  if (range && (range[1] || range[2])) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+    const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (start >= size) return c.text("range", 416);
+    return new Response(f.slice(start, end + 1), {
+      status: 206,
+      headers: {
+        "Content-Type": "video/mp2t", "Accept-Ranges": "bytes",
+        "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": String(end - start + 1),
+      },
+    });
+  }
+  return new Response(f, { headers: { "Content-Type": "video/mp2t", "Accept-Ranges": "bytes", "Content-Length": String(size) } });
 });
 
 app.post("/api/epg/sync", async (c) => {

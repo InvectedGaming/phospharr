@@ -37,6 +37,8 @@ class ChannelMux {
   private started = false;
   private stopping = false;
   private failed = new Set<number>(); // stream ids that already failed this session
+  private lastByteAt = Date.now();
+  private watchdog: ReturnType<typeof setInterval> | null = null;
   private onTeardown: () => void;
   private onRekey: (oldStreamId: number, newStreamId: number) => void;
   // Rolling keyframe buffer: lets a new viewer start on a decodable keyframe
@@ -60,6 +62,18 @@ class ChannelMux {
     if (!pool.acquire(this.stream.providerId)) return false;
     this.started = true;
     markLive(this.stream.id);
+    // Stall watchdog: a provider stream that stops sending bytes (but keeps the
+    // socket open) is as dead as a closed one — no bytes for 12s with viewers
+    // waiting aborts the upstream, which drops us into the failover supervisor.
+    this.lastByteAt = Date.now();
+    this.watchdog = setInterval(() => {
+      if (this.subs.size > 0 && Date.now() - this.lastByteAt > 12_000) {
+        console.log(`[muxer] channel ${this.channelId}: source ${this.stream.id} stalled (12s silent) — failing over`);
+        this.lastByteAt = Date.now(); // one trigger per stall
+        try { this.abort.abort(); } catch { /* noop */ }
+      }
+    }, 4_000);
+    if (typeof this.watchdog.unref === "function") this.watchdog.unref();
     void this.run();
     return true;
   }
@@ -88,6 +102,7 @@ class ChannelMux {
       this.stream = next;
       this.abort = new AbortController();
       this.pre = new TsPreroll(); // fresh keyframe alignment for the new source
+      this.lastByteAt = Date.now(); // fresh watchdog window for the new source
       markLive(next.id);
       this.onRekey(old.id, next.id);
     }
@@ -127,6 +142,7 @@ class ChannelMux {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
+      this.lastByteAt = Date.now(); // feeds the stall watchdog
       // Keyframe-aware: aligns packets + buffers the current GOP, returns the
       // aligned slice to fan out. New viewers get the GOP replayed on attach.
       const region = this.pre.push(value);
@@ -182,6 +198,7 @@ class ChannelMux {
     this.graceTimer = null;
     if (!force && this.subs.size > 0) return; // someone re-attached during grace
     this.stopping = true; // tells the failover supervisor this death is intentional
+    if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
     try {
       this.abort.abort();
     } catch {

@@ -163,6 +163,7 @@ const state = {
   settings: null, // from /api/settings
   envLocked: [],
   analytics: null, // from /api/analytics
+  dvr: null, // from /api/dvr (recordings + rules + storage)
   recent: null, // recently-watched channel ids from /api/recent (Home screen)
   statusLive: null, // from /api/status (live streaming)
   loading: true,
@@ -339,7 +340,9 @@ async function loadView() {
   // chrome-fade / the warm video. closePlayer() renders fresh on exit.
   if (!playerEl) render();
   tvBoot();
+  if (!remindersLoaded) { remindersLoaded = true; loadReminders().then(checkReminders); }
 }
+let remindersLoaded = false;
 
 // TV mode: the FIRST load behaves like turning on a TV — the last-watched
 // channel opens fullscreen immediately. Autoplay policy blocks unmuted playback
@@ -458,6 +461,7 @@ function leftRail() {
     { id: "home", label: "Home", icon: "house" },
     { id: "guide", label: "Guide", icon: "tv" },
     { id: "mosaic", label: "Mosaic", icon: "grid-2x2" },
+    { id: "dvr", label: "Recordings", icon: "video" },
     { id: "nowplaying", label: "Now Playing", icon: "play", soon: true },
   ];
   const manageNav = [
@@ -469,7 +473,7 @@ function leftRail() {
     { id: "epg", label: "EPG Matcher", icon: "git-compare", soon: true },
     { id: "settings", label: "Settings", icon: "settings" },
   ];
-  const built = { home: 1, guide: 1, mosaic: 1, channels: 1, settings: 1, analytics: 1, users: 1, sources: 1, rules: 1 };
+  const built = { home: 1, guide: 1, mosaic: 1, dvr: 1, channels: 1, settings: 1, analytics: 1, users: 1, sources: 1, rules: 1 };
   const navSrc = state.mode === "watch" ? watchNav : manageNav;
   const d = state.data;
   const healthLine = !d
@@ -638,7 +642,8 @@ async function toggleFavorite(ch) {
   ch.isFavorite = next;
   render();
   try {
-    await fetch("/api/channels/" + ch.id, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ isFavorite: next }) });
+    // Per-user stars (any signed-in user, not just admins).
+    await fetch("/api/favorites/" + ch.id, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ on: next }) });
   } catch { /* keep the optimistic state; a reload will resync from the server */ }
 }
 
@@ -845,6 +850,14 @@ function resetGuideHero() { if (heroHideTimer) { clearTimeout(heroHideTimer); he
 
 function guideScreen() {
   const d = state.data;
+  // First run: no providers ingested yet → a welcome CTA instead of a blank grid.
+  if (d && d.channels.length === 0) {
+    return h("div", { style: "flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px" },
+      icon("tv", 40, 0.5),
+      h("div", { style: "font-size:22px;font-weight:800;letter-spacing:-.01em" }, "Welcome to Phospharr"),
+      h("div", { style: "font-size:14px;color:#9aa0a6;max-width:440px;line-height:1.55" }, "Add your IPTV provider (M3U or Xtream) and Phospharr will ingest the lineup, dedupe channels, classify genres, number everything like real cable, and pull the guide — automatically."),
+      h("button", { onClick: () => { state.mode = "manage"; setScreen("sources"); }, style: "margin-top:6px;height:44px;padding:0 22px;border-radius:12px;border:none;background:" + AC + ";color:#06121c;font-size:14.5px;font-weight:800;cursor:pointer;box-shadow:0 8px 24px rgba(84,182,255,0.35)" }, "Add your first provider →"));
+  }
   const mob = isMobile();
   const visible = guideVisible();
   const totalVisible = d.channels.filter((c) => !c.isHidden).length;
@@ -1101,7 +1114,17 @@ function detailPane(ambient) {
   const fav = ch.isFavorite;
   const favBtn = h("button", { title: fav ? "Remove from Favorites" : "Add to Favorites", style: "pointer-events:auto;width:" + btnSize + "px;height:" + btnSize + "px;border-radius:12px;border:1px solid " + (fav ? "rgba(245,196,70,0.7)" : "rgba(255,255,255,0.18)") + ";background:" + (fav ? "rgba(245,196,70,0.92)" : "rgba(8,10,12,0.55)") + ";cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)", onClick: (e) => { e.stopPropagation(); toggleFavorite(ch); } },
     icon("star", mob ? 16 : 18, fav ? 0.05 : 0.9));
-  const watchBtn = h("div", { style: "display:flex;gap:10px;align-self:flex-start;margin-top:" + (mob ? "2px" : "6px") + ";pointer-events:auto" }, fsBtn, favBtn, shareBtn);
+  // One-tap DVR: record the focused program (admins). Turns red once scheduled.
+  const recBtn = (state.auth.user && state.auth.user.role === "admin" && !p.filler)
+    ? h("button", { title: "Record " + p.title, style: "pointer-events:auto;width:" + btnSize + "px;height:" + btnSize + "px;border-radius:12px;border:1px solid rgba(255,255,255,0.18);background:rgba(8,10,12,0.55);cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)", onClick: (e) => { e.stopPropagation(); scheduleRecord(ch, p, e.currentTarget); } },
+        h("span", { style: "width:" + (mob ? 12 : 14) + "px;height:" + (mob ? 12 : 14) + "px;border-radius:50%;border:2.5px solid #ff8d84;display:block" }))
+    : null;
+  // Bell: remind me when this (future) program starts — toast + notification.
+  const bellBtn = (state.auth.user && !p.filler && p.start > now)
+    ? h("button", { title: "Remind me when this starts", style: "pointer-events:auto;width:" + btnSize + "px;height:" + btnSize + "px;border-radius:12px;border:1px solid rgba(255,255,255,0.18);background:rgba(8,10,12,0.55);cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)", onClick: (e) => { e.stopPropagation(); addReminder(ch, p, e.currentTarget); } },
+        icon("bell", mob ? 15 : 17, 0.9))
+    : null;
+  const watchBtn = h("div", { style: "display:flex;gap:10px;align-self:flex-start;margin-top:" + (mob ? "2px" : "6px") + ";pointer-events:auto" }, fsBtn, favBtn, recBtn, bellBtn, shareBtn);
   // Mute button with a hover-reveal vertical volume rocker (popup to its left).
   const muteToggle = (extra) => {
     const muted = state.detailMuted;
@@ -2407,10 +2430,185 @@ function mainArea() {
   if (state.screen === "home") return homeScreen();
   if (state.screen === "guide") return guideScreen();
   if (state.screen === "mosaic") return mosaicScreen();
+  if (state.screen === "dvr") return dvrScreen();
   if (state.screen === "channels") return managerScreen();
   if (state.screen === "analytics") return analyticsScreen();
   return stubScreen();
 }
+// ===== Reminders =====
+// "Tell me when this starts": a bell on any upcoming program. A 30s checker
+// fires an in-app toast (+ a system notification when permitted) 10 minutes
+// before start, with one-tap Tune.
+let reminderList = [];
+const reminderFired = new Set();
+
+async function loadReminders() {
+  try {
+    const r = await fetch("/api/reminders");
+    if (r.ok) reminderList = await r.json();
+  } catch { /* offline */ }
+}
+
+async function addReminder(ch, p, btn) {
+  try {
+    if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
+    const r = await fetch("/api/reminders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId: ch.id, title: p.title, startTime: p.start }) });
+    if (r.ok) { reminderList.push(await r.json()); }
+    if (btn) {
+      btn.style.borderColor = r.ok ? "rgba(245,196,70,0.75)" : btn.style.borderColor;
+      btn.style.background = r.ok ? "rgba(245,196,70,0.85)" : btn.style.background;
+      btn.title = r.ok ? "Reminder set ✓" : "Couldn't set reminder";
+    }
+  } catch { /* offline */ }
+}
+
+function reminderToast(rem) {
+  const minutes = Math.max(0, Math.round((new Date(rem.startTime).getTime() - Date.now()) / 60000));
+  const dismiss = () => el.remove();
+  const el = h("div", { style: "position:fixed;right:20px;bottom:20px;z-index:80;display:flex;align-items:center;gap:13px;padding:14px 16px;background:rgba(16,18,22,0.96);border:1px solid rgba(245,196,70,0.4);border-radius:14px;box-shadow:0 16px 44px rgba(0,0,0,0.6);backdrop-filter:blur(12px);animation:aerFadeUp .3s ease;max-width:min(420px,calc(100vw - 40px))" },
+    icon("bell-ring", 20, 0.9),
+    h("div", { style: "flex:1;min-width:0" },
+      h("div", { style: "font-size:14px;font-weight:700;color:#f3f5f7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, rem.title),
+      h("div", { style: "font-size:12px;color:#9aa0a6;margin-top:2px" }, minutes <= 0 ? "Starting now" : "Starts in " + minutes + " min")),
+    h("button", { onClick: () => { dismiss(); openPlayer(rem.channelId); }, style: "flex:none;height:34px;padding:0 15px;border-radius:9px;border:none;background:#f5c446;color:#211a04;font-size:13px;font-weight:800;cursor:pointer" }, "Tune"),
+    h("button", { onClick: dismiss, style: "flex:none;width:30px;height:30px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("x", 14, 0.7)));
+  document.body.appendChild(el);
+  setTimeout(dismiss, 45000);
+  if ("Notification" in window && Notification.permission === "granted" && navigator.serviceWorker?.ready) {
+    navigator.serviceWorker.ready.then((reg) => reg.showNotification("Phospharr · starting soon", { body: rem.title + (minutes > 0 ? " — in " + minutes + " min" : " — now"), icon: "/icon-192.png", tag: "rem-" + rem.id })).catch(() => {});
+  }
+}
+
+function checkReminders() {
+  const now = Date.now();
+  for (const rem of reminderList) {
+    const start = new Date(rem.startTime).getTime();
+    if (reminderFired.has(rem.id)) continue;
+    if (start - now <= 10 * 60000 && start - now > -5 * 60000) {
+      reminderFired.add(rem.id);
+      reminderToast(rem);
+      fetch("/api/reminders/" + rem.id, { method: "DELETE" }).catch(() => {}); // spent
+    }
+  }
+}
+setInterval(checkReminders, 30000);
+
+// ===== DVR (Recordings) =====
+async function loadDvr() {
+  try {
+    const r = await fetch("/api/dvr");
+    if (r.ok) { state.dvr = await r.json(); render(); }
+  } catch { /* offline */ }
+}
+
+async function scheduleRecord(ch, p, btn) {
+  try {
+    const r = await fetch("/api/dvr/record", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ channelId: ch.id, canonicalId: ch.canonicalId, title: p.title, startTime: p.start, endTime: p.end }),
+    });
+    if (btn) {
+      btn.style.borderColor = r.ok ? "rgba(255,93,82,0.8)" : "rgba(255,255,255,0.18)";
+      btn.style.background = r.ok ? "rgba(255,93,82,0.85)" : "rgba(8,10,12,0.55)";
+      btn.title = r.ok ? "Recording scheduled ✓" : r.status === 409 ? "Already scheduled" : "Couldn't schedule";
+    }
+  } catch { /* offline */ }
+}
+
+// Fullscreen VOD overlay for a finished/in-progress recording (mpegts.js in VOD
+// mode over the Range-served file → native seeking via the control bar).
+let vodPlayer = null;
+function playRecording(rec) {
+  const video = h("video", { controls: true, autoplay: true, playsinline: true, style: "width:100%;height:100%;object-fit:contain;background:#000" });
+  const close = () => {
+    try { vodPlayer && vodPlayer.destroy(); } catch { /* noop */ }
+    vodPlayer = null;
+    overlay.remove();
+    document.removeEventListener("keydown", esc);
+  };
+  const esc = (e) => { if (e.key === "Escape") close(); };
+  const overlay = h("div", { style: "position:fixed;inset:0;z-index:70;background:#000;display:flex;flex-direction:column" },
+    h("div", { style: "position:absolute;top:0;left:0;right:0;z-index:2;display:flex;align-items:center;gap:12px;padding:16px 18px;background:linear-gradient(180deg,rgba(0,0,0,0.75),transparent);pointer-events:none" },
+      h("button", { onClick: close, style: "pointer-events:auto;width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:rgba(8,10,12,0.6);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("arrow-left", 17, 0.9)),
+      h("div", { style: "min-width:0" },
+        h("div", { style: "font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, rec.title),
+        h("div", { style: "font-size:12px;color:#9aa0a6;margin-top:2px" }, (rec.channelName || "") + " · " + new Date(rec.startTime).toLocaleString())),
+    ),
+    video);
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", esc);
+  if (window.mpegts && mpegts.isSupported()) {
+    vodPlayer = mpegts.createPlayer(
+      { type: "mpegts", isLive: false, url: "/dvr/" + rec.id, withCredentials: true },
+      { enableWorker: true, lazyLoad: true, autoCleanupSourceBuffer: true },
+    );
+    vodPlayer.attachMediaElement(video);
+    vodPlayer.load();
+  }
+}
+
+function dvrScreen() {
+  const d = state.dvr;
+  if (!d) return centered("Loading recordings…");
+  const cbi = (state.data && state.data.channelsById) || {};
+  const badge = (s) => {
+    const map = { recording: ["● REC", "#ff5d52"], scheduled: ["SCHEDULED", "#54b6ff"], completed: ["SAVED", "#2fae5c"], failed: ["FAILED", "#9aa0a6"], canceled: ["CANCELED", "#9aa0a6"] };
+    const [label, color] = map[s] || [s, "#9aa0a6"];
+    return h("span", { style: "flex:none;font-size:10px;font-weight:700;letter-spacing:.08em;color:" + color + ";border:1px solid " + color + "44;border-radius:6px;padding:3px 8px;background:" + color + "14" + (s === "recording" ? ";animation:aerBlink 2s infinite" : "") }, label);
+  };
+  const fmtGB = (b) => (b / 1024 ** 3).toFixed(b > 10 * 1024 ** 3 ? 0 : 1) + " GB";
+
+  // "Record a series" bar: matches by title across the lineup's EPG.
+  const input = h("input", { placeholder: "Record every… (matches program titles, e.g. \"NFL\", \"SportsCenter\")", style: "flex:1;min-width:0;height:40px;padding:0 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#eef0f2;font-size:13.5px;font-family:inherit;outline:none" });
+  const addRule = async () => {
+    const v = input.value.trim();
+    if (!v) return;
+    await fetch("/api/dvr/rules", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ titleMatch: v }) }).catch(() => {});
+    input.value = "";
+    loadDvr();
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") addRule(); });
+
+  const rulesRow = d.rules.length
+    ? h("div", { style: "display:flex;flex-wrap:wrap;gap:8px;padding:0 24px 6px" },
+        ...d.rules.map((r) => h("div", { style: "display:flex;align-items:center;gap:8px;padding:6px 8px 6px 12px;border-radius:9px;border:1px solid rgba(84,182,255,0.3);background:rgba(84,182,255,0.1);font-size:12.5px;font-weight:600;color:#cfe6fa" },
+          icon("repeat", 13, 0.8), "“" + r.titleMatch + "”",
+          h("button", { title: "Delete rule (keeps existing recordings)", onClick: async () => { await fetch("/api/dvr/rules/" + r.id + "?cancel=1", { method: "DELETE" }).catch(() => {}); loadDvr(); }, style: "width:20px;height:20px;border-radius:6px;border:none;background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("x", 11, 0.8)))))
+    : null;
+
+  const rows = d.recordings.map((rec) => {
+    const ch = cbi[rec.channelId] || { name: rec.channelName || "Channel " + rec.channelId, num: rec.number, logoUrl: rec.logoUrl, mono: initials(rec.channelName || "?"), color: SOLIDS.general, grad: GRADS.general };
+    const playable = (rec.status === "completed" || rec.status === "recording") && rec.sizeBytes > 500000;
+    return h("div", { style: "display:flex;align-items:center;gap:13px;padding:11px 12px;border-radius:12px;transition:background .14s", onMouseenter: (e) => e.currentTarget.style.background = "rgba(255,255,255,0.035)", onMouseleave: (e) => e.currentTarget.style.background = "transparent" },
+      logoTile(ch, 40, 12),
+      h("div", { style: "flex:1;min-width:0" },
+        h("div", { style: "display:flex;align-items:center;gap:9px" },
+          h("span", { style: "font-size:14.5px;font-weight:700;color:#eef0f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, rec.title),
+          badge(rec.status)),
+        h("div", { style: "font-size:12px;color:#8c9298;margin-top:3px" },
+          (ch.name || "") + " · " + new Date(rec.startTime).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) +
+          (rec.sizeBytes ? " · " + fmtGB(rec.sizeBytes) : ""))),
+      playable ? h("button", { title: "Play", onClick: () => playRecording(rec), style: "width:38px;height:38px;flex:none;border-radius:10px;border:1px solid rgba(84,182,255,0.4);background:rgba(84,182,255,0.14);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("play", 16, 0.9)) : null,
+      h("button", { title: rec.status === "scheduled" ? "Cancel" : "Delete", onClick: async () => { await fetch("/api/dvr/recordings/" + rec.id, { method: "DELETE" }).catch(() => {}); loadDvr(); }, style: "width:38px;height:38px;flex:none;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("trash-2", 15, 0.7)));
+  });
+
+  return h("div", { style: "flex:1;min-height:0;overflow:auto" },
+    h("div", { style: "display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:18px 24px 10px" },
+      h("div", null,
+        h("div", { style: "font-size:23px;font-weight:700;letter-spacing:-.01em" }, "Recordings"),
+        h("div", { style: "font-size:13px;color:#9aa0a6;margin-top:3px" }, d.recordings.length + " recordings · " + fmtGB(d.usedBytes) + " of " + d.maxGB + " GB")),
+      h("div", { style: "flex:none;width:min(430px,100%);display:flex;gap:8px" },
+        input,
+        h("button", { onClick: addRule, style: "height:40px;padding:0 16px;border-radius:10px;border:1px solid rgba(84,182,255,0.4);background:rgba(84,182,255,0.16);color:#cfe6fa;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap" }, "+ Series rule"))),
+    rulesRow,
+    d.recordings.length
+      ? h("div", { class: staggerClass(), style: "padding:6px 14px 24px" }, ...rows)
+      : h("div", { style: "padding:60px 24px;display:flex;flex-direction:column;align-items:center;gap:11px;text-align:center;color:#9aa0a6" },
+          icon("video", 30, 0.5),
+          h("div", { style: "font-size:15.5px;font-weight:700;color:#dfe3e7" }, "Nothing recorded yet"),
+          h("div", { style: "font-size:13px;max-width:400px;line-height:1.5" }, "Hit the record button on any program in the Guide, or add a series rule above to catch every airing automatically.")));
+}
+
 function centered(msg) {
   return h("div", { style: "flex:1;display:flex;align-items:center;justify-content:center;color:#6b7178;font-size:14px" }, msg);
 }
@@ -2543,6 +2741,7 @@ function setScreen(screen) {
   resetGuideHero();
   set({ screen, navOpen: false });
   if (screen === "home") loadRecent();
+  if (screen === "dvr") loadDvr();
   if (screen === "analytics") loadAnalytics();
   if (screen === "users") loadUsers();
   if (screen === "sources") loadSources();
@@ -3681,6 +3880,14 @@ function attachMpegts(video, channelId, transcode, behindSec) {
     }
     setPlayerStatus("Stream error: " + (msg || detail) + (transcode ? "" : " — the source may be offline."));
   });
+  // Live stream stats → the chrome's readout (updated in place, no re-render).
+  player.on(mpegts.Events.STATISTICS_INFO, (s) => {
+    const el = document.getElementById("aerStatsLine");
+    if (!el || !s) return;
+    const kbps = Math.round((s.speed || 0) * 8); // mpegts.js speed is KB/s
+    const drop = s.droppedFrames || 0;
+    el.textContent = kbps + " kbps" + (drop ? " · " + drop + " dropped" : "") + (transcode ? " · transcode" : "");
+  });
   player.load();
   video.play().catch(() => {});
   video.addEventListener("playing", () => setPlayerStatus(""), { once: true });
@@ -3722,7 +3929,12 @@ function buildPlayerChrome(channelId) {
     const behind = behindSecNow();
     const atLive = behind < 3 && !paused;
     const tBtn = (kids, onClick, title) => h("button", { onClick: (e) => { e.stopPropagation(); onClick(); }, title, style: "width:40px;height:40px;flex:none;border-radius:10px;border:1px solid rgba(255,255,255,0.14);background:rgba(8,10,12,0.6);display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:auto" }, kids);
+    // Start over: jump to the current program's start when the rolling buffer
+    // reaches back that far — the "restart this show" button real cable never had.
+    const elapsedSec = onNow ? (now - on.start) / 1000 : 0;
+    const canStartOver = onNow && elapsedSec > 90 && elapsedSec <= maxBehindSec();
     tsBar = h("div", { onClick: (e) => e.stopPropagation(), style: "position:absolute;bottom:78px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:9px 14px;background:rgba(10,12,15,0.74);border:1px solid rgba(255,255,255,0.12);border-radius:16px;backdrop-filter:blur(12px);box-shadow:0 12px 34px rgba(0,0,0,0.5);pointer-events:auto" },
+      canStartOver ? h("button", { onClick: (e) => { e.stopPropagation(); tsReconnect(elapsedSec); }, title: "Restart “" + on.title + "” from " + fmtClock(on.start), style: "display:flex;align-items:center;gap:7px;height:40px;padding:0 13px;border-radius:10px;border:1px solid rgba(84,182,255,0.4);background:rgba(84,182,255,0.14);color:#cfe6fa;font-size:12.5px;font-weight:700;cursor:pointer;pointer-events:auto;white-space:nowrap" }, icon("rotate-ccw", 15, 0.9), "Start over") : null,
       tBtn(icon("rewind", 17, 0.9), () => tsRewind(30), "Rewind 30s (←)"),
       tBtn(h("span", { id: "aerTsPlay", style: "display:flex" }, icon(paused ? "play" : "pause", 18, 0.95)), tsTogglePause, "Pause / play (Space)"),
       tBtn(icon("fast-forward", 17, 0.9), () => tsForward(30), "Forward 30s (→)"),
@@ -3756,6 +3968,8 @@ function buildPlayerChrome(channelId) {
         topBtn(icon("chevron-down", 18, 0.85), surf(1), { title: "Channel down" }),
         topBtn(icon("x", 18, 0.9), closePlayer, { title: "Close (Esc)" }))),
     tsBar,
+    // live stream stats (bitrate / dropped frames), fed by mpegts.js statistics
+    h("div", { id: "aerStatsLine", style: "position:absolute;bottom:34px;right:22px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#7e858c;background:rgba(8,10,12,0.5);padding:4px 9px;border-radius:7px;backdrop-filter:blur(4px)" }, ""),
     h("div", { id: "aerPlayerStatus", style: "position:absolute;bottom:30px;left:50%;transform:translateX(-50%);font-size:13px;color:#cfd3d8;background:rgba(8,10,12,0.7);padding:8px 16px;border-radius:10px;backdrop-filter:blur(6px)" }, "Connecting…"));
 }
 

@@ -31,7 +31,10 @@ consume it natively.
 | **Instant channel surf** | Configurable keep-warm: the upstream is held for *N* seconds after the last viewer leaves (Settings → Streaming) so re-tuning is instant. Client disconnects are detected via the request signal, so slots free reliably (no phantom viewers). |
 | **Always-fresh guide** | XMLTV merge from multiple feeds, bound by tvg-id (`epgChannelId`) with name-slug fallback. Xtream EPG is auto-derived (`xmltv.php`) — no URL to hand-enter. |
 | **EPG at scale** | Streaming SAX ingest (flat memory) + single-transaction prepared-statement upsert: a 22MB / 62k-programme feed lands in ~2s. Served from a precomputed, gzip-compressed in-memory snapshot with ETag/304 — all channels for a 26h window is ~200KB on the wire, ~2ms from cache. |
-| **Auto management** | Declarative rules auto-hide/rename/categorize (hidden ≠ deleted, fully reversible). |
+| **Auto management** | Declarative rules auto-hide/rename/categorize (hidden ≠ deleted, fully reversible). A deterministic classifier turns provider groups into a structured taxonomy (kind + genre) and numbers the lineup like real cable (news 100s, sports 250s, locals 1500s, 24/7 loops 3000s) — sticky across syncs. |
+| **Feels like a real TV** | TV mode boots into your last channel fullscreen; a prewarm ring keeps surf-adjacent + habitually-watched channels hot (~1s tunes); cable-box OSD with now/next + progress, digit tuning, last-channel recall; pause / rewind / **start-over** on live TV; a stalling source fails over mid-watch to the next-ranked source. |
+| **DVR built in** | One-tap record from the guide + series rules; recordings share the muxer (a recording + live viewers of the same channel = one provider slot) and inherit failover; storage-capped with oldest-first pruning; in-app playback with seeking. |
+| **First-class tuner citizen** | Emby/Plex/Jellyfin see honest tuner counts, color-coded guide categories, synthetic 24/7 filler (no blank rows), locally-cached logos, and a permanent Mosaic on channel 1. |
 | **Runs lean or full** | Feature flags (HDHR, transcode, EPG refresh, health probe, timeshift, DVR) toggle each capability. Precedence: env var → DB (UI Settings) → default. Heavy/disk features off by default, so a fresh install is light. |
 
 ## Architecture

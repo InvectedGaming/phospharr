@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.0-rc.2 — 2026-07-03
+
+The "feels like real TV" release.
+
+### DVR (new)
+- One-tap record from the guide; series rules ("record every airing matching…");
+  recordings pull through the muxer (share a provider slot with live viewers and
+  inherit source failover); storage cap with oldest-first pruning; crash-resume.
+- Recordings screen: status badges, live sizes, in-app playback with seeking.
+
+### Live TV feel
+- **TV mode** — launch straight into your last channel, fullscreen.
+- **Start over** — restart the current program from its beginning when the
+  timeshift buffer reaches back that far (timeshift now defaults ON).
+- **Prewarm ring** — number-adjacent + most-watched-this-hour channels stay warm;
+  surf lands in ~1s instead of a cold provider dial.
+- **Mid-watch failover** — a dying or silently-stalling source (12s watchdog)
+  swaps to the channel's next-ranked source in place; viewers see a blip.
+- Player stats readout (bitrate / dropped frames); reminders with one-tap Tune;
+  per-user favorites.
+
+### Lineup intelligence
+- Structured taxonomy (kind + genre) classified from provider groups/names;
+  cable-style block numbering (news 100s, sports 250s, locals 1500s, 24/7 loops
+  3000s); sticky numbers; one-call reflow; working genre filter in the guide.
+- Mosaic is the permanent channel 1.
+
+### Tuner consumers (Emby / Plex / Jellyfin / TiviMate)
+- Honest tuner count from real provider capacity; color-coded XMLTV categories;
+  synthetic 24/7 guide filler (no more blank rows); channel-logo proxy + cache;
+  clean taxonomy group-titles; EPG + ingest fixed to route through VPN pins.
+
 ## 1.0.0-rc.1 — 2026-07-02
 
 First release candidate. Everything below is live and verified on a production

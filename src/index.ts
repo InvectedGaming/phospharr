@@ -22,6 +22,10 @@ if (!settings["access.streamKey"]) {
 }
 startEpgScheduler(); // periodic XMLTV pulls per features.epgAutoRefresh / epg.refreshHours
 startHealthProbe(); // background stream probes per features.healthProbe
+{
+  const { startDvr } = await import("./dvr/recorder.ts");
+  startDvr(); // recording scheduler tick (rules → schedule → record → prune)
+}
 reconcileTunnels().catch((e) => console.error("[vpn] reconcile failed", e)); // dial autostart VPNs
 {
   const { reconcileAutoHides } = await import("./content/filter.ts"); // apply adult + hidden-category hides

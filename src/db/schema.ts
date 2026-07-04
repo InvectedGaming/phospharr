@@ -250,6 +250,72 @@ export const sessions = sqliteTable(
   (t) => ({ userIdx: index("sessions_user_idx").on(t.userId) }),
 );
 
+// ─── DVR: scheduled/completed recordings + series rules ───
+export const recordings = sqliteTable(
+  "recordings",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    channelId: integer("channel_id").notNull(), // not FK — a recording survives channel re-ingest
+    canonicalId: text("canonical_id"),
+    title: text("title").notNull(),
+    subtitle: text("subtitle"),
+    description: text("description"),
+    startTime: integer("start_time", { mode: "timestamp" }).notNull(), // program start (pads applied around it)
+    endTime: integer("end_time", { mode: "timestamp" }).notNull(),
+    padStartSec: integer("pad_start_sec").notNull().default(30),
+    padEndSec: integer("pad_end_sec").notNull().default(120),
+    status: text("status", { enum: ["scheduled", "recording", "completed", "failed", "canceled"] })
+      .notNull()
+      .default("scheduled"),
+    filePath: text("file_path"),
+    sizeBytes: integer("size_bytes").notNull().default(0),
+    ruleId: integer("rule_id"), // set when a series rule materialized this recording
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    statusIdx: index("recordings_status_idx").on(t.status),
+    // one recording per program instance (rules + manual can't double-book)
+    slotIdx: uniqueIndex("recordings_slot_uq").on(t.channelId, t.startTime),
+  }),
+);
+
+export const dvrRules = sqliteTable("dvr_rules", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  titleMatch: text("title_match").notNull(), // case-insensitive substring on program title
+  canonicalId: text("canonical_id"), // optional: only on this channel
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  padStartSec: integer("pad_start_sec").notNull().default(30),
+  padEndSec: integer("pad_end_sec").notNull().default(120),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
+// ─── PER-USER FAVORITES (channels.isFavorite is the legacy global fallback) ───
+export const userFavorites = sqliteTable(
+  "user_favorites",
+  {
+    userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    channelId: integer("channel_id").notNull().references(() => channels.id, { onDelete: "cascade" }),
+  },
+  (t) => ({ pk: uniqueIndex("user_favorites_uq").on(t.userId, t.channelId) }),
+);
+
+// ─── REMINDERS: "tell me when this starts" ───
+export const reminders = sqliteTable(
+  "reminders",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    channelId: integer("channel_id").notNull(),
+    title: text("title").notNull(),
+    startTime: integer("start_time", { mode: "timestamp" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({ userIdx: index("reminders_user_idx").on(t.userId) }),
+);
+
+export type Recording = typeof recordings.$inferSelect;
+export type DvrRule = typeof dvrRules.$inferSelect;
+
 export type Provider = typeof providers.$inferSelect;
 export type Channel = typeof channels.$inferSelect;
 export type Stream = typeof streams.$inferSelect;

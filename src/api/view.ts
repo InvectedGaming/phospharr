@@ -1,5 +1,6 @@
+import { eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { providers, channels, streams, type User } from "../db/schema.ts";
+import { providers, channels, streams, userFavorites, type User } from "../db/schema.ts";
 import { channelVisible } from "../auth.ts";
 
 /**
@@ -58,7 +59,7 @@ function channelHealth(rows: { health: string; resolution: number | null }[]): {
 export async function buildView(user?: User | null) {
   // Channels + health + source counts. The guide itself is served separately
   // (cached, compressed) via /api/guide.
-  const [chanRows, streamRows, provRows] = await Promise.all([
+  const [chanRows, streamRows, provRows, favRows] = await Promise.all([
     db.select().from(channels).orderBy(channels.number),
     db
       .select({
@@ -69,7 +70,12 @@ export async function buildView(user?: User | null) {
       })
       .from(streams),
     db.select({ id: providers.id }).from(providers),
+    user
+      ? db.select({ channelId: userFavorites.channelId }).from(userFavorites).where(eq(userFavorites.userId, user.id))
+      : Promise.resolve([] as { channelId: number }[]),
   ]);
+  // Per-user stars; a user with none yet falls back to the legacy global flags.
+  const favSet = user && favRows.length ? new Set(favRows.map((r) => r.channelId)) : null;
 
   // Group streams by channel.
   const byChannel = new Map<number, typeof streamRows>();
@@ -105,7 +111,7 @@ export async function buildView(user?: User | null) {
       genre: ch.genre,
       logoUrl: ch.logoUrl,
       isHidden: ch.isHidden,
-      isFavorite: ch.isFavorite,
+      isFavorite: favSet ? favSet.has(ch.id) : ch.isFavorite,
       health,
       sources: ss.length,
       resolution,

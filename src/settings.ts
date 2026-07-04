@@ -43,8 +43,8 @@ const DEFAULTS: Settings = {
   "features.transcode": true,
   "features.epgAutoRefresh": true,
   "features.healthProbe": true,
-  "features.timeshift": false,
-  "features.dvr": false,
+  "features.timeshift": true, // pause / rewind / start-over on live TV (rolling buffer)
+  "features.dvr": true,
   "dvr.storagePath": `${projectRoot}/dvr`,
   "dvr.retentionDays": 14,
   "dvr.maxGB": 100,
