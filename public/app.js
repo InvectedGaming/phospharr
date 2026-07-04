@@ -2480,21 +2480,40 @@ function playVod(baseUrl, meta) {
   let offset = 0;
   let startedAt = Date.now();
   const video = h("video", { autoplay: true, playsinline: true, style: "width:100%;height:100%;object-fit:contain;background:#000" });
+  const statusEl = h("div", { style: "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;font-size:13.5px;color:#cfd3d8;background:rgba(8,10,12,0.7);padding:9px 18px;border-radius:10px;backdrop-filter:blur(6px);pointer-events:none" }, "Loading…");
   const posEl = h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#cfd3d8;min-width:60px;text-align:center" }, "0:00");
   const fmtPos = (s) => { const m = Math.floor(s / 60); return Math.floor(m / 60) > 0 ? Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0") + ":" + String(Math.floor(s % 60)).padStart(2, "0") : m + ":" + String(Math.floor(s % 60)).padStart(2, "0"); };
   const nowPos = () => offset + (video.currentTime || 0);
   const posTick = setInterval(() => { posEl.textContent = fmtPos(nowPos()) + (meta.durationSec ? " / " + fmtPos(meta.durationSec) : ""); }, 1000);
+  let transcode = false; // flips on when the browser can't decode the copied video (HEVC etc.)
   const connect = (t) => {
     offset = Math.max(0, t);
     if (vodLivePlayer) { try { vodLivePlayer.destroy(); } catch (e) { /* noop */ } vodLivePlayer = null; }
-    if (!window.mpegts || !mpegts.isSupported()) return;
-    vodLivePlayer = mpegts.createPlayer(
-      { type: "mpegts", isLive: true, url: baseUrl + (offset > 0 ? "?t=" + Math.round(offset) : ""), withCredentials: true },
+    if (!window.mpegts || !mpegts.isSupported()) { statusEl.textContent = "This browser can't play video (no MSE)."; return; }
+    // ABSOLUTE url — mpegts.js fetches inside a Web Worker, which can't resolve
+    // a relative path (same trap the live player hit).
+    const url = location.origin + baseUrl + "?t=" + Math.round(offset) + (transcode ? "&tc=1" : "");
+    statusEl.textContent = transcode ? "Transcoding…" : "Loading…";
+    const p = mpegts.createPlayer(
+      { type: "mpegts", isLive: true, url, withCredentials: true },
       { enableWorker: true, liveBufferLatencyChasing: false, lazyLoad: false, autoCleanupSourceBuffer: true });
-    vodLivePlayer.attachMediaElement(video);
-    vodLivePlayer.load();
+    vodLivePlayer = p;
+    p.attachMediaElement(video);
+    p.on(mpegts.Events.ERROR, (type, detail, info) => {
+      const msg = (info && info.msg) || "";
+      const codec = String(detail).indexOf("MSE") >= 0 || /codec|unsupported|addSourceBuffer/i.test(msg);
+      if (codec && !transcode) {
+        // browser can't decode the original video (HEVC/10-bit) → full transcode
+        transcode = true;
+        connect(offset);
+        return;
+      }
+      statusEl.textContent = "Playback error: " + (msg || detail);
+    });
+    p.load();
     video.play().catch(() => {});
   };
+  video.addEventListener("playing", () => { statusEl.textContent = ""; });
   const seek = (delta) => connect(nowPos() + delta);
   const close = () => {
     clearInterval(posTick);
@@ -2516,6 +2535,7 @@ function playVod(baseUrl, meta) {
         h("div", { style: "font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, meta.title),
         meta.sub ? h("div", { style: "font-size:12px;color:#9aa0a6;margin-top:2px" }, meta.sub) : null)),
     video,
+    statusEl,
     h("div", { style: "position:absolute;bottom:22px;left:50%;transform:translateX(-50%);z-index:2;display:flex;align-items:center;gap:9px;padding:9px 13px;background:rgba(10,12,15,0.78);border:1px solid rgba(255,255,255,0.12);border-radius:15px;backdrop-filter:blur(12px)" },
       ctlBtn("−5m", () => seek(-300), "Back 5 minutes"),
       ctlBtn("−30s", () => seek(-30), "Back 30 seconds (←)"),
@@ -2749,7 +2769,8 @@ function playRecording(rec) {
   document.addEventListener("keydown", esc);
   if (window.mpegts && mpegts.isSupported()) {
     vodPlayer = mpegts.createPlayer(
-      { type: "mpegts", isLive: false, url: "/dvr/" + rec.id, withCredentials: true },
+      // absolute url — the worker can't resolve relative paths
+      { type: "mpegts", isLive: false, url: location.origin + "/dvr/" + rec.id, withCredentials: true },
       { enableWorker: true, lazyLoad: true, autoCleanupSourceBuffer: true },
     );
     vodPlayer.attachMediaElement(video);

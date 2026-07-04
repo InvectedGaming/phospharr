@@ -927,6 +927,14 @@ async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: n
   if (eg.blocked) return c.text("VPN for this source is down", 503);
   if (!pool.acquire(prov.id)) return c.text("all tuners busy", 503);
   const t = Math.max(0, Number(c.req.query("t")) || 0);
+  // tc=1: the browser couldn't decode the copied video (HEVC / 10-bit) — re-encode
+  // to H.264, on the GPU when available (same encoder the mosaic compositor uses).
+  const tc = c.req.query("tc") === "1";
+  const venc = !tc
+    ? ["-c:v", "copy"]
+    : process.env.PHOSPHARR_CAST_ENCODER === "h264_nvenc"
+      ? ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M", "-pix_fmt", "yuv420p"]
+      : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p"];
   const url = vodUpstreamUrl(prov, kind, streamId, ext);
   const args = [
     "-hide_banner", "-loglevel", "error",
@@ -936,7 +944,7 @@ async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: n
     "-analyzeduration", "2000000", "-probesize", "2000000", "-fflags", "+genpts",
     "-i", url,
     "-map", "0:v:0", "-map", "0:a:0?",
-    "-c:v", "copy", "-c:a", "aac", "-ac", "2", "-b:a", "160k",
+    ...venc, "-c:a", "aac", "-ac", "2", "-b:a", "160k",
     "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
   ];
   let released = false;
