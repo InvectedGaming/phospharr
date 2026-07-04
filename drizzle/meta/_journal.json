@@ -99,6 +99,13 @@
       "when": 1783127594848,
       "tag": "0013_unknown_nighthawk",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1783201835741,
+      "tag": "0014_freezing_bedlam",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.0-rc.3 — 2026-07-04
+
+Everything-app release: on-demand library, more devices, watch parties, and a
+security pass.
+
+### Video on demand
+- Full movie + series catalogs from Xtream providers (browse, search, category
+  filter, paginated); movie/series detail with lazily-fetched plots + episodes;
+  in-browser playback via server-side remux (MKV/AVI → MPEG-TS), HEVC auto-falls
+  back to a GPU transcode; ±30s/±5m seeking.
+- **Resume + Continue Watching**: per-user positions saved during playback,
+  auto-resume, a poster row on Home; near-finished items clear themselves.
+
+### More devices (standalone — no media server required)
+- **HLS output layer**: iOS/iPadOS Safari now plays live TV natively in the PWA
+  (no MSE needed); AirPlay works; Chromecast-ready URLs. One ffmpeg segmenter per
+  watched channel, sharing the provider slot.
+- **Android app**: sideloadable WebView APK (phone, tablet, Android TV, Fire TV),
+  built in CI; server-address setup, fullscreen video, leanback launcher entry.
+
+### Watch-party chat
+- Per-channel WebSocket rooms — everyone watching the same channel can talk;
+  presence blends chatters with the true muxer watcher count (Emby/TV included);
+  history replay for late joiners, per-client rate limiting, colored names.
+
+### Security (pre-1.0 audit)
+- **Fixed (critical):** `/api/channels/:id/sources` was missing its admin gate,
+  exposing provider account credentials (embedded in stream URLs) to any
+  logged-in user. Now admin-only.
+- Added login brute-force protection (per-IP sliding window → 429).
+- Documented internet-exposure guidance (bind scope, reverse-proxy XFF).
+
 ## 1.0.0-rc.2 — 2026-07-03
 
 The "feels like real TV" release.

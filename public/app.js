@@ -2413,9 +2413,36 @@ function homeScreen() {
       h("div", { style: "font-size:" + (mob ? "22px" : "27px") + ";font-weight:800;letter-spacing:-.015em" }, greet + (uname ? ", " + uname : "")),
       h("div", { style: "font-size:13px;color:#8c9298;margin-top:4px" }, new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }))),
     h("div", { style: "display:flex;flex-direction:column;gap:" + (mob ? "22px" : "26px") + ";padding-bottom:46px;padding-top:" + (mob ? "8px" : "14px") },
+      continueRow(mob),
       homeRow("Jump back in", "recent", recentChs, mob),
       homeRow("Favorites", "favs", favs, mob, favEmpty),
       homeRow("On now", "onnow", onNow, mob)));
+}
+
+// "Continue Watching" — in-progress VOD with a resume bar. Poster cards that
+// jump straight back into the movie/episode at the saved position.
+function continueRow(mob) {
+  const items = state.vodContinue || [];
+  if (!items.length) return h("span", { style: "display:none" });
+  const cardW = mob ? 116 : 150;
+  const resume = (it) => {
+    if (it.kind === "movie") playVod("/vod/play/movie/" + it.refId, { title: it.name, durationSec: it.durationSec, progressKey: { kind: "movie", refId: it.refId } });
+    else playVod("/vod/play/episode/" + it.refId, { title: it.name, durationSec: it.durationSec, progressKey: { kind: "episode", refId: it.refId } });
+  };
+  const cards = items.map((it) => {
+    const pct = it.durationSec ? Math.min(100, Math.round((it.positionSec / it.durationSec) * 100)) : 0;
+    return h("div", { onClick: () => resume(it), style: "flex:none;width:" + cardW + "px;cursor:pointer" },
+      h("div", { style: "position:relative;width:100%;aspect-ratio:2/3;border-radius:11px;overflow:hidden;background:rgba(255,255,255,0.05)" },
+        it.posterUrl ? h("img", { src: it.posterUrl, loading: "lazy", style: "width:100%;height:100%;object-fit:cover", onError: (e) => e.target.remove() }) : h("div", { style: "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#3a4048" }, icon("film", 24, 0.5)),
+        h("div", { style: "position:absolute;inset:0;display:flex;align-items:center;justify-content:center" },
+          h("div", { style: "width:42px;height:42px;border-radius:50%;background:rgba(8,10,12,0.55);border:1px solid rgba(255,255,255,0.3);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)" }, icon("play", 17, 0.95))),
+        h("div", { style: "position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(0,0,0,0.5)" },
+          h("div", { style: { height: "100%", width: pct + "%", background: AC } }))),
+      h("div", { style: "font-size:12px;font-weight:600;color:#dfe3e7;margin-top:6px;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical" }, it.name));
+  });
+  return h("div", null,
+    h("div", { style: "font-size:" + (mob ? "16px" : "18px") + ";font-weight:700;padding:0 " + (mob ? "16px" : "28px") + " 12px" }, "Continue watching"),
+    h("div", { style: "display:flex;gap:13px;overflow-x:auto;padding:0 " + (mob ? "16px" : "28px") + " 4px;scrollbar-width:none" }, ...cards));
 }
 
 function mainArea() {
@@ -2479,6 +2506,16 @@ let vodLivePlayer = null;
 function playVod(baseUrl, meta) {
   let offset = 0;
   let startedAt = Date.now();
+  // Resume support: meta.progressKey = {kind, refId} → report position on a beat
+  // + on close, and start from the saved spot.
+  const pk = meta.progressKey;
+  let progressTimer = null;
+  const reportProgress = () => {
+    if (!pk) return;
+    const posN = offset + (video.currentTime || 0);
+    if (posN < 5) return;
+    fetch("/api/vod/progress", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: pk.kind, refId: pk.refId, positionSec: Math.round(posN), durationSec: meta.durationSec || null }) }).catch(() => {});
+  };
   const video = h("video", { autoplay: true, playsinline: true, style: "width:100%;height:100%;object-fit:contain;background:#000" });
   const statusEl = h("div", { style: "position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;font-size:13.5px;color:#cfd3d8;background:rgba(8,10,12,0.7);padding:9px 18px;border-radius:10px;backdrop-filter:blur(6px);pointer-events:none" }, "Loading…");
   // an empty pill still paints its background — hide the element entirely when blank
@@ -2519,6 +2556,8 @@ function playVod(baseUrl, meta) {
   const seek = (delta) => connect(nowPos() + delta);
   const close = () => {
     clearInterval(posTick);
+    if (progressTimer) clearInterval(progressTimer);
+    reportProgress(); // save the spot on the way out
     if (vodLivePlayer) { try { vodLivePlayer.destroy(); } catch (e) { /* noop */ } vodLivePlayer = null; }
     overlay.remove();
     document.removeEventListener("keydown", keys);
@@ -2547,7 +2586,14 @@ function playVod(baseUrl, meta) {
       posEl));
   document.body.appendChild(overlay);
   document.addEventListener("keydown", keys);
-  connect(0);
+  if (pk) progressTimer = setInterval(reportProgress, 15000);
+  // Resume from the saved position (movies/episodes); fresh items start at 0.
+  if (pk) {
+    fetch("/api/vod/progress/" + pk.kind + "/" + pk.refId).then((r) => r.ok ? r.json() : null).then((p) => {
+      const at = p && p.positionSec > 10 ? p.positionSec : 0;
+      connect(at);
+    }).catch(() => connect(0));
+  } else connect(0);
 }
 
 // Detail overlays -------------------------------------------------------------
@@ -2579,7 +2625,7 @@ async function openMovie(m) {
         h("span", { style: "border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:2px 8px;text-transform:uppercase" }, mv.ext)),
       h("div", { style: "font-size:13.5px;color:#b9bfc6;line-height:1.55;overflow:auto;max-height:150px" }, mv.plot || "…"),
       h("div", { style: "flex:1" }),
-      h("button", { onClick: () => { close(); playVod("/vod/play/movie/" + mv.id, { title: mv.name, sub: mv.category, durationSec: mv.durationSec }); }, style: "align-self:flex-start;display:flex;align-items:center;gap:9px;height:44px;padding:0 22px;border-radius:12px;border:none;background:" + AC + ";color:#06121c;font-size:14.5px;font-weight:800;cursor:pointer" },
+      h("button", { onClick: () => { close(); playVod("/vod/play/movie/" + mv.id, { title: mv.name, sub: mv.category, durationSec: mv.durationSec, progressKey: { kind: "movie", refId: mv.id } }); }, style: "align-self:flex-start;display:flex;align-items:center;gap:9px;height:44px;padding:0 22px;border-radius:12px;border:none;background:" + AC + ";color:#06121c;font-size:14.5px;font-weight:800;cursor:pointer" },
         icon("play", 16, 0.1), "Play")))];
   el = vodDetailShell(body(m), close);
   // hydrate plot/duration lazily
@@ -2609,7 +2655,7 @@ async function openSeries(s) {
         h("div", { style: "font-size:13px;color:#b9bfc6;line-height:1.5;overflow:auto;max-height:110px" }, sv.plot || (eps ? "" : "Loading episodes…")))),
     ...(eps ? seasons.map((season) => h("div", { style: "padding:4px 22px 12px" },
       h("div", { style: "font-size:12px;font-weight:800;letter-spacing:.1em;color:#7e858c;padding:10px 0 6px" }, "SEASON " + season),
-      ...bySeason[season].map((e) => h("div", { onClick: () => { close(); playVod("/vod/play/episode/" + e.id, { title: sv.name + " · S" + e.season + "E" + e.episode, sub: e.title || "", durationSec: e.durationSec }); }, style: "display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:10px;cursor:pointer;transition:background .13s", onMouseenter: (ev) => ev.currentTarget.style.background = "rgba(255,255,255,0.05)", onMouseleave: (ev) => ev.currentTarget.style.background = "transparent" },
+      ...bySeason[season].map((e) => h("div", { onClick: () => { close(); playVod("/vod/play/episode/" + e.id, { title: sv.name + " · S" + e.season + "E" + e.episode, sub: e.title || "", durationSec: e.durationSec, progressKey: { kind: "episode", refId: e.id } }); }, style: "display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:10px;cursor:pointer;transition:background .13s", onMouseenter: (ev) => ev.currentTarget.style.background = "rgba(255,255,255,0.05)", onMouseleave: (ev) => ev.currentTarget.style.background = "transparent" },
         h("span", { style: "flex:none;width:44px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#54b6ff;font-weight:700" }, "E" + e.episode),
         h("div", { style: "flex:1;min-width:0" },
           h("div", { style: "font-size:13.5px;font-weight:600;color:#e6e9ec;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, e.title || "Episode " + e.episode),
@@ -3714,6 +3760,7 @@ async function loadAnalytics() {
 }
 async function loadRecent() {
   try { const r = await fetch("/api/recent"); if (r.ok) { state.recent = await r.json(); render(); } } catch { /* leave previous */ }
+  try { const r = await fetch("/api/vod/continue"); if (r.ok) { state.vodContinue = await r.json(); render(); } } catch { /* leave previous */ }
 }
 function toggleRow(id) { state.selectedRows[id] = !state.selectedRows[id]; render(); }
 function toggleAll() {

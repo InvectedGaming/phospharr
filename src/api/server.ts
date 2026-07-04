@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { and, asc, eq, gt, lt, lte, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { providers, channels, streams, rules, programs, vpns, dvrRules, recordings, userFavorites, reminders, vodMovies, vodSeries, vodEpisodes } from "../db/schema.ts";
+import { providers, channels, streams, rules, programs, vpns, dvrRules, recordings, userFavorites, reminders, vodMovies, vodSeries, vodEpisodes, vodProgress } from "../db/schema.ts";
 import { syncVod, ensureEpisodes, ensureMovieInfo, vodUpstreamUrl } from "../ingest/vod.ts";
 import { dvrOverview, scheduleRecording, cancelRecording, deleteRule } from "../dvr/recorder.ts";
 import { startVpn, stopVpn, vpnStatus } from "../net/tunnel.ts";
@@ -209,10 +209,25 @@ app.post("/api/auth/register", async (c) => {
   }
   return c.json({ user: publicUser(user) });
 });
+// Sliding-window brute-force guard for login: cap failed attempts per client IP.
+// argon2id already makes each guess slow, but an unthrottled public endpoint
+// still invites credential stuffing — 10 failures/minute then 429.
+const loginFails = new Map<string, number[]>();
+const LOGIN_MAX = 10, LOGIN_WINDOW_MS = 60_000;
 app.post("/api/auth/login", async (c) => {
+  const ip = clientIp(c) || "unknown";
+  const now = Date.now();
+  const recent = (loginFails.get(ip) ?? []).filter((t) => now - t < LOGIN_WINDOW_MS);
+  if (recent.length >= LOGIN_MAX) return c.json({ error: "too many attempts — wait a minute" }, 429);
   const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
   const res = await login(String(body.username ?? ""), String(body.password ?? ""));
-  if (!res) return c.json({ error: "invalid username or password" }, 401);
+  if (!res) {
+    recent.push(now);
+    loginFails.set(ip, recent);
+    if (loginFails.size > 5000) loginFails.clear(); // crude unbounded-growth backstop
+    return c.json({ error: "invalid username or password" }, 401);
+  }
+  loginFails.delete(ip); // success clears the counter
   setCookie(c, SESSION_COOKIE, res.token, COOKIE_OPTS);
   return c.json({ user: publicUser(res.user) });
 });
@@ -843,6 +858,10 @@ app.post("/api/lineup/reflow", async (c) => {
 });
 
 app.get("/api/channels/:id/sources", async (c) => {
+  // ADMIN ONLY: streams.url embeds the provider's username/password (Xtream URLs
+  // are {base}/live/{user}/{pass}/{id}.ts). Without this gate any low-privilege
+  // user could enumerate channels and harvest the paid-account credentials.
+  const deny = ensureAdmin(c); if (deny) return deny;
   const id = Number(c.req.param("id"));
   return c.json(await db.select().from(streams).where(eq(streams.channelId, id)));
 });
@@ -958,6 +977,53 @@ app.get("/api/vod/series/:id", async (c) => {
   if (!row) return c.json({ error: "not found" }, 404);
   const eps = await db.select().from(vodEpisodes).where(eq(vodEpisodes.seriesRowId, id)).orderBy(asc(vodEpisodes.season), asc(vodEpisodes.episode));
   return c.json({ ...row, episodes: eps });
+});
+// Resume positions. Report during playback (kind=movie|episode, refId, position).
+app.post("/api/vod/progress", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json({ error: "sign in" }, 401);
+  const b = (await c.req.json().catch(() => ({}))) as Partial<{ kind: "movie" | "episode"; refId: number; positionSec: number; durationSec: number }>;
+  if ((b.kind !== "movie" && b.kind !== "episode") || !b.refId) return c.json({ error: "kind + refId required" }, 400);
+  const pos = Math.max(0, Math.floor(b.positionSec ?? 0));
+  // Near the end → treat as finished: drop the row so it leaves Continue Watching.
+  if (b.durationSec && pos > b.durationSec * 0.95) {
+    await db.delete(vodProgress).where(and(eq(vodProgress.userId, u.id), eq(vodProgress.kind, b.kind), eq(vodProgress.refId, Number(b.refId))));
+    return c.json({ ok: true, cleared: true });
+  }
+  await db
+    .insert(vodProgress)
+    .values({ userId: u.id, kind: b.kind, refId: Number(b.refId), positionSec: pos, durationSec: b.durationSec ?? null, updatedAt: new Date() })
+    .onConflictDoUpdate({ target: [vodProgress.userId, vodProgress.kind, vodProgress.refId], set: { positionSec: pos, durationSec: b.durationSec ?? null, updatedAt: new Date() } });
+  return c.json({ ok: true });
+});
+// One item's saved position (the player resumes from here).
+app.get("/api/vod/progress/:kind/:refId", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json({ error: "sign in" }, 401);
+  const kind = c.req.param("kind");
+  if (kind !== "movie" && kind !== "episode") return c.json({ error: "bad kind" }, 400);
+  const [row] = await db.select().from(vodProgress).where(and(eq(vodProgress.userId, u.id), eq(vodProgress.kind, kind), eq(vodProgress.refId, Number(c.req.param("refId")))));
+  return c.json(row ?? { positionSec: 0 });
+});
+// Continue Watching row (Home): most-recent in-progress items enriched for display.
+app.get("/api/vod/continue", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json([]);
+  const rows = await db.select().from(vodProgress).where(eq(vodProgress.userId, u.id)).orderBy(sql`${vodProgress.updatedAt} DESC`).limit(20);
+  const out = [];
+  for (const r of rows) {
+    if (r.kind === "movie") {
+      const [m] = await db.select().from(vodMovies).where(eq(vodMovies.id, r.refId));
+      if (m) out.push({ kind: "movie", refId: m.id, name: m.name, posterUrl: m.posterUrl, positionSec: r.positionSec, durationSec: r.durationSec });
+    } else {
+      const [e] = await db.select().from(vodEpisodes).where(eq(vodEpisodes.id, r.refId));
+      if (e) {
+        const [s] = await db.select().from(vodSeries).where(eq(vodSeries.id, e.seriesRowId));
+        if (s) out.push({ kind: "episode", refId: e.id, seriesId: s.id, name: s.name + " · S" + e.season + "E" + e.episode, posterUrl: s.posterUrl, positionSec: r.positionSec, durationSec: r.durationSec });
+      }
+    }
+  }
+  return c.json(out);
 });
 app.post("/api/vod/sync", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;

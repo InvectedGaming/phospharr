@@ -129,6 +129,15 @@ To use them off your network, enable **Settings → Network Access → Allow ext
 so the LAN check sees the real client IP — with plain Docker port-publishing every
 client looks local, so the key stays your real lock.
 
+**Exposing to the internet — read this.** The server listens on all interfaces;
+the LAN-only gate protects the key-based stream/tuner paths, but the session API
+is reachable from anywhere the port is. If you port-forward or reverse-proxy it
+to the internet: (1) use a **strong admin password** (login is brute-force-limited
+but not a substitute), (2) put it behind **HTTPS**, and (3) when **trust proxy** is
+on, make sure your reverse proxy **overwrites** the inbound `X-Forwarded-For`
+header — otherwise a remote client can spoof a LAN IP. If you only watch on your
+own network, none of this applies; leave external access off.
+
 ### VPN per source — built in, no Gluetun
 
 Phospharr **dials the VPN itself**. Each Source picks which VPN it uses — Source A →

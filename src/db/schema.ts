@@ -371,6 +371,21 @@ export const vodEpisodes = sqliteTable(
   (t) => ({ seriesIdx: index("vod_episodes_series_idx").on(t.seriesRowId) }),
 );
 
+// Per-user resume positions for VOD (movie or episode). One row per user+item.
+export const vodProgress = sqliteTable(
+  "vod_progress",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["movie", "episode"] }).notNull(),
+    refId: integer("ref_id").notNull(), // vodMovies.id or vodEpisodes.id
+    positionSec: integer("position_sec").notNull().default(0),
+    durationSec: integer("duration_sec"),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({ uq: uniqueIndex("vod_progress_uq").on(t.userId, t.kind, t.refId), userIdx: index("vod_progress_user_idx").on(t.userId) }),
+);
+
 export type VodMovie = typeof vodMovies.$inferSelect;
 export type VodSeries = typeof vodSeries.$inferSelect;
 export type VodEpisode = typeof vodEpisodes.$inferSelect;
