@@ -1,0 +1,44 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["android/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      # Provision Gradle directly (no wrapper jar committed to the repo).
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Build debug + release APKs
+        run: gradle assembleDebug assembleRelease --no-daemon --stacktrace
+      - name: Rename artifacts
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/phospharr-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk out/phospharr.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phospharr-apk
+          path: android/out/*.apk
+      # Attach the installable APK to any v* release.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/out/phospharr.apk
