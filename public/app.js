@@ -4367,7 +4367,22 @@ function openPlayer(channelId) {
       setMorphRect(morph, { left: 0, top: 0, width: innerWidth, height: innerHeight });
     }
     armPlayerAutohide(); // fade-in chrome, then auto-hide it with the controls on idle
-    setTimeout(() => { if (playerEl === wrapper) video.controls = true; }, canFlip ? 440 : 0);
+    setTimeout(() => {
+      if (playerEl !== wrapper) return;
+      video.controls = true;
+      // SETTLE: the FLIP pinned pixel dimensions captured at open time — on a
+      // phone, rotating made the layer keep the old orientation's size (each
+      // rotation "zoomed in" further). Snap to fluid viewport units so rotation
+      // self-corrects, and switch cover→contain: cover matches the preview tile
+      // during the grow, but a fullscreen PLAYER must letterbox, not crop.
+      morph.style.transition = "none";
+      morph.style.left = "0";
+      morph.style.top = "0";
+      morph.style.width = "100vw";
+      morph.style.height = "100vh";
+      morph.style.height = "100dvh"; // mobile browser chrome-aware; ignored where unsupported
+      video.style.objectFit = "contain";
+    }, canFlip ? 440 : 0);
   }, 300);
 }
 
