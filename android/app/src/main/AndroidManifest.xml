@@ -16,6 +16,9 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Phospharr">
         <activity
+            android:name=".SetupActivity"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
             android:exported="true"
