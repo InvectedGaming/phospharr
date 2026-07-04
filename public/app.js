@@ -461,6 +461,8 @@ function leftRail() {
     { id: "home", label: "Home", icon: "house" },
     { id: "guide", label: "Guide", icon: "tv" },
     { id: "mosaic", label: "Mosaic", icon: "grid-2x2" },
+    { id: "movies", label: "Movies", icon: "film" },
+    { id: "series", label: "Series", icon: "layers" },
     { id: "dvr", label: "Recordings", icon: "video" },
     { id: "nowplaying", label: "Now Playing", icon: "play", soon: true },
   ];
@@ -473,7 +475,7 @@ function leftRail() {
     { id: "epg", label: "EPG Matcher", icon: "git-compare", soon: true },
     { id: "settings", label: "Settings", icon: "settings" },
   ];
-  const built = { home: 1, guide: 1, mosaic: 1, dvr: 1, channels: 1, settings: 1, analytics: 1, users: 1, sources: 1, rules: 1 };
+  const built = { home: 1, guide: 1, mosaic: 1, dvr: 1, movies: 1, series: 1, channels: 1, settings: 1, analytics: 1, users: 1, sources: 1, rules: 1 };
   const navSrc = state.mode === "watch" ? watchNav : manageNav;
   const d = state.data;
   const healthLine = !d
@@ -2431,10 +2433,218 @@ function mainArea() {
   if (state.screen === "guide") return guideScreen();
   if (state.screen === "mosaic") return mosaicScreen();
   if (state.screen === "dvr") return dvrScreen();
+  if (state.screen === "movies") return vodScreen("movies");
+  if (state.screen === "series") return vodScreen("series");
   if (state.screen === "channels") return managerScreen();
   if (state.screen === "analytics") return analyticsScreen();
   return stubScreen();
 }
+// ===== VOD (Movies + Series) =====
+// state.vod[kind] = { items, total, q, cat, loading }; server-side search +
+// category filter + pagination (the catalog is 50k+ — never load it all).
+const vodState = { movies: null, series: null, cats: null };
+
+async function loadVod(kind, reset) {
+  const cur = vodState[kind];
+  if (cur && !reset) { render(); return; }
+  const prev = cur || { q: "", cat: "" };
+  vodState[kind] = { items: [], total: 0, q: prev.q, cat: prev.cat, loading: true };
+  render();
+  try {
+    if (!vodState.cats) vodState.cats = await fetch("/api/vod/categories").then((r) => r.ok ? r.json() : { movies: [], series: [] });
+    const p = vodState[kind];
+    const r = await fetch("/api/vod/" + kind + "?q=" + encodeURIComponent(p.q) + "&cat=" + encodeURIComponent(p.cat) + "&offset=0&limit=60");
+    if (r.ok) { const d = await r.json(); p.items = d.items; p.total = d.total; }
+  } catch { /* offline */ }
+  vodState[kind].loading = false;
+  render();
+}
+
+async function loadMoreVod(kind) {
+  const p = vodState[kind];
+  if (!p || p.loading || p.items.length >= p.total) return;
+  p.loading = true;
+  render();
+  try {
+    const r = await fetch("/api/vod/" + kind + "?q=" + encodeURIComponent(p.q) + "&cat=" + encodeURIComponent(p.cat) + "&offset=" + p.items.length + "&limit=60");
+    if (r.ok) { const d = await r.json(); p.items.push(...d.items); p.total = d.total; }
+  } catch { /* offline */ }
+  p.loading = false;
+  render();
+}
+
+// Overlay player for VOD (movies/episodes). The stream is a live ffmpeg remux
+// pipe, so seeking = reconnect with ?t= (fast keyframe seek server-side).
+let vodLivePlayer = null;
+function playVod(baseUrl, meta) {
+  let offset = 0;
+  let startedAt = Date.now();
+  const video = h("video", { autoplay: true, playsinline: true, style: "width:100%;height:100%;object-fit:contain;background:#000" });
+  const posEl = h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#cfd3d8;min-width:60px;text-align:center" }, "0:00");
+  const fmtPos = (s) => { const m = Math.floor(s / 60); return Math.floor(m / 60) > 0 ? Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0") + ":" + String(Math.floor(s % 60)).padStart(2, "0") : m + ":" + String(Math.floor(s % 60)).padStart(2, "0"); };
+  const nowPos = () => offset + (video.currentTime || 0);
+  const posTick = setInterval(() => { posEl.textContent = fmtPos(nowPos()) + (meta.durationSec ? " / " + fmtPos(meta.durationSec) : ""); }, 1000);
+  const connect = (t) => {
+    offset = Math.max(0, t);
+    if (vodLivePlayer) { try { vodLivePlayer.destroy(); } catch (e) { /* noop */ } vodLivePlayer = null; }
+    if (!window.mpegts || !mpegts.isSupported()) return;
+    vodLivePlayer = mpegts.createPlayer(
+      { type: "mpegts", isLive: true, url: baseUrl + (offset > 0 ? "?t=" + Math.round(offset) : ""), withCredentials: true },
+      { enableWorker: true, liveBufferLatencyChasing: false, lazyLoad: false, autoCleanupSourceBuffer: true });
+    vodLivePlayer.attachMediaElement(video);
+    vodLivePlayer.load();
+    video.play().catch(() => {});
+  };
+  const seek = (delta) => connect(nowPos() + delta);
+  const close = () => {
+    clearInterval(posTick);
+    if (vodLivePlayer) { try { vodLivePlayer.destroy(); } catch (e) { /* noop */ } vodLivePlayer = null; }
+    overlay.remove();
+    document.removeEventListener("keydown", keys);
+  };
+  const keys = (e) => {
+    if (e.key === "Escape") close();
+    else if (e.key === "ArrowLeft") seek(-30);
+    else if (e.key === "ArrowRight") seek(30);
+    else if (e.key === " ") { e.preventDefault(); video.paused ? video.play() : video.pause(); }
+  };
+  const ctlBtn = (label, onClick, title) => h("button", { onClick, title, style: "height:38px;padding:0 13px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:rgba(8,10,12,0.6);color:#dfe3e7;font-size:12.5px;font-weight:700;cursor:pointer" }, label);
+  const overlay = h("div", { style: "position:fixed;inset:0;z-index:70;background:#000;display:flex;flex-direction:column" },
+    h("div", { style: "position:absolute;top:0;left:0;right:0;z-index:2;display:flex;align-items:center;gap:12px;padding:16px 18px;background:linear-gradient(180deg,rgba(0,0,0,0.75),transparent)" },
+      h("button", { onClick: close, style: "width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:rgba(8,10,12,0.6);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("arrow-left", 17, 0.9)),
+      h("div", { style: "min-width:0" },
+        h("div", { style: "font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, meta.title),
+        meta.sub ? h("div", { style: "font-size:12px;color:#9aa0a6;margin-top:2px" }, meta.sub) : null)),
+    video,
+    h("div", { style: "position:absolute;bottom:22px;left:50%;transform:translateX(-50%);z-index:2;display:flex;align-items:center;gap:9px;padding:9px 13px;background:rgba(10,12,15,0.78);border:1px solid rgba(255,255,255,0.12);border-radius:15px;backdrop-filter:blur(12px)" },
+      ctlBtn("−5m", () => seek(-300), "Back 5 minutes"),
+      ctlBtn("−30s", () => seek(-30), "Back 30 seconds (←)"),
+      h("button", { onClick: () => { video.paused ? video.play() : video.pause(); }, title: "Play / pause (Space)", style: "width:44px;height:44px;border-radius:12px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("play", 18, 0.95)),
+      ctlBtn("+30s", () => seek(30), "Forward 30 seconds (→)"),
+      ctlBtn("+5m", () => seek(300), "Forward 5 minutes"),
+      posEl));
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", keys);
+  connect(0);
+}
+
+// Detail overlays -------------------------------------------------------------
+function vodDetailShell(kids, onClose) {
+  const el = h("div", { onClick: onClose, style: "position:fixed;inset:0;z-index:60;background:rgba(5,6,8,0.78);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:20px;animation:aerFadeIn .15s ease" },
+    h("div", { onClick: (e) => e.stopPropagation(), style: "width:min(760px,100%);max-height:min(84vh,760px);overflow:auto;background:#15171b;border:1px solid rgba(255,255,255,0.1);border-radius:18px;box-shadow:0 30px 90px rgba(0,0,0,0.7)" }, ...kids));
+  document.body.appendChild(el);
+  return el;
+}
+function vodPoster(url, w, radius) {
+  return h("div", { style: "width:" + w + "px;flex:none;aspect-ratio:2/3;border-radius:" + radius + "px;overflow:hidden;background:rgba(255,255,255,0.05)" },
+    url ? h("img", { src: url, loading: "lazy", style: "width:100%;height:100%;object-fit:cover", onError: (e) => e.target.remove() }) : null);
+}
+
+async function openMovie(m) {
+  let el = null;
+  const close = () => el && el.remove();
+  const body = (mv) => [h("div", { style: "display:flex;gap:20px;padding:22px" },
+    vodPoster(mv.posterUrl, 168, 12),
+    h("div", { style: "flex:1;min-width:0;display:flex;flex-direction:column;gap:10px" },
+      h("div", { style: "display:flex;align-items:flex-start;gap:10px" },
+        h("div", { style: "flex:1;font-size:21px;font-weight:800;line-height:1.2" }, mv.name),
+        h("button", { onClick: close, style: "flex:none;width:32px;height:32px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("x", 15, 0.7))),
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:#9aa0a6" },
+        mv.year ? h("span", { style: "border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:2px 8px" }, mv.year) : null,
+        mv.rating ? h("span", { style: "border:1px solid rgba(245,196,70,0.4);color:#f5c446;border-radius:6px;padding:2px 8px" }, "★ " + mv.rating) : null,
+        mv.category ? h("span", { style: "border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:2px 8px" }, mv.category) : null,
+        mv.durationSec ? h("span", { style: "border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:2px 8px" }, Math.round(mv.durationSec / 60) + " min") : null,
+        h("span", { style: "border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:2px 8px;text-transform:uppercase" }, mv.ext)),
+      h("div", { style: "font-size:13.5px;color:#b9bfc6;line-height:1.55;overflow:auto;max-height:150px" }, mv.plot || "…"),
+      h("div", { style: "flex:1" }),
+      h("button", { onClick: () => { close(); playVod("/vod/play/movie/" + mv.id, { title: mv.name, sub: mv.category, durationSec: mv.durationSec }); }, style: "align-self:flex-start;display:flex;align-items:center;gap:9px;height:44px;padding:0 22px;border-radius:12px;border:none;background:" + AC + ";color:#06121c;font-size:14.5px;font-weight:800;cursor:pointer" },
+        icon("play", 16, 0.1), "Play")))];
+  el = vodDetailShell(body(m), close);
+  // hydrate plot/duration lazily
+  try {
+    const full = await fetch("/api/vod/movies/" + m.id + "/info").then((r) => r.ok ? r.json() : null);
+    if (full && el.isConnected) { const fresh = vodDetailShell(body(full), () => fresh.remove()); el.remove(); el = fresh; }
+  } catch { /* keep basic card */ }
+}
+
+async function openSeries(s) {
+  let el = null;
+  const close = () => el && el.remove();
+  const shell = (sv, eps) => {
+    const bySeason = {};
+    for (const e of eps || []) (bySeason[e.season] ??= []).push(e);
+    const seasons = Object.keys(bySeason).map(Number).sort((a, b) => a - b);
+    return [h("div", { style: "display:flex;gap:20px;padding:22px 22px 12px" },
+      vodPoster(sv.posterUrl, 148, 12),
+      h("div", { style: "flex:1;min-width:0;display:flex;flex-direction:column;gap:9px" },
+        h("div", { style: "display:flex;align-items:flex-start;gap:10px" },
+          h("div", { style: "flex:1;font-size:21px;font-weight:800;line-height:1.2" }, sv.name),
+          h("button", { onClick: close, style: "flex:none;width:32px;height:32px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("x", 15, 0.7))),
+        h("div", { style: "display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:#9aa0a6" },
+          sv.year ? h("span", { style: "border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:2px 8px" }, sv.year) : null,
+          sv.category ? h("span", { style: "border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:2px 8px" }, sv.category) : null,
+          eps ? h("span", { style: "border:1px solid rgba(255,255,255,0.14);border-radius:6px;padding:2px 8px" }, seasons.length + " season" + (seasons.length === 1 ? "" : "s") + " · " + eps.length + " episodes") : null),
+        h("div", { style: "font-size:13px;color:#b9bfc6;line-height:1.5;overflow:auto;max-height:110px" }, sv.plot || (eps ? "" : "Loading episodes…")))),
+    ...(eps ? seasons.map((season) => h("div", { style: "padding:4px 22px 12px" },
+      h("div", { style: "font-size:12px;font-weight:800;letter-spacing:.1em;color:#7e858c;padding:10px 0 6px" }, "SEASON " + season),
+      ...bySeason[season].map((e) => h("div", { onClick: () => { close(); playVod("/vod/play/episode/" + e.id, { title: sv.name + " · S" + e.season + "E" + e.episode, sub: e.title || "", durationSec: e.durationSec }); }, style: "display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:10px;cursor:pointer;transition:background .13s", onMouseenter: (ev) => ev.currentTarget.style.background = "rgba(255,255,255,0.05)", onMouseleave: (ev) => ev.currentTarget.style.background = "transparent" },
+        h("span", { style: "flex:none;width:44px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#54b6ff;font-weight:700" }, "E" + e.episode),
+        h("div", { style: "flex:1;min-width:0" },
+          h("div", { style: "font-size:13.5px;font-weight:600;color:#e6e9ec;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, e.title || "Episode " + e.episode),
+          e.plot ? h("div", { style: "font-size:11.5px;color:#7e858c;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, e.plot) : null),
+        e.durationSec ? h("span", { style: "flex:none;font-family:'JetBrains Mono',monospace;font-size:11px;color:#6b7178" }, Math.round(e.durationSec / 60) + "m") : null,
+        icon("play", 14, 0.6))))) : [h("div", { style: "padding:10px 22px 26px;color:#7e858c;font-size:13px" }, "Loading episodes…")])];
+  };
+  el = vodDetailShell(shell(s, null), close);
+  try {
+    const full = await fetch("/api/vod/series/" + s.id).then((r) => r.ok ? r.json() : null);
+    if (full && el.isConnected) { const fresh = vodDetailShell(shell(full, full.episodes), () => fresh.remove()); el.remove(); el = fresh; }
+  } catch { /* keep basic card */ }
+}
+
+function vodScreen(kind) {
+  const p = vodState[kind];
+  const isMovies = kind === "movies";
+  if (!p) return centered("Loading " + kind + "…");
+  const cats = (vodState.cats && (isMovies ? vodState.cats.movies : vodState.cats.series)) || [];
+
+  const search = h("input", { value: p.q, placeholder: "Search " + (isMovies ? "movies" : "series") + "…", style: "flex:1;min-width:160px;height:40px;padding:0 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#eef0f2;font-size:13.5px;font-family:inherit;outline:none" });
+  let searchT = null;
+  search.addEventListener("input", () => { p.q = search.value; if (searchT) clearTimeout(searchT); searchT = setTimeout(() => loadVod(kind, true), 350); });
+  const catSel = h("select", {
+    onChange: (e) => { p.cat = e.target.value; loadVod(kind, true); },
+    style: "appearance:none;-webkit-appearance:none;height:40px;padding:0 30px 0 14px;border-radius:10px;border:1px solid " + (p.cat ? "rgba(84,182,255,0.5)" : "rgba(255,255,255,0.12)") + ";background:" + (p.cat ? "rgba(84,182,255,0.14)" : "rgba(255,255,255,0.05)") + ";color:#dfe3e7;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;max-width:240px",
+  },
+    h("option", { value: "", selected: !p.cat, style: "background:#16181c" }, "All categories"),
+    ...cats.map((c) => h("option", { value: c.cat, selected: p.cat === c.cat, style: "background:#16181c" }, c.cat + " (" + c.n + ")")));
+
+  const cards = p.items.map((it) => h("div", { onClick: () => (isMovies ? openMovie(it) : openSeries(it)), class: "aer-cell", style: "cursor:pointer;border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06)" },
+    h("div", { style: "aspect-ratio:2/3;background:rgba(255,255,255,0.04);position:relative" },
+      it.posterUrl ? h("img", { src: it.posterUrl, loading: "lazy", style: "width:100%;height:100%;object-fit:cover;display:block", onError: (e) => e.target.remove() }) : h("div", { style: "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#3a4048" }, icon(isMovies ? "film" : "layers", 26, 0.5)),
+      it.rating ? h("span", { style: "position:absolute;top:7px;right:7px;font-size:10.5px;font-weight:800;color:#f5c446;background:rgba(8,10,12,0.75);border-radius:6px;padding:2px 6px" }, "★ " + it.rating) : null),
+    h("div", { style: "padding:8px 10px 10px" },
+      h("div", { style: "font-size:12.5px;font-weight:600;color:#e2e6ea;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical" }, it.name),
+      it.year ? h("div", { style: "font-size:11px;color:#6b7178;margin-top:2px" }, it.year) : null)));
+
+  return h("div", { style: "flex:1;min-height:0;overflow:auto" },
+    h("div", { style: "display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:18px 24px 12px" },
+      h("div", null,
+        h("div", { style: "font-size:23px;font-weight:700;letter-spacing:-.01em" }, isMovies ? "Movies" : "Series"),
+        h("div", { style: "font-size:13px;color:#9aa0a6;margin-top:3px" }, p.total.toLocaleString() + (isMovies ? " movies" : " series") + (p.cat ? " · " + p.cat : "") + (p.q ? " · “" + p.q + "”" : ""))),
+      h("div", { style: "flex:none;display:flex;gap:8px;width:min(520px,100%)" }, search, catSel)),
+    p.total === 0 && !p.loading
+      ? h("div", { style: "padding:60px 24px;display:flex;flex-direction:column;align-items:center;gap:11px;text-align:center;color:#9aa0a6" },
+          icon(isMovies ? "film" : "layers", 30, 0.5),
+          h("div", { style: "font-size:15.5px;font-weight:700;color:#dfe3e7" }, "No " + kind + " yet"),
+          h("div", { style: "font-size:13px;max-width:400px;line-height:1.5" }, "The catalog syncs automatically from Xtream providers. You can also trigger it now:"),
+          state.auth.user && state.auth.user.role === "admin" ? h("button", { onClick: async (e) => { e.currentTarget.textContent = "Syncing… (this takes a minute)"; await fetch("/api/vod/sync", { method: "POST" }).catch(() => {}); loadVod(kind, true); }, style: "margin-top:4px;height:38px;padding:0 18px;border-radius:10px;border:1px solid rgba(84,182,255,0.4);background:rgba(84,182,255,0.16);color:#cfe6fa;font-size:13px;font-weight:700;cursor:pointer" }, "Sync VOD catalog") : null)
+      : h("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:14px;padding:6px 24px 18px" }, ...cards),
+    p.items.length < p.total
+      ? h("div", { style: "display:flex;justify-content:center;padding:4px 0 26px" },
+          h("button", { onClick: () => loadMoreVod(kind), style: "height:40px;padding:0 22px;border-radius:10px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:13px;font-weight:700;cursor:pointer" }, p.loading ? "Loading…" : "Load more (" + (p.total - p.items.length).toLocaleString() + " left)"))
+      : null);
+}
+
 // ===== Reminders =====
 // "Tell me when this starts": a bell on any upcoming program. A 30s checker
 // fires an in-app toast (+ a system notification when permitted) 10 minutes
@@ -2742,6 +2952,7 @@ function setScreen(screen) {
   set({ screen, navOpen: false });
   if (screen === "home") loadRecent();
   if (screen === "dvr") loadDvr();
+  if (screen === "movies" || screen === "series") loadVod(screen);
   if (screen === "analytics") loadAnalytics();
   if (screen === "users") loadUsers();
   if (screen === "sources") loadSources();

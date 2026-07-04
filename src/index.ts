@@ -25,6 +25,8 @@ startHealthProbe(); // background stream probes per features.healthProbe
 {
   const { startDvr } = await import("./dvr/recorder.ts");
   startDvr(); // recording scheduler tick (rules → schedule → record → prune)
+  const { vodBootKick } = await import("./ingest/vod.ts");
+  vodBootKick(); // first-boot VOD catalog pull for xtream providers
 }
 reconcileTunnels().catch((e) => console.error("[vpn] reconcile failed", e)); // dial autostart VPNs
 {

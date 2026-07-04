@@ -2,13 +2,14 @@ import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { and, asc, eq, gt, lt, lte, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { providers, channels, streams, rules, programs, vpns, dvrRules, recordings, userFavorites, reminders } from "../db/schema.ts";
+import { providers, channels, streams, rules, programs, vpns, dvrRules, recordings, userFavorites, reminders, vodMovies, vodSeries, vodEpisodes } from "../db/schema.ts";
+import { syncVod, ensureEpisodes, ensureMovieInfo, vodUpstreamUrl } from "../ingest/vod.ts";
 import { dvrOverview, scheduleRecording, cancelRecording, deleteRule } from "../dvr/recorder.ts";
 import { startVpn, stopVpn, vpnStatus } from "../net/tunnel.ts";
 import { syncProvider } from "../ingest/sync.ts";
 import { fetchM3U } from "../ingest/m3u.ts";
 import { fetchXtream } from "../ingest/xtream.ts";
-import { egress } from "../net/egress.ts";
+import { egress, providerEgress } from "../net/egress.ts";
 import { vpnProxyUrl } from "../net/tunnel.ts";
 import { nordCountries, nordRecommend, isNordConfig, setNordServer, setLocationComment, parseNordInfo } from "../net/nordvpn.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
@@ -850,6 +851,120 @@ app.get("/api/channels/:id/sources", async (c) => {
 app.get("/api/guide/:canonicalId/now", async (c) => {
   const canonicalId = c.req.param("canonicalId");
   return c.json(await nowNext(canonicalId));
+});
+
+// ─── VOD: movie + series catalogs (browse, detail, playback) ───
+const vodPage = (q: string | undefined, cat: string | undefined, offset: number, limit: number) => ({
+  q: (q ?? "").trim(), cat: (cat ?? "").trim(), offset: Math.max(0, offset || 0), limit: Math.min(120, Math.max(1, limit || 60)),
+});
+app.get("/api/vod/movies", async (c) => {
+  if (!c.get("user")) return c.json({ error: "sign in" }, 401);
+  const { q, cat, offset, limit } = vodPage(c.req.query("q"), c.req.query("cat"), Number(c.req.query("offset")), Number(c.req.query("limit")));
+  const where = and(
+    q ? sql`${vodMovies.name} LIKE ${"%" + q + "%"}` : sql`1=1`,
+    cat ? eq(vodMovies.category, cat) : sql`1=1`,
+  );
+  const [items, [{ n: total }]] = await Promise.all([
+    db.select().from(vodMovies).where(where).orderBy(vodMovies.name).limit(limit).offset(offset),
+    db.select({ n: sql<number>`COUNT(*)` }).from(vodMovies).where(where),
+  ]);
+  return c.json({ items, total });
+});
+app.get("/api/vod/series", async (c) => {
+  if (!c.get("user")) return c.json({ error: "sign in" }, 401);
+  const { q, cat, offset, limit } = vodPage(c.req.query("q"), c.req.query("cat"), Number(c.req.query("offset")), Number(c.req.query("limit")));
+  const where = and(
+    q ? sql`${vodSeries.name} LIKE ${"%" + q + "%"}` : sql`1=1`,
+    cat ? eq(vodSeries.category, cat) : sql`1=1`,
+  );
+  const [items, [{ n: total }]] = await Promise.all([
+    db.select().from(vodSeries).where(where).orderBy(vodSeries.name).limit(limit).offset(offset),
+    db.select({ n: sql<number>`COUNT(*)` }).from(vodSeries).where(where),
+  ]);
+  return c.json({ items, total });
+});
+app.get("/api/vod/categories", async (c) => {
+  if (!c.get("user")) return c.json({ error: "sign in" }, 401);
+  const [movies, series] = await Promise.all([
+    db.select({ cat: vodMovies.category, n: sql<number>`COUNT(*)` }).from(vodMovies).groupBy(vodMovies.category).orderBy(sql`COUNT(*) DESC`),
+    db.select({ cat: vodSeries.category, n: sql<number>`COUNT(*)` }).from(vodSeries).groupBy(vodSeries.category).orderBy(sql`COUNT(*) DESC`),
+  ]);
+  return c.json({ movies: movies.filter((r) => r.cat), series: series.filter((r) => r.cat) });
+});
+app.get("/api/vod/movies/:id/info", async (c) => {
+  if (!c.get("user")) return c.json({ error: "sign in" }, 401);
+  const id = Number(c.req.param("id"));
+  await ensureMovieInfo(id).catch(() => { /* provider hiccup — serve what we have */ });
+  const [row] = await db.select().from(vodMovies).where(eq(vodMovies.id, id));
+  return row ? c.json(row) : c.json({ error: "not found" }, 404);
+});
+app.get("/api/vod/series/:id", async (c) => {
+  if (!c.get("user")) return c.json({ error: "sign in" }, 401);
+  const id = Number(c.req.param("id"));
+  await ensureEpisodes(id).catch(() => { /* provider hiccup — serve cache */ });
+  const [row] = await db.select().from(vodSeries).where(eq(vodSeries.id, id));
+  if (!row) return c.json({ error: "not found" }, 404);
+  const eps = await db.select().from(vodEpisodes).where(eq(vodEpisodes.seriesRowId, id)).orderBy(asc(vodEpisodes.season), asc(vodEpisodes.episode));
+  return c.json({ ...row, episodes: eps });
+});
+app.post("/api/vod/sync", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const provs = await db.select().from(providers).where(eq(providers.enabled, true));
+  const results = [];
+  for (const p of provs) if (p.type === "xtream") results.push({ providerId: p.id, ...(await syncVod(p.id)) });
+  return c.json(results);
+});
+
+// VOD playback: remux the provider file (video copy, audio → AAC, MPEG-TS out)
+// so MKV/AVI — most of a typical catalog — play in the browser via mpegts.js.
+// ?t=<seconds> seeks (ffmpeg -ss before the input = fast keyframe seek). The
+// provider connection counts against the slot pool for the whole playback.
+const VOD_FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
+async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: number, streamId: number, ext: string) {
+  const [prov] = await db.select().from(providers).where(eq(providers.id, providerId));
+  if (!prov) return c.text("provider gone", 404);
+  const eg = providerEgress(prov.id);
+  if (eg.blocked) return c.text("VPN for this source is down", 503);
+  if (!pool.acquire(prov.id)) return c.text("all tuners busy", 503);
+  const t = Math.max(0, Number(c.req.query("t")) || 0);
+  const url = vodUpstreamUrl(prov, kind, streamId, ext);
+  const args = [
+    "-hide_banner", "-loglevel", "error",
+    ...("proxy" in eg && eg.proxy ? ["-http_proxy", eg.proxy] : []),
+    ...(t > 0 ? ["-ss", String(t)] : []),
+    "-i", url,
+    "-map", "0:v:0", "-map", "0:a:0?",
+    "-c:v", "copy", "-c:a", "aac", "-ac", "2", "-b:a", "160k",
+    "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
+  ];
+  let released = false;
+  const release = () => { if (!released) { released = true; pool.release(prov.id); } };
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn([VOD_FFMPEG, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  } catch {
+    release();
+    return c.text("ffmpeg unavailable", 503);
+  }
+  void proc.exited.then(release);
+  c.req.raw.signal.addEventListener("abort", () => { try { proc.kill(); } catch { /* gone */ } release(); }, { once: true });
+  return new Response(proc.stdout as ReadableStream<Uint8Array>, { headers: STREAM_HEADERS });
+}
+app.get("/vod/play/movie/:id", async (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
+  const [m] = await db.select().from(vodMovies).where(eq(vodMovies.id, Number(c.req.param("id"))));
+  if (!m) return c.text("not found", 404);
+  return serveVod(c, "movie", m.providerId, m.streamId, m.ext);
+});
+app.get("/vod/play/episode/:id", async (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
+  const [e] = await db.select().from(vodEpisodes).where(eq(vodEpisodes.id, Number(c.req.param("id"))));
+  if (!e) return c.text("not found", 404);
+  const [s] = await db.select().from(vodSeries).where(eq(vodSeries.id, e.seriesRowId));
+  if (!s) return c.text("series gone", 404);
+  return serveVod(c, "series", s.providerId, e.streamId, e.ext);
 });
 
 // ─── Reminders ("tell me when this starts") ───

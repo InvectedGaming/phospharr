@@ -313,6 +313,68 @@ export const reminders = sqliteTable(
   (t) => ({ userIdx: index("reminders_user_idx").on(t.userId) }),
 );
 
+// ─── VOD: movies + series catalogs from Xtream providers ───
+export const vodMovies = sqliteTable(
+  "vod_movies",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    providerId: integer("provider_id").notNull().references(() => providers.id, { onDelete: "cascade" }),
+    streamId: integer("stream_id").notNull(), // provider's vod stream id (builds the play URL)
+    name: text("name").notNull(),
+    year: integer("year"),
+    category: text("category"),
+    posterUrl: text("poster_url"),
+    ext: text("ext").notNull().default("mp4"), // container_extension
+    rating: real("rating"),
+    plot: text("plot"), // lazily fetched via get_vod_info
+    durationSec: integer("duration_sec"),
+    addedAt: integer("added_at", { mode: "timestamp" }),
+  },
+  (t) => ({
+    provStreamUq: uniqueIndex("vod_movies_prov_stream_uq").on(t.providerId, t.streamId),
+    nameIdx: index("vod_movies_name_idx").on(t.name),
+  }),
+);
+
+export const vodSeries = sqliteTable(
+  "vod_series",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    providerId: integer("provider_id").notNull().references(() => providers.id, { onDelete: "cascade" }),
+    seriesId: integer("series_id").notNull(), // provider's series id
+    name: text("name").notNull(),
+    year: integer("year"),
+    category: text("category"),
+    posterUrl: text("poster_url"),
+    plot: text("plot"),
+    episodesCachedAt: integer("episodes_cached_at", { mode: "timestamp" }), // lazy get_series_info cache marker
+  },
+  (t) => ({
+    provSeriesUq: uniqueIndex("vod_series_prov_series_uq").on(t.providerId, t.seriesId),
+    nameIdx: index("vod_series_name_idx").on(t.name),
+  }),
+);
+
+export const vodEpisodes = sqliteTable(
+  "vod_episodes",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    seriesRowId: integer("series_row_id").notNull().references(() => vodSeries.id, { onDelete: "cascade" }),
+    season: integer("season").notNull(),
+    episode: integer("episode").notNull(),
+    title: text("title"),
+    streamId: integer("stream_id").notNull(),
+    ext: text("ext").notNull().default("mp4"),
+    plot: text("plot"),
+    durationSec: integer("duration_sec"),
+  },
+  (t) => ({ seriesIdx: index("vod_episodes_series_idx").on(t.seriesRowId) }),
+);
+
+export type VodMovie = typeof vodMovies.$inferSelect;
+export type VodSeries = typeof vodSeries.$inferSelect;
+export type VodEpisode = typeof vodEpisodes.$inferSelect;
+
 export type Recording = typeof recordings.$inferSelect;
 export type DvrRule = typeof dvrRules.$inferSelect;
 
