@@ -11,6 +11,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create/attach the APK to the GitHub Release on v* tags
     defaults:
       run:
         working-directory: android
