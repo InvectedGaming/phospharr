@@ -40,8 +40,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ffbuilder /opt/ffzmq/bin/ffmpeg /usr/local/bin/ffmpeg-zmq
 COPY --from=ffbuilder /opt/ffzmq/bin/zmqsend /usr/local/bin/zmqsend
 
-# Bun runtime (official installer → /usr/local/bin/bun).
-RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+# Bun runtime (official installer → /usr/local/bin/bun). PINNED: an unpinned
+# install made image rebuilds non-reproducible — a rebuild for an unrelated
+# change once picked up a newer Bun whose stricter ReadableStream state checks
+# turned a latent stream-cancel bug into a playback outage. Bump deliberately,
+# with the same version in .github/workflows/ci.yml.
+ARG BUN_VERSION=1.3.12
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v${BUN_VERSION}" \
  && bun --version
 
 # NVENC-capable ffmpeg matched to the host driver (535 → NVENC API 12.x).

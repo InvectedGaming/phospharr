@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+- **Playback broken after deploy ("play button with a line through it")**:
+  stream teardown called `body.cancel()` on a reader-locked stream, whose
+  rejected promise escaped the bare try/catch — every muxer teardown produced
+  an unhandled `ERR_INVALID_STATE`. Latent for months; a newer Bun's stricter
+  stream-state checks made it fatal. Fixed at the source (cancel via the
+  reader) plus the same pattern in the transcode teardown and tile feeds.
+- **Reproducible images**: the Docker image and CI now PIN the Bun version
+  (`BUN_VERSION` build arg) instead of installing latest-at-build — an
+  unpinned rebuild is what exposed the bug above.
+
 ### Mosaic architecture redo: slate-backed tile feeds
 - **Per-tile normalizer feeds**: each composed channel gets its own supervised
   ffmpeg that normalizes it to a uniform intermediate; the grid encode reads
