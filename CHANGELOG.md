@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Mosaic architecture redo: slate-backed tile feeds
+- **Per-tile normalizer feeds**: each composed channel gets its own supervised
+  ffmpeg that normalizes it to a uniform intermediate; the grid encode reads
+  tiles from `/tile/<slot>`, which splices in a pre-rendered **labelled slate**
+  (channel name on a dark card) whenever the tile isn't producing — cold dial,
+  provider drop, crash backoff. The compositor's inputs always flow from byte
+  one: the mosaic **starts instantly** even when every channel is dead, and a
+  dead tile is a visible card that **heals in place**.
+- **Layout/focus changes no longer re-dial**: only the grid encode restarts
+  (~1-2s); tile normalizers keep running (and linger 20s after leaving the
+  layout), so flipping focus back and forth is instant.
+- **Shared process supervisor** (`supervisor.ts`): serialized restarts,
+  crash backoff, output watchdog, stderr ring — one primitive instead of a
+  bespoke lifecycle per ffmpeg call-site.
+- **Per-tile health** surfaced in `/api/mosaic/status` and as green/amber dots
+  in the cast bar (green = live on the cast, amber = slate).
+- **Removed the legacy headless-Chrome cast path** (castbrowser, castrender,
+  castingest WebSocket, `/mosaic/*.m3u8` HLS, `PHOSPHARR_SERVER_CAST`) and the
+  dead in-tab canvas-capture code — the server compositor is the one path.
+- New env knobs: `PHOSPHARR_MOSAIC_RES` / `PHOSPHARR_MOSAIC_FPS` (grid output),
+  `PHOSPHARR_TILE_RES` / `PHOSPHARR_TILE_ENCODER` (tile intermediates; default
+  960x540 libx264-ultrafast, `h264_nvenc` opt-in).
+
 ### Mosaic reliability overhaul
 - The compositor encode is now **supervised**: an unexpected ffmpeg death closes
   viewer streams (players reconnect instead of hanging on a frozen picture) and

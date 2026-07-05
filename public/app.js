@@ -143,8 +143,9 @@ const state = {
   mosaicPickQ: "", // picker search query
   mosaicCombined: false, // combined single-stream compositor enabled?
   mosaicCombinedBusy: false, // start request in flight
-  mosaicCombinedUrl: null, // castable HLS link once started
+  mosaicCombinedUrl: null, // castable stream link once started
   mosaicCombinedErr: null,
+  mosaicTiles: null, // per-tile server health while casting (from /api/mosaic/status)
   tvUrl: null, // /mosaic/tv link to open on a TV browser (mirrors this tab)
   density: "comfortable", // guide row density: 'comfortable' | 'compact'
   guideOnlyWithEpg: true, // guide shows only channels that have program data
@@ -1357,16 +1358,11 @@ function setMosaicChannel(slot, channelId) {
 }
 
 // ── Cast: render the grid → HLS, then play it on a TV ──
-// Two render paths feed the SAME server ingest (→ ffmpeg → HLS):
-//   • in-tab (default): THIS browser draws the grid to a canvas and streams it —
-//     works anywhere, but the tab must stay foreground.
-//   • server (PHOSPHARR_SERVER_CAST=on): a headless Chrome on the server renders
-//     it instead, so it survives the tab closing — but needs a GPU to encode.
-let combinedHls = null;      // hls.js instance for the inline preview
-let combinedVideoEl = null;  // the <video> it's attached to (survives re-render via re-attach)
-let castPushTimer = null;    // debounce rapid focus/audio changes (server mode)
-let serverCast = false;      // is the headless server renderer the active mode?
-const cap = { canvas: null, ctx: null, raf: 0, rec: null, ws: null, audioCtx: null, dest: null, srcs: {}, audioTimer: null, key: "" };
+// The mosaic is composited ON THE SERVER (ffmpeg, per-tile slate-backed feeds)
+// and served as one MPEG-TS channel. This tab is only the remote control: it
+// POSTs the desired state (/api/mosaic/compose) and polls per-tile health.
+let castPushTimer = null;    // debounce rapid focus/audio changes
+let mosaicStatusTimer = null; // per-tile health poll while the cast is on
 
 // What to show, as indices into the compact channel list (used by both paths).
 // Tiles per layout: 2-up (2), 2×2 (4), or 3×3 (9).
@@ -1388,75 +1384,6 @@ function castState() {
   const names = live.map((c) => c.name || ("#" + (c.num ?? "")));
   return { channels, focus, audio, layout, names };
 }
-
-// ---- in-tab capture path ----
-function tileVideoEl(id) { const e = tilePlayers["mosaic:" + id]; return e && e.video && e.video.videoWidth ? e.video : null; }
-function drawFit(v, x, y, w, h) {
-  if (!v) { cap.ctx.fillStyle = "#0e1116"; cap.ctx.fillRect(x + 2, y + 2, w - 4, h - 4); return; }
-  const vr = v.videoWidth / v.videoHeight, br = w / h; let dw = w, dh = h;
-  if (vr > br) dh = w / vr; else dw = h * vr;
-  cap.ctx.drawImage(v, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
-}
-function drawCapFrame() {
-  if (!state.mosaicCombined || serverCast || !cap.ctx) return;
-  const cs = castState(), W = 1280, H = 720;
-  cap.ctx.fillStyle = "#06080b"; cap.ctx.fillRect(0, 0, W, H);
-  if (cs.focus != null && cs.channels[cs.focus] != null) {
-    drawFit(tileVideoEl(cs.channels[cs.focus]), 0, 0, W, H);
-  } else {
-    const n = Math.max(1, cs.channels.length), cols = n > 4 ? 3 : 2, rows = Math.ceil(n / cols), tw = W / cols, th = H / rows;
-    cs.channels.forEach((id, i) => drawFit(tileVideoEl(id), (i % cols) * tw, Math.floor(i / cols) * th, tw, th));
-  }
-  cap.raf = requestAnimationFrame(drawCapFrame);
-}
-function updateCapAudio() {
-  if (!cap.audioCtx || !cap.dest) return;
-  for (const k in cap.srcs) cap.srcs[k].gain.gain.value = 0;
-  const cs = castState(), want = cs.channels[cs.audio];
-  if (want == null) return;
-  let s = cap.srcs[want];
-  if (!s) {
-    const e = tilePlayers["mosaic:" + want]; if (!e || !e.video) return;
-    try {
-      const get = e.video.captureStream || e.video.mozCaptureStream; if (!get) return;
-      const ms = get.call(e.video); if (!ms.getAudioTracks().length) return;
-      const src = cap.audioCtx.createMediaStreamSource(ms), gain = cap.audioCtx.createGain();
-      gain.gain.value = 0; src.connect(gain); gain.connect(cap.dest);
-      s = cap.srcs[want] = { src, gain };
-    } catch { return; }
-  }
-  s.gain.gain.value = 1;
-}
-function startInTabCapture() {
-  cap.canvas = document.createElement("canvas"); cap.canvas.width = 1280; cap.canvas.height = 720;
-  cap.ctx = cap.canvas.getContext("2d", { alpha: false });
-  cap.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  try { cap.audioCtx.resume(); } catch { /* gesture */ }
-  cap.dest = cap.audioCtx.createMediaStreamDestination();
-  cap.raf = requestAnimationFrame(drawCapFrame);
-  updateCapAudio(); cap.audioTimer = setInterval(updateCapAudio, 1500);
-  const v = cap.canvas.captureStream(30);
-  const stream = new MediaStream(v.getVideoTracks().concat(cap.dest.stream.getAudioTracks()));
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  cap.ws = new WebSocket(proto + "://" + location.host + "/castingest?key=" + encodeURIComponent(cap.key));
-  cap.ws.binaryType = "arraybuffer";
-  cap.ws.onopen = () => {
-    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus") ? "video/webm;codecs=vp8,opus" : "video/webm";
-    cap.rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
-    cap.rec.ondataavailable = (e) => { if (e.data && e.data.size && cap.ws && cap.ws.readyState === 1) e.data.arrayBuffer().then((b) => { try { cap.ws.send(b); } catch { /* closed */ } }); };
-    cap.rec.start(400);
-  };
-}
-function stopInTabCapture() {
-  if (cap.raf) cancelAnimationFrame(cap.raf), cap.raf = 0;
-  if (cap.audioTimer) { clearInterval(cap.audioTimer); cap.audioTimer = null; }
-  try { cap.rec && cap.rec.state !== "inactive" && cap.rec.stop(); } catch { /* noop */ }
-  try { cap.ws && cap.ws.close(); } catch { /* noop */ }
-  try { cap.audioCtx && cap.audioCtx.close(); } catch { /* noop */ }
-  cap.rec = cap.ws = cap.audioCtx = cap.dest = cap.canvas = cap.ctx = null; cap.srcs = {};
-}
-
-function pushCast() { return fetch("/api/mosaic/cast", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(castState()) }); }
 
 function pushCompose() { return fetch("/api/mosaic/compose", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(castState()) }); }
 // Open-on-TV: push the current mosaic state, then surface the /mosaic/tv link to
@@ -1495,60 +1422,36 @@ async function startCombined() {
     const key = meta.key || "";
     state.mosaicCombinedUrl = location.origin + "/mosaic/live.ts" + (key ? "?key=" + encodeURIComponent(key) : "");
     state.mosaicCombinedBusy = false; render();
+    startMosaicStatusPoll();
   } catch (e) { set({ mosaicCombined: false, mosaicCombinedBusy: false, mosaicCombinedErr: String(e) }); }
 }
-// Reflect a focus / audio / channel change. In-tab: the draw loop already reads
-// live state; just refresh the audio gain. Server: debounced push to the renderer.
+// Per-tile health for the cast bar: green = live video on the cast, amber =
+// slate (dialing / provider down — the server shows a labelled card and heals
+// the tile in place when the channel comes back).
+function startMosaicStatusPoll() {
+  stopMosaicStatusPoll();
+  const tick = () => fetch("/api/mosaic/status").then((r) => r.json())
+    .then((j) => { if (state.mosaicCombined) set({ mosaicTiles: j.tiles || [] }); })
+    .catch(() => { /* transient */ });
+  tick();
+  mosaicStatusTimer = setInterval(tick, 3000);
+}
+function stopMosaicStatusPoll() {
+  if (mosaicStatusTimer) { clearInterval(mosaicStatusTimer); mosaicStatusTimer = null; }
+  state.mosaicTiles = null;
+}
+// Reflect a focus / audio / channel change: debounced push of the shared state
+// (the TV display and the cast-as-channel both follow it).
 function recastIfOn() {
-  // Always publish the mosaic state so the TV display (/mosaic/tv) mirrors this tab
-  // live, and the cast-as-channel — if running — picks it up too.
   if (castPushTimer) clearTimeout(castPushTimer);
   castPushTimer = setTimeout(() => { castPushTimer = null; pushCompose().catch(() => {}); }, 150);
 }
-async function waitForCombined(url) {
-  for (let i = 0; i < 22; i++) {
-    if (!state.mosaicCombined) return false;
-    try { const r = await fetch(url, { cache: "no-store" }); if (r.ok && (await r.text()).indexOf("seg") >= 0) return true; } catch { /* not ready */ }
-    await new Promise((res) => setTimeout(res, 1500));
-  }
-  return false;
-}
 async function stopCombined() {
   if (castPushTimer) { clearTimeout(castPushTimer); castPushTimer = null; }
+  stopMosaicStatusPoll();
   set({ mosaicCombined: false, mosaicCombinedUrl: null, mosaicCombinedErr: null });
   try { await fetch("/api/mosaic/compose", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channels: [] }) }); } catch { /* ignore */ }
 }
-// Attach (or re-attach across re-renders) the inline HLS preview. Reuses the hls
-// instance so a re-render doesn't trigger a full network reload.
-function attachCombinedHls() {
-  if (state.mosaicCombinedBusy) return; // don't hand hls.js a not-yet-ready playlist — it exhausts retries and sticks
-  const v = document.getElementById("aerCombinedVideo");
-  if (!v || !state.mosaicCombinedUrl) return;
-  if (combinedHls && combinedVideoEl === v) return;
-  // The inline player is same-origin and authenticates by session cookie, so it
-  // uses the KEY-LESS playlist URL — a query string on the playlist confuses
-  // hls.js's relative segment resolution. The ?key= form is only for the
-  // shareable/cast link (devices that don't carry the cookie).
-  const playUrl = location.origin + "/mosaic/index.m3u8";
-  if (window.Hls && Hls.isSupported()) {
-    if (!combinedHls) {
-      combinedHls = new Hls({ liveSyncDurationCount: 3, manifestLoadingMaxRetry: 8, levelLoadingMaxRetry: 8, fragLoadingMaxRetry: 8 });
-      combinedHls.on(Hls.Events.ERROR, (_e, data) => {
-        if (!data || !data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { try { combinedHls.startLoad(); } catch { /* noop */ } }
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { try { combinedHls.recoverMediaError(); } catch { /* noop */ } }
-      });
-      combinedHls.loadSource(playUrl);
-    } else { try { combinedHls.detachMedia(); } catch { /* noop */ } }
-    combinedHls.attachMedia(v);
-    combinedVideoEl = v;
-    v.play().catch(() => {});
-  } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
-    v.src = playUrl; v.play().catch(() => {});
-    combinedVideoEl = v;
-  }
-}
-function destroyCombinedHls() { if (combinedHls) { try { combinedHls.destroy(); } catch { /* noop */ } combinedHls = null; } combinedVideoEl = null; }
 function setMosaicAudio(id) { set({ activeTileId: id }); recastIfOn(); }
 
 function mosaicScreen() {
@@ -1663,6 +1566,13 @@ function combinedPanel() {
       style: "flex:1;min-width:180px;height:32px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:0 10px;color:#cfe8ff;font-family:'JetBrains Mono',monospace;font-size:12px;outline:none" }),
     h("button", { onClick: () => copyText(url), title: "Copy link", style: "flex:none;height:32px;padding:0 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:12.5px;font-weight:600;cursor:pointer" }, "Copy"),
     h("button", { onClick: () => window.open(url, "_blank"), title: "Open in a new tab (VLC/desktop)", style: "flex:none;height:32px;padding:0 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:12.5px;font-weight:600;cursor:pointer" }, "Open")) : null;
+  // Per-tile server health: green = the cast shows live video for that tile,
+  // amber = it's showing the slate (dialing or provider down; heals itself).
+  const tiles = state.mosaicTiles;
+  const tileRow = tiles && tiles.length ? h("div", { style: "display:flex;align-items:center;gap:12px;flex-wrap:wrap" },
+    ...tiles.map((t) => h("div", { title: t.live ? "Live on the cast" : "Slate — dialing or provider down; heals automatically", style: "display:flex;align-items:center;gap:6px" },
+      h("span", { style: "width:7px;height:7px;border-radius:50%;background:" + (t.live ? "#2fae5c" : "#e8a13c") + ";box-shadow:0 0 6px " + (t.live ? "#2fae5c" : "#e8a13c") }),
+      h("span", { style: "font-size:11.5px;color:" + (t.live ? "#aeb4ba" : "#e8a13c") }, t.name || ("#" + t.channelId))))) : null;
   return h("div", { style: "flex:none;margin:0 24px 6px;padding:13px 15px;border:1px solid rgba(84,182,255,0.25);border-radius:13px;background:rgba(84,182,255,0.06);display:flex;flex-direction:column;gap:9px" },
     h("div", { style: "display:flex;align-items:center;gap:9px" },
       busy ? h("div", { style: "width:16px;height:16px;border:2px solid rgba(255,255,255,0.25);border-top-color:#54b6ff;border-radius:50%;animation:aerSpin .8s linear infinite" })
@@ -1671,6 +1581,7 @@ function combinedPanel() {
       h("span", { style: "font-size:10px;font-weight:700;letter-spacing:.1em;color:#9aa0a6;border:1px solid rgba(255,255,255,0.14);border-radius:5px;padding:2px 6px" }, "CH 8000")),
     err ? h("div", { style: "font-size:12.5px;color:#ff8079" }, err)
       : h("div", { style: "font-size:12px;color:#8c9298;line-height:1.45" }, "Tune “Mosaic” (ch 8000) on your TV via Plex / Jellyfin / Emby / TiviMate — it's in your HDHR lineup + M3U — or open the link in VLC/desktop. This tab is the command center: tap a tile's 🔊 and the cast's audio swaps INSTANTLY — no reload, no drift. Changing channels / layout / focus updates the cast. Uses one provider slot per tile."),
+    tileRow,
     linkRow);
 }
 
@@ -3011,7 +2922,6 @@ function render() {
     if (el) { el.focus(); try { if (focusSnap.start != null) el.setSelectionRange(focusSnap.start, focusSnap.end); } catch { /* non-text input */ } }
   }
   reconcileTiles(); // tear down any tile player no longer on screen
-  if (state.mosaicCombined && state.mosaicCombinedUrl) attachCombinedHls(); // keep the inline HLS preview attached across re-renders
 }
 
 // ===== actions =====

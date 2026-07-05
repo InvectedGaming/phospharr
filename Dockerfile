@@ -33,7 +33,7 @@ FROM debian:bookworm-slim
 # microsocks) + runtime libs for the compiled ffmpeg-zmq (libzmq5/libx264).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       openvpn iproute2 iptables ca-certificates curl gnupg unzip xz-utils git build-essential \
-      libzmq5 libx264-164 \
+      libzmq5 libx264-164 fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 # The zmq+NVENC ffmpeg + zmqsend for the persistent compositor (builder stage).
