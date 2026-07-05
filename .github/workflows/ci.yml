@@ -16,5 +16,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
+      # Several modules prepare statements against the DB at import time (same
+      # as production, which migrates before start) — give tests a real schema.
+      - name: Migrate test DB
+        run: bun run db:migrate
       - name: Tests
         run: bun test tests/
