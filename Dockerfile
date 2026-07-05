@@ -58,9 +58,11 @@ RUN mkdir -p /etc/apt/keyrings \
 
 # Resolvers for user-added live streams (Twitch / YouTube / Kick / generic HLS):
 # streamlink continuously restreams a platform page; yt-dlp is the fallback for
-# sites streamlink misses. streamlink comes from apt (pulls python3); yt-dlp is
-# the standalone release binary (fresher than the apt package).
-RUN apt-get update && apt-get install -y --no-install-recommends streamlink \
+# sites streamlink misses. Install the CURRENT streamlink from pip — Debian's apt
+# build is years old and can't resolve today's YouTube. yt-dlp is the standalone
+# release binary (also always current).
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip \
+ && pip install --no-cache-dir --break-system-packages streamlink \
  && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
  && chmod +x /usr/local/bin/yt-dlp \
  && streamlink --version && yt-dlp --version \
