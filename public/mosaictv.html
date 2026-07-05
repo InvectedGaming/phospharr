@@ -28,7 +28,9 @@
     // works the same on any browser with Media Source Extensions.
     var KEY = new URLSearchParams(location.search).get("key") || "";
     var v = document.getElementById("v"), msg = document.getElementById("msg"), tap = document.getElementById("tap"), errEl = document.getElementById("err");
-    var SRC = "/mosaic/live.ts?key=" + encodeURIComponent(KEY);
+    // ABSOLUTE url — mpegts.js fetches inside a Web Worker, which can't resolve
+    // a relative path (same trap the app's live player hit).
+    var SRC = location.origin + "/mosaic/live.ts?key=" + encodeURIComponent(KEY);
     var WAITING = "<div>Waiting for the mosaic…</div><div class='sub'>pick channels in the app</div>";
     var STARTING = "<div>Starting the mosaic…</div><div class='sub'>first tune can take a few seconds</div>";
     var player = null, started = false, hasChannels = false, playing = false, vsig = "", reloadAt = 0;
