@@ -93,7 +93,7 @@ export const streams = sqliteTable(
     // How to turn stream.url into a byte stream: null = raw MPEG-TS over fetch
     // (provider streams); "streamlink" = resolve a platform page (Twitch/YouTube/
     // Kick) via streamlink→ffmpeg; "ffmpeg" = a direct HLS (.m3u8) ffmpeg opens.
-    resolver: text("resolver", { enum: ["streamlink", "ffmpeg"] }),
+    resolver: text("resolver", { enum: ["streamlink", "ffmpeg", "ytdlp"] }),
     lastProbedAt: integer("last_probed_at", { mode: "timestamp" }),
     qualityScore: real("quality_score").notNull().default(0), // computed rank
   },

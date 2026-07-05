@@ -16,6 +16,11 @@ import { providerEgress } from "../net/egress.ts";
 
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const STREAMLINK = process.env.PHOSPHARR_STREAMLINK || "streamlink";
+const YTDLP = process.env.PHOSPHARR_YTDLP || "yt-dlp";
+// h264 encoder for sources whose codec MPEG-TS can't carry (YouTube = VP9/AV1).
+const VENC = process.env.PHOSPHARR_CAST_ENCODER === "h264_nvenc"
+  ? ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "6M", "-pix_fmt", "yuv420p"]
+  : ["-c:v", "libx264", "-preset", "veryfast", "-b:v", "6M", "-pix_fmt", "yuv420p"];
 
 // Minimal structural reader — the muxer only ever calls read(); this avoids the
 // DOM-vs-Bun ReadableStreamDefaultReader type mismatch (Bun adds readMany).
@@ -25,12 +30,13 @@ export interface OpenedSource {
   close: () => void;
 }
 
-// ffmpeg output leg shared by both resolver modes: normalize to MPEG-TS the
-// muxer/TsPreroll can align. Video copied (Twitch/most YouTube live is H.264);
-// audio → AAC + aresample to hold sync over long sessions.
-const FF_OUT = [
+// ffmpeg output leg → MPEG-TS the muxer/TsPreroll can align. Audio → AAC with
+// aresample to hold sync over long sessions. Video is COPIED for H.264 sources
+// (Twitch/Kick/most direct HLS) and TRANSCODED when the source codec can't ride
+// in MPEG-TS (YouTube VP9/AV1).
+const ffOut = (copyVideo: boolean) => [
   "-map", "0:v:0", "-map", "0:a:0?",
-  "-c:v", "copy",
+  ...(copyVideo ? ["-c:v", "copy"] : [...VENC, "-g", "50", "-bf", "0"]),
   "-af", "aresample=async=1000:min_hard_comp=0.100:first_pts=0",
   "-c:a", "aac", "-ac", "2", "-b:a", "128k",
   "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
@@ -57,23 +63,37 @@ export async function openSource(stream: Stream, signal: AbortSignal): Promise<O
 
   let out: ReturnType<typeof Bun.spawn>;
   if (stream.resolver === "streamlink") {
-    // streamlink pulls the platform's live HLS continuously and writes the raw
-    // stream to stdout; ffmpeg remuxes it to MPEG-TS.
+    // Twitch/Kick: streamlink continuously restreams the live HLS to stdout;
+    // ffmpeg remuxes to MPEG-TS. These are H.264 → copy video.
     const sl = Bun.spawn(
       [STREAMLINK, "--stdout", "--default-stream", "best", "--hls-live-restart", "--retry-streams", "5", "--retry-max", "0", "--url", stream.url],
       { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
     );
     procs.push(sl);
     out = Bun.spawn(
-      [FFMPEG, "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer+genpts", "-i", "pipe:0", ...FF_OUT],
+      [FFMPEG, "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer+genpts", "-i", "pipe:0", ...ffOut(true)],
       { stdin: sl.stdout, stdout: "pipe", stderr: "ignore" },
+    );
+    procs.push(out);
+  } else if (stream.resolver === "ytdlp") {
+    // YouTube (and other yt-dlp sites): yt-dlp pipes the live stream to stdout.
+    // DENO gives it the JS runtime YouTube now demands; video is VP9/AV1 so we
+    // TRANSCODE to H.264. Best-effort — Google actively fights datacenter IPs.
+    const dl = Bun.spawn(
+      [YTDLP, "--quiet", "--no-warnings", "--js-runtimes", "deno", "-f", "bestvideo[height<=1080]+bestaudio/best", "-o", "-", stream.url],
+      { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { ...process.env, PATH: `${process.env.PATH}:/usr/local/bin` } },
+    );
+    procs.push(dl);
+    out = Bun.spawn(
+      [FFMPEG, "-hide_banner", "-loglevel", "error", "-fflags", "nobuffer+genpts", "-i", "pipe:0", ...ffOut(false)],
+      { stdin: dl.stdout, stdout: "pipe", stderr: "ignore" },
     );
     procs.push(out);
   } else {
     // Direct HLS: ffmpeg opens the URL itself, with reconnect for flaky CDNs.
     out = Bun.spawn(
       [FFMPEG, "-hide_banner", "-loglevel", "error", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-fflags", "nobuffer+genpts", "-i", stream.url, ...FF_OUT],
+        "-fflags", "nobuffer+genpts", "-i", stream.url, ...ffOut(true)],
       { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
     );
     procs.push(out);
@@ -82,11 +102,10 @@ export async function openSource(stream: Stream, signal: AbortSignal): Promise<O
 }
 
 /** Classify a user-supplied URL into a resolver (or null for a raw .ts). */
-export function resolverFor(url: string): "streamlink" | "ffmpeg" | null {
+export function resolverFor(url: string): "streamlink" | "ffmpeg" | "ytdlp" | null {
   const u = url.trim().toLowerCase();
-  if (/^https?:\/\/[^/]*\b(twitch\.tv|youtube\.com|youtu\.be|kick\.com|tiktok\.com|facebook\.com|dlive\.tv|nimo\.tv|trovo\.live)\b/.test(u)) {
-    return "streamlink";
-  }
+  if (/^https?:\/\/[^/]*\b(youtube\.com|youtu\.be)\b/.test(u)) return "ytdlp"; // YouTube → yt-dlp+deno (JS runtime)
+  if (/^https?:\/\/[^/]*\b(twitch\.tv|kick\.com|tiktok\.com|dlive\.tv|nimo\.tv|trovo\.live)\b/.test(u)) return "streamlink";
   const path = u.replace(/[?#].*$/, "");
   if (path.endsWith(".m3u8")) return "ffmpeg"; // direct HLS
   if (path.endsWith(".ts")) return null; // raw MPEG-TS — fetch handles it

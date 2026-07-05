@@ -65,7 +65,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
  && pip install --no-cache-dir --break-system-packages streamlink \
  && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
  && chmod +x /usr/local/bin/yt-dlp \
- && streamlink --version && yt-dlp --version \
+ # deno: the JS runtime yt-dlp needs to solve YouTube's player challenges.
+ && curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
+ && unzip -o /tmp/deno.zip -d /usr/local/bin && chmod +x /usr/local/bin/deno && rm /tmp/deno.zip \
+ && streamlink --version && yt-dlp --version && deno --version \
  && rm -rf /var/lib/apt/lists/*
 
 # microsocks isn't conveniently packaged — build the tiny single-file proxy.
