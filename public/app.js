@@ -3592,7 +3592,8 @@ function customScreen() {
     // success re-renders the screen (loadCustom → render), clearing the form.
   });
 
-  const urlRow = h("div", { style: "position:relative;display:flex;gap:10px;flex-wrap:wrap;align-items:center" }, url, checkBtn);
+  const browseBtn = h("button", { onClick: openTwitchBrowse, style: "height:40px;padding:0 16px;border-radius:10px;border:1px solid rgba(145,70,255,0.5);background:rgba(145,70,255,0.15);color:#c9b3ff;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:7px" }, icon("search", 15, 0.85), "Browse Twitch");
+  const urlRow = h("div", { style: "position:relative;display:flex;gap:10px;flex-wrap:wrap;align-items:center" }, url, checkBtn, browseBtn);
   const form = h("div", { style: "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px;max-width:680px" },
     h("div", { style: "display:flex;align-items:center;gap:9px" },
       h("div", { style: "font-size:14px;font-weight:700;color:#eef0f2" }, "Add a live stream"), badge),
@@ -3630,6 +3631,58 @@ function customScreen() {
         : h("div", { style: "display:flex;flex-direction:column;gap:10px" }, ...cards)));
 }
 function cfInput() { return "flex:1;min-width:180px;height:40px;padding:0 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#eef0f2;font-size:13.5px;font-family:inherit;outline:none"; }
+
+// Browse-Twitch overlay: a native grid of popular + searchable live channels
+// (Twitch public GQL). Click a card → adds it as a channel and closes.
+function openTwitchBrowse() {
+  const grid = h("div", { style: "display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;padding:4px 2px 8px" });
+  const status = h("div", { style: "padding:40px;text-align:center;color:#8c9298;font-size:13.5px" }, "Loading popular streams…");
+  const fmtViewers = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "K" : String(n);
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", esc); };
+  const esc = (e) => { if (e.key === "Escape") close(); };
+
+  const paint = (items) => {
+    grid.textContent = ""; status.style.display = items.length ? "none" : "block";
+    if (!items.length) { status.textContent = "No live channels found."; return; }
+    for (const s of items) {
+      const card = h("div", { title: "Add " + s.name, style: "cursor:pointer;border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);transition:border-color .14s", onMouseenter: (e) => e.currentTarget.style.borderColor = "rgba(145,70,255,0.6)", onMouseleave: (e) => e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)" },
+        h("div", { style: "position:relative;aspect-ratio:16/9;background:#0a0c0f" },
+          s.thumb ? h("img", { src: s.thumb, loading: "lazy", style: "width:100%;height:100%;object-fit:cover;display:block", onError: (e) => e.target.remove() }) : null,
+          s.live ? h("span", { style: "position:absolute;top:8px;left:8px;font-size:10px;font-weight:800;letter-spacing:.05em;color:#fff;background:#e0163a;border-radius:5px;padding:2px 7px" }, "● LIVE") : h("span", { style: "position:absolute;top:8px;left:8px;font-size:10px;font-weight:700;color:#c3c8cd;background:rgba(8,10,12,0.7);border-radius:5px;padding:2px 7px" }, "OFFLINE"),
+          s.viewers ? h("span", { style: "position:absolute;bottom:8px;right:8px;font-size:11px;font-weight:700;color:#fff;background:rgba(8,10,12,0.75);border-radius:5px;padding:2px 7px" }, fmtViewers(s.viewers) + " viewers") : null),
+        h("div", { style: "padding:9px 11px 11px" },
+          h("div", { style: "font-size:13px;font-weight:700;color:#eef0f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, s.name),
+          h("div", { style: "font-size:11.5px;color:#9146ff;font-weight:600;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, s.game || "Twitch"),
+          s.title ? h("div", { style: "font-size:11px;color:#7e858c;margin-top:3px;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical" }, s.title) : null));
+      card.addEventListener("click", async () => {
+        card.style.opacity = "0.5"; card.style.pointerEvents = "none";
+        await addCustom({ name: s.name, url: "https://twitch.tv/" + s.login, now: s.title || "", logoUrl: s.thumb || "" });
+        close();
+      });
+      grid.appendChild(card);
+    }
+  };
+
+  let searchT = null;
+  const load = async (q) => {
+    status.style.display = "block"; status.textContent = q ? "Searching “" + q + "”…" : "Loading popular streams…"; grid.textContent = "";
+    try { const r = await fetch("/api/discover/twitch" + (q ? "?q=" + encodeURIComponent(q) : "")); paint(r.ok ? await r.json() : []); }
+    catch { status.textContent = "Couldn't reach Twitch."; }
+  };
+  const search = h("input", { placeholder: "Search Twitch channels…", style: "flex:1;min-width:0;height:42px;padding:0 14px;border-radius:11px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#eef0f2;font-size:14px;font-family:inherit;outline:none" });
+  search.addEventListener("input", () => { if (searchT) clearTimeout(searchT); searchT = setTimeout(() => load(search.value.trim()), 350); });
+
+  const overlay = h("div", { onClick: close, style: "position:fixed;inset:0;z-index:80;background:rgba(5,6,8,0.82);backdrop-filter:blur(6px);display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto" },
+    h("div", { onClick: (e) => e.stopPropagation(), style: "width:min(1000px,100%);background:#141619;border:1px solid rgba(255,255,255,0.1);border-radius:18px;box-shadow:0 30px 90px rgba(0,0,0,0.7);display:flex;flex-direction:column;max-height:90vh;overflow:hidden" },
+      h("div", { style: "flex:none;display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid rgba(255,255,255,0.07)" },
+        h("div", { style: "display:flex;align-items:center;gap:8px;font-size:15px;font-weight:800;color:#c9b3ff" }, icon("search", 16, 0.85), "Browse Twitch"),
+        search,
+        h("button", { onClick: close, style: "width:34px;height:34px;flex:none;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("x", 15, 0.7))),
+      h("div", { style: "flex:1;overflow:auto;padding:14px 18px 18px" }, status, grid)));
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", esc);
+  load("");
+}
 
 function sourcesScreen() {
   const list = state.providers;

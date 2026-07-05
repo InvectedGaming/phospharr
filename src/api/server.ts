@@ -1115,6 +1115,15 @@ app.get("/api/custom-channels", async (c) => {
   const rows = await db.select().from(channels).where(eq(channels.kind, "live")).orderBy(channels.number);
   return c.json(rows);
 });
+// Twitch discovery: browse popular live channels + search (public GQL, no creds).
+app.get("/api/discover/twitch", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const { topStreams, searchChannels } = await import("../discover/twitch.ts");
+  const q = c.req.query("q");
+  const items = q && q.trim() ? await searchChannels(q.trim()) : await topStreams();
+  return c.json(items);
+});
+
 // Test a URL before saving — resolves it briefly and reports ok / the real error.
 app.post("/api/custom-channels/probe", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;
