@@ -40,10 +40,10 @@ export function persistentKeyframeFeed(
 ): ReadableStream<Uint8Array> {
   // Structural reader type — Bun's ReadableStreamDefaultReader and the DOM
   // lib's disagree (readMany), and naming either fails under the other's globals.
-  type TSReader = { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(reason?: unknown): unknown };
+  type TSReader = { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(reason?: unknown): Promise<unknown> };
   let reader: TSReader | null = keyframeAlignedStream(first).getReader();
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  signal?.addEventListener("abort", () => { try { reader?.cancel(); } catch { /* noop */ } }, { once: true });
+  signal?.addEventListener("abort", () => { void reader?.cancel().catch(() => { /* noop */ }); }, { once: true });
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       while (true) {
@@ -69,7 +69,7 @@ export function persistentKeyframeFeed(
         }
       }
     },
-    cancel() { try { reader?.cancel(); } catch { /* noop */ } },
+    cancel() { void reader?.cancel().catch(() => { /* noop */ }); },
   }, new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }));
 }
 
@@ -191,6 +191,6 @@ export function keyframeAlignedStream(src: ReadableStream<Uint8Array>): Readable
         if (emitted) return; // yield to the consumer
       }
     },
-    cancel() { try { reader.cancel(); } catch { /* noop */ } },
+    cancel() { void reader.cancel().catch(() => { /* noop */ }); },
   }, new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }));
 }

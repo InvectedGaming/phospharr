@@ -155,7 +155,10 @@ class TranscodeChannel {
     this.grace = null;
     if (this.subs.size > 0) return;
     try { this.proc?.kill(); } catch { /* noop */ }
-    try { this.rawStream?.cancel(); } catch { /* noop */ }
+    // Belt over proc.kill(): the muxer stream is LOCKED by Bun.spawn's stdin, so
+    // this cancel() rejects with ERR_INVALID_STATE — swallow the promise (a bare
+    // try/catch doesn't) and let the dying proc release the stream.
+    void this.rawStream?.cancel().catch(() => { /* locked by spawn stdin */ });
     for (const sub of this.subs.values()) sub.close();
     this.subs.clear();
     this.proc = null;

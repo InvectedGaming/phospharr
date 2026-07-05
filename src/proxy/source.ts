@@ -59,7 +59,12 @@ export async function openSource(stream: Stream, signal: AbortSignal): Promise<O
       ...(eg.proxy ? { proxy: eg.proxy } : {}),
     });
     if (!res.ok || !res.body) throw new Error(`upstream ${res.status}`);
-    return { reader: res.body.getReader(), close: () => { try { res.body!.cancel(); } catch { /* gone */ } } };
+    // Cancel via the READER: getReader() locks the body, so body.cancel() on the
+    // locked stream rejects with ERR_INVALID_STATE — and since cancel() returns
+    // a promise, the try/catch never caught it (unhandled rejection on every
+    // muxer teardown). The reader owns the lock; its cancel() is the legal one.
+    const reader = res.body.getReader();
+    return { reader, close: () => { void reader.cancel().catch(() => { /* gone */ }) } };
   }
 
   const procs: ReturnType<typeof Bun.spawn>[] = [];
