@@ -54,6 +54,11 @@ const FFMPEG_ARGS = [
   "-i", "pipe:0",
   "-map", "0:v:0", "-map", "0:a:0?",
   "-c:v", "copy",
+  // aresample=async keeps the (re-encoded) audio locked to the video timeline by
+  // stretching/squeezing inaudibly — without it, a copied-video / re-encoded-audio
+  // stream slowly drifts out of sync over a long session (the "watch long enough
+  // and A/V desync" bug). min_hard_comp bounds abrupt corrections.
+  "-af", "aresample=async=1000:min_hard_comp=0.100:first_pts=0",
   "-c:a", "aac", "-ac", "2", "-b:a", "128k",
   "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0",
   "pipe:1",

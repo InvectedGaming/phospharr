@@ -54,7 +54,9 @@ async function start(channelId: number): Promise<Session | null> {
     "-analyzeduration", "1000000", "-probesize", "1000000",
     "-i", `http://127.0.0.1:${PORT}/mosaicfeed/${channelId}?key=${key}`,
     "-map", "0:v:0", "-map", "0:a:0?",
-    "-c:v", "copy", "-c:a", "aac", "-ac", "2", "-b:a", "128k",
+    "-c:v", "copy",
+    "-af", "aresample=async=1000:min_hard_comp=0.100:first_pts=0", // lock audio to the timeline (no long-session drift)
+    "-c:a", "aac", "-ac", "2", "-b:a", "128k",
     "-f", "hls",
     "-hls_time", "2", "-hls_list_size", "6",
     "-hls_flags", "delete_segments+independent_segments",

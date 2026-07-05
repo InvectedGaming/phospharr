@@ -3904,11 +3904,29 @@ function refreshSleepBadge() {
   else b.style.display = "none";
 }
 
+let syncWatchdog = null;
 function destroyMpegts() {
+  if (syncWatchdog) { clearInterval(syncWatchdog); syncWatchdog = null; }
   if (mpegtsPlayer) {
     try { mpegtsPlayer.destroy(); } catch { /* noop */ }
     mpegtsPlayer = null;
   }
+}
+
+// Long-session A/V realign for the LIVE player. mpegts.js can let the buffer
+// grow and the audio/video decoders drift over hours; a MediaSource seek re-aligns
+// both tracks (they resume from the same currentTime in lockstep). We only nudge
+// when the buffered latency is clearly excessive, so it's rare and near-invisible
+// — not the constant edge-chasing that looks like "skipping".
+function startSyncWatchdog(video) {
+  if (syncWatchdog) clearInterval(syncWatchdog);
+  syncWatchdog = setInterval(() => {
+    if (!video || video.paused || !video.buffered || !video.buffered.length) return;
+    if (typeof behindSecNow === "function" && timeshiftActive && timeshiftActive()) return; // don't fight timeshift seeks
+    const end = video.buffered.end(video.buffered.length - 1);
+    const latency = end - video.currentTime;
+    if (latency > 8) { try { video.currentTime = end - 1.5; } catch { /* seeking */ } } // snap back toward live
+  }, 30000);
 }
 
 // ── Timeshift: pause / rewind / go-live ──
@@ -4183,6 +4201,7 @@ function attachMpegts(video, channelId, transcode, behindSec) {
   player.load();
   video.play().catch(() => {});
   video.addEventListener("playing", () => setPlayerStatus(""), { once: true });
+  startSyncWatchdog(video); // periodic A/V realign for long sessions
 }
 
 // The fullscreen chrome (title bar + surf/close controls + status pill). Pure
