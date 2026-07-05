@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Live streams (custom channels)
+- Add any live stream as a guide channel: **Manage → Live streams**. Paste a
+  Twitch/Kick link, a YouTube live, or a direct `.m3u8`/`.ts`. Each becomes a
+  numbered channel (block 20–99) with an editable "what's on now" that shows as a
+  red LIVE block in the guide and a LIVE programme in the Emby/XMLTV export.
+- Resolved server-side and fed through the same muxer as everything else, so they
+  get multiplexing, keep-warm, failover, and the stall watchdog. Twitch/Kick via
+  streamlink (H.264 copy); YouTube via yt-dlp + a deno JS runtime with a video
+  transcode (YouTube live is VP9); direct HLS via ffmpeg.
+- **Reliability note:** Twitch, Kick, and direct URLs are solid. YouTube works
+  best-effort — Google actively blocks datacenter IPs, so a self-hosted box on a
+  VPS may get "not available"; a home/residential connection fares better.
+- Player polish this cycle: fixed first-launch APK crash, mobile rotation zoom,
+  fullscreen fit; added Fit/Fill + pinch-zoom; long-session A/V drift fix.
+
 ## 1.0.0-rc.3 — 2026-07-04
 
 Everything-app release: on-demand library, more devices, watch parties, and a
