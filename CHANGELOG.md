@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Mosaic reliability overhaul
+- The compositor encode is now **supervised**: an unexpected ffmpeg death closes
+  viewer streams (players reconnect instead of hanging on a frozen picture) and
+  restarts the encode with crash-loop backoff. A wedged encode (alive, zero
+  output for 25s) is watchdog-restarted the same way.
+- **Audio-tile switching no longer dies after layout changes**: restarts are
+  serialized (the old encode fully exits before the new one spawns) and the azmq
+  broker binds a dedicated port, so the volume-flip commands always reach the
+  running encode.
+- **Dead tiles heal**: `/mosaicfeed` re-dials the channel when an upstream ends
+  cleanly (provider drop, mux failover) instead of letting that ffmpeg input EOF
+  — each splice restarts at PAT+PMT+keyframe so the decoder resyncs in a GOP.
+- A viewer that falls seconds behind live is disconnected (and reconnects at the
+  edge) instead of being fed a corrupted stream — the old chunk-dropping
+  guaranteed decoder errors and reload spirals.
+- The TV page (`/mosaic/tv`) now recovers from *everything*: reloads on stream
+  end (server-side restart), and a stall watchdog reloads when the picture
+  freezes without an error event.
+
 ### Live streams (custom channels)
 - Add any live stream as a guide channel: **Manage → Live streams**. Paste a
   Twitch/Kick link, a YouTube live, or a direct `.m3u8`/`.ts`. Each becomes a

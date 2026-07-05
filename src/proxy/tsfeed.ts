@@ -20,6 +20,59 @@ const PRIME_TIMEOUT_MS = 6000; // give up waiting for a flagged keyframe → pas
 
 const VIDEO_STREAM_TYPES = new Set([0x01, 0x02, 0x1b, 0x24, 0x06, 0x10, 0x21]); // MPEG1/2, H.264, HEVC, etc.
 
+/**
+ * A mosaic tile feed that NEVER ends on its own.
+ *
+ * The compositor's ffmpeg inputs use -reconnect, but that only covers HTTP-level
+ * failures. When an upstream ends CLEANLY (provider dropped the stream, muxer
+ * failover closed the mux), the input hits EOF and ffmpeg never re-dials it —
+ * the tile goes black until the next layout change. This wrapper re-opens the
+ * channel on EOF and keeps emitting; every re-dial passes through
+ * keyframeAlignedStream, so each splice starts with PAT+PMT+IDR and the
+ * decoder resyncs within a GOP. If the channel has no playable source, it
+ * retries briefly then ends the response — ffmpeg's own reconnect takes over
+ * the long-horizon retry without us holding server resources.
+ */
+export function persistentKeyframeFeed(
+  open: () => Promise<ReadableStream<Uint8Array> | null>,
+  first: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): ReadableStream<Uint8Array> {
+  // Structural reader type — Bun's ReadableStreamDefaultReader and the DOM
+  // lib's disagree (readMany), and naming either fails under the other's globals.
+  type TSReader = { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(reason?: unknown): unknown };
+  let reader: TSReader | null = keyframeAlignedStream(first).getReader();
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  signal?.addEventListener("abort", () => { try { reader?.cancel(); } catch { /* noop */ } }, { once: true });
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      while (true) {
+        if (signal?.aborted) { try { controller.close(); } catch { /* noop */ } return; }
+        if (!reader) {
+          // Re-dial. A momentarily sourceless channel (muxer slot contention,
+          // provider flap) gets a few quick retries; still nothing → close and
+          // let ffmpeg's -reconnect back off and re-request.
+          let next: ReadableStream<Uint8Array> | null = null;
+          for (let i = 0; i < 4 && !next && !signal?.aborted; i++) {
+            next = await open().catch(() => null);
+            if (!next) await sleep(1500);
+          }
+          if (!next) { try { controller.close(); } catch { /* noop */ } return; }
+          reader = keyframeAlignedStream(next).getReader();
+        }
+        try {
+          const { done, value } = await reader!.read();
+          if (done) { reader = null; await sleep(300); continue; }
+          if (value) { controller.enqueue(value); return; }
+        } catch {
+          reader = null; await sleep(300);
+        }
+      }
+    },
+    cancel() { try { reader?.cancel(); } catch { /* noop */ } },
+  }, new ByteLengthQueuingStrategy({ highWaterMark: 8 * 1024 * 1024 }));
+}
+
 export function keyframeAlignedStream(src: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
   const reader = src.getReader();
   let buf: Uint8Array<ArrayBufferLike> = new Uint8Array(0);

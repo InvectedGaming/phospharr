@@ -54,6 +54,9 @@
         // keeps the composite warm across reconnects, so a calm retry reattaches fast.
         scheduleReload(playing ? 2000 : 5000);
       });
+      // A live stream that ENDS isn't an error to mpegts.js — but for us it means
+      // the server restarted the encode (crash supervision / watchdog). Reattach.
+      player.on(mpegts.Events.LOADING_COMPLETE, function () { scheduleReload(1000); });
       player.load();
       v.play().catch(function () {});
     }
@@ -88,6 +91,19 @@
         .catch(function () {});
     }
     poll(); setInterval(poll, 1500);
+
+    // Stall watchdog: a wedged stream (frozen decode, silent server-side death)
+    // fires no error and no end — the picture just stops. If currentTime hasn't
+    // advanced, reload the player. Patient while still buffering the first tune
+    // (cold provider dial can take ~15s), quick once we were actually playing.
+    var lastT = -1, lastAdvance = Date.now();
+    setInterval(function () {
+      if (!started || !hasChannels || !player) { lastT = -1; lastAdvance = Date.now(); return; }
+      var t = v.currentTime;
+      if (t !== lastT) { lastT = t; lastAdvance = Date.now(); return; }
+      var limit = playing ? 8000 : 25000;
+      if (Date.now() - lastAdvance > limit) { lastAdvance = Date.now(); showMsg(STARTING); start(); }
+    }, 2000);
   })();
   </script>
 </body>

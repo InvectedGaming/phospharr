@@ -20,7 +20,7 @@ import { timeshift } from "../proxy/timeshift.ts";
 import { mosaic } from "../proxy/mosaic.ts";
 import { compositor } from "../proxy/compositor.ts";
 import { readFileSync } from "node:fs";
-import { keyframeAlignedStream } from "../proxy/tsfeed.ts";
+import { persistentKeyframeFeed } from "../proxy/tsfeed.ts";
 import { transcoder } from "../proxy/transcode.ts";
 import { pool } from "../scheduler/pool.ts";
 import * as hdhr from "../tuner/hdhr.ts";
@@ -449,9 +449,13 @@ app.get("/mosaicfeed/:channelId", async (c) => {
   if (!Number.isFinite(channelId)) return c.text("bad channel id", 400);
   const auth = streamAuth(c);
   if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
-  const body = await muxer.open(channelId, c.req.raw.signal);
+  const signal = c.req.raw.signal;
+  const body = await muxer.open(channelId, signal);
   if (!body) return c.text("no playable source", 503);
-  return new Response(keyframeAlignedStream(body), { headers: STREAM_HEADERS });
+  // Persistent: a clean upstream EOF (provider drop, mux failover) re-dials the
+  // channel instead of ending the input — a dead tile heals instead of staying
+  // black until the next layout change.
+  return new Response(persistentKeyframeFeed(() => muxer.open(channelId, signal), body, signal), { headers: STREAM_HEADERS });
 });
 // Live-edge feed (no keyframe preroll/backlog) — the compositor uses this so the
 // cast tracks live (~1-2s) instead of starting a GOP behind.

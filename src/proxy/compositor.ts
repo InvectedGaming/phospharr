@@ -23,6 +23,13 @@ const PORT = Number(process.env.PORT ?? 7777);
 // 720p — fine for the GPU (NVENC). Without a GPU (PHOSPHARR_CAST_ENCODER unset →
 // libx264) drop this to 960x540 if the CPU can't hold realtime on a busy grid.
 const W = 1280, H = 720, FPS = 25;
+// Explicit azmq endpoint. The filter's default (tcp://*:5555) is a shared
+// well-known port: if the OLD encode hasn't fully exited when the new one
+// spawns, the new azmq can't bind and every audio flip after that silently
+// goes nowhere. A dedicated port (+ serialized restarts below) keeps the
+// broker owned by exactly the running encode.
+const ZMQ_PORT = Number(process.env.PHOSPHARR_COMPOSITOR_ZMQ_PORT || 5595);
+const ZMQ_ENDPOINT = `tcp://127.0.0.1:${ZMQ_PORT}`;
 
 export type MosaicLayout = "2up" | "2x2" | "3x3";
 export interface MosaicState { channels: number[]; layout: MosaicLayout; focus: number | null; audio: number; names?: string[] }
@@ -79,7 +86,7 @@ function buildArgs(state: MosaicState): string[] | null {
   // ffmpeg `volume@aN volume X` over zmq — INSTANT, no restart. asetpts re-bases
   // each to the 0-based video so A/V stays in sync.
   drawn.forEach((_, i) => { fc += `[${i}:a]asetpts=PTS-STARTPTS,volume@a${i}=${i === audioPos ? "1.0" : "0.0"}:eval=frame[av${i}];`; });
-  fc += `${drawn.map((_, i) => `[av${i}]`).join("")}amix=inputs=${drawn.length}:normalize=0:dropout_transition=0[amixpre];[amixpre]azmq[aout];`;
+  fc += `${drawn.map((_, i) => `[av${i}]`).join("")}amix=inputs=${drawn.length}:normalize=0:dropout_transition=0[amixpre];[amixpre]azmq=bind_address='tcp\\://127.0.0.1\\:${ZMQ_PORT}'[aout];`;
   fc = fc.replace(/;$/, "");
 
   return [
@@ -94,7 +101,7 @@ function buildArgs(state: MosaicState): string[] | null {
   ];
 }
 
-type Sub = { push: (c: Uint8Array) => void; close: () => void };
+type Sub = { push: (c: Uint8Array) => boolean; close: () => void };
 
 class Compositor {
   private proc: ReturnType<typeof Bun.spawn> | null = null;
@@ -104,6 +111,12 @@ class Compositor {
   private idle: ReturnType<typeof setInterval> | null = null;
   private warmUntil = 0; // keep the encode alive (no viewers) until this time — pre-warm + reconnect grace
   private lastErr = "";
+  private procStarted = 0; // when the current encode spawned
+  private lastOut = 0; // last time ffmpeg produced output (watchdog)
+  private crashes = 0; // consecutive early exits → restart backoff
+  private restartQueued = false; // a restart is queued on the chain (it reads the latest state)
+  private restarting = false; // a restart is executing right now
+  private chain: Promise<void> = Promise.resolve(); // serializes restarts: old encode fully exits before the new spawns
 
   getState(): MosaicState { return this.state; }
   running(): boolean { return !!this.proc; }
@@ -125,7 +138,7 @@ class Compositor {
     // so the TV attaches to an already-running stream instead of triggering a cold
     // 15s provider-dial. Keep it warm for a window so the TV has time to open.
     this.warmUntil = Date.now() + 45_000;
-    if (videoChanged || !this.proc) this.restart();
+    if (videoChanged || !this.proc) this.requestRestart();
     else if (audioChanged) this.applyAudio();
   }
 
@@ -137,27 +150,102 @@ class Compositor {
     const audioPos = Math.min(Math.max(0, this.state.audio | 0), all.length - 1);
     all.forEach((_, i) => {
       const cmd = `volume@a${i} volume ${i === audioPos ? "1.0" : "0.0"}`;
-      try { Bun.spawn(["bash", "-c", `echo '${cmd}' | timeout 3 ${ZMQSEND}`], { stdout: "ignore", stderr: "ignore" }); } catch { /* best effort */ }
+      try {
+        const p = Bun.spawn(["bash", "-c", `echo '${cmd}' | timeout 3 ${ZMQSEND} -b '${ZMQ_ENDPOINT}'`], { stdout: "ignore", stderr: "ignore" });
+        void p.exited.then((code) => { if (code !== 0) this.lastErr = (this.lastErr + `\n[audio flip zmq failed (exit ${code})]`).slice(-2000); });
+      } catch { /* best effort */ }
     });
   }
 
-  private restart(): void {
-    this.kill();
+  /** Queue a restart. Restarts are serialized on a chain — the old encode must
+   * FULLY exit before the new one spawns, or the new azmq can't bind the port
+   * and audio flips die. One queued restart is enough: it reads the state at
+   * execution time, so rapid layout changes collapse into a single re-encode. */
+  private requestRestart(): void {
+    if (this.restartQueued) return;
+    this.restartQueued = true;
+    this.chain = this.chain.then(async () => {
+      this.restartQueued = false;
+      this.restarting = true;
+      try { await this.doRestart(); } finally { this.restarting = false; }
+    });
+  }
+
+  private async doRestart(): Promise<void> {
+    await this.killAndWait();
+    // Torn down (or reaped) while we were queued → don't resurrect.
+    if (this.subs.size === 0 && Date.now() > this.warmUntil) return;
     const args = buildArgs(this.state);
     if (!args) return;
-    const proc = Bun.spawn([FFMPEG, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    let proc: ReturnType<typeof Bun.spawn>;
+    try {
+      proc = Bun.spawn([FFMPEG, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    } catch (e) {
+      this.lastErr = `ffmpeg spawn failed: ${e instanceof Error ? e.message : e}`;
+      return;
+    }
     this.proc = proc;
+    this.procStarted = Date.now();
+    this.lastOut = Date.now();
     this.lastErr = "";
     void this.pump(proc);
     void this.drain(proc);
-    proc.exited.then(() => { if (this.proc === proc) this.proc = null; });
+    void proc.exited.then((code) => this.onExit(proc, code));
     this.ensureIdle();
   }
 
-  /** Idle monitor: tear the encode down only after the keep-warm window with no viewers. */
+  /** Unexpected encode death (input collapse, encoder error, OOM-kill). The old
+   * behavior just nulled the pointer: attached viewers hung on a silent stream
+   * forever and nothing restarted — the "mosaic dies after a while". Now: close
+   * the viewers so their players reconnect cleanly, and bring the encode back
+   * (with backoff if it's crash-looping) so they reattach to a warm stream. */
+  private onExit(proc: ReturnType<typeof Bun.spawn>, code: number | undefined): void {
+    if (this.proc !== proc) return; // replaced or intentionally stopped
+    this.proc = null;
+    const uptime = Date.now() - this.procStarted;
+    this.crashes = uptime > 20_000 ? 0 : this.crashes + 1;
+    this.lastErr = (this.lastErr + `\n[encode exited (${code ?? "?"}) after ${Math.round(uptime / 1000)}s]`).slice(-2000);
+    const hadViewers = this.subs.size > 0;
+    this.closeSubs();
+    if (hadViewers || Date.now() < this.warmUntil) {
+      this.warmUntil = Math.max(this.warmUntil, Date.now() + 30_000); // hold the warm window for the reattach
+      const delay = Math.min(500 * 2 ** this.crashes, 15_000);
+      setTimeout(() => { if (!this.proc && !this.restartQueued && !this.restarting && buildArgs(this.state)) this.requestRestart(); }, delay);
+    }
+  }
+
+  /** Kill the current encode and WAIT for it to exit (bounded, then SIGKILL) so
+   * it releases the zmq port before a successor binds it. */
+  private async killAndWait(): Promise<void> {
+    const proc = this.proc;
+    if (!proc) return;
+    this.proc = null; // onExit sees the swap and treats this exit as intentional
+    try { proc.kill(); } catch { /* noop */ }
+    const timeout = (ms: number) => new Promise<"timeout">((r) => setTimeout(() => r("timeout"), ms));
+    if (await Promise.race([proc.exited, timeout(1500)]) === "timeout") {
+      try { proc.kill(9); } catch { /* noop */ }
+      await Promise.race([proc.exited, timeout(1000)]);
+    }
+  }
+
+  private closeSubs(): void {
+    for (const s of this.subs.values()) { try { s.close(); } catch { /* noop */ } }
+    this.subs.clear();
+  }
+
+  /** Idle monitor: reap the encode after the keep-warm window with no viewers,
+   * and watchdog a wedged one (process alive, zero output) back to life. */
   private ensureIdle(): void {
     if (this.idle) return;
-    this.idle = setInterval(() => { if (this.subs.size === 0 && Date.now() > this.warmUntil) this.stop(); }, 5_000);
+    this.idle = setInterval(() => {
+      if (this.subs.size === 0 && Date.now() > this.warmUntil) { this.stop(); return; }
+      // 25s of silence with viewers attached (past any cold-start dial) = wedged.
+      if (this.proc && !this.restartQueued && !this.restarting && this.subs.size > 0 && Date.now() - this.lastOut > 25_000) {
+        this.lastErr = (this.lastErr + "\n[watchdog: no output for 25s — restarting the encode]").slice(-2000);
+        this.closeSubs();
+        this.requestRestart();
+      }
+    }, 5_000);
   }
 
   private async pump(proc: ReturnType<typeof Bun.spawn>): Promise<void> {
@@ -166,7 +254,16 @@ class Compositor {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (value) for (const s of this.subs.values()) { try { s.push(value); } catch { /* slow client */ } }
+        if (!value) continue;
+        if (this.proc === proc) this.lastOut = Date.now();
+        // A sub that can't take the chunk is seconds behind live. Dropping a
+        // chunk mid-GOP corrupts its TS (decoder errors → player death spiral),
+        // so DISCONNECT it instead — its player reconnects at the live edge.
+        for (const [id, s] of [...this.subs]) {
+          let ok = false;
+          try { ok = s.push(value); } catch { /* closing */ }
+          if (!ok) { this.subs.delete(id); try { s.close(); } catch { /* noop */ } }
+        }
       }
     } catch { /* gone */ }
   }
@@ -186,13 +283,20 @@ class Compositor {
   /** A viewer (TV, in-app player, the channel). Live MPEG-TS; starts ffmpeg on first viewer. */
   open(signal?: AbortSignal): ReadableStream<Uint8Array> | null {
     if (!buildArgs(this.state)) return null;
-    if (!this.proc) this.restart();
+    // The sub only registers when the Response starts consuming — bump the warm
+    // window NOW so the queued restart can't mistake this for a stale teardown.
+    this.warmUntil = Math.max(this.warmUntil, Date.now() + 45_000);
+    if (!this.proc && !this.restartQueued && !this.restarting) this.requestRestart();
     this.ensureIdle();
     const id = ++this.seq;
     return new ReadableStream<Uint8Array>({
       start: (controller) => {
         this.subs.set(id, {
-          push: (chunk) => { if (controller.desiredSize !== null && controller.desiredSize <= 0) return; try { controller.enqueue(chunk); } catch { /* closing */ } },
+          push: (chunk) => {
+            if (controller.desiredSize !== null && controller.desiredSize <= 0) return false; // full — pump disconnects us
+            try { controller.enqueue(chunk); } catch { /* closing */ }
+            return true;
+          },
           close: () => { try { controller.close(); } catch { /* closed */ } },
         });
         signal?.addEventListener("abort", () => this.detach(id), { once: true });
@@ -207,9 +311,9 @@ class Compositor {
   private detach(id: number): void { this.subs.delete(id); if (this.subs.size === 0) this.warmUntil = Date.now() + 15_000; }
 
   stop(): void {
+    this.warmUntil = 0; // a queued restart checks this and stays down
     this.kill();
-    for (const s of this.subs.values()) { try { s.close(); } catch { /* noop */ } }
-    this.subs.clear();
+    this.closeSubs();
     if (this.idle) { clearInterval(this.idle); this.idle = null; }
   }
 }
