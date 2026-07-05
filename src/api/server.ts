@@ -1096,7 +1096,7 @@ app.get("/vod/play/episode/:id", async (c) => {
 });
 
 // ─── Custom live channels (esports, streamers — Twitch/YouTube/Kick/direct) ───
-import { resolverFor } from "../proxy/source.ts";
+import { resolverFor, probeSource } from "../proxy/source.ts";
 import { assignNumbersInBlocks } from "../content/lineup.ts";
 import { pool as slotPool } from "../scheduler/pool.ts";
 
@@ -1114,6 +1114,14 @@ app.get("/api/custom-channels", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;
   const rows = await db.select().from(channels).where(eq(channels.kind, "live")).orderBy(channels.number);
   return c.json(rows);
+});
+// Test a URL before saving — resolves it briefly and reports ok / the real error.
+app.post("/api/custom-channels/probe", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const b = (await c.req.json().catch(() => ({}))) as { url?: string };
+  const url = (b.url ?? "").trim();
+  if (!/^https?:\/\//.test(url)) return c.json({ ok: false, error: "enter an http(s) URL" });
+  return c.json(await probeSource(url));
 });
 app.post("/api/custom-channels", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;

@@ -3518,26 +3518,89 @@ async function addCustom(fields, btn) {
     return true;
   } catch { return false; }
 }
+// Client mirror of the server's resolverFor — for the badge + guidance.
+function platformInfo(url) {
+  const u = (url || "").trim().toLowerCase();
+  if (!/^https?:\/\//.test(u)) return null;
+  if (/\b(youtube\.com|youtu\.be)\b/.test(u)) return { label: "YouTube", color: "#ff0033", via: "yt-dlp", note: "best-effort — Google may block server IPs" };
+  if (/\btwitch\.tv\b/.test(u)) return { label: "Twitch", color: "#9146ff", via: "streamlink" };
+  if (/\bkick\.com\b/.test(u)) return { label: "Kick", color: "#53fc18", via: "streamlink" };
+  const p = u.replace(/[?#].*$/, "");
+  if (p.endsWith(".m3u8")) return { label: "Direct HLS", color: "#54b6ff", via: "ffmpeg" };
+  if (p.endsWith(".ts")) return { label: "Direct TS", color: "#54b6ff", via: "direct" };
+  return { label: "Stream", color: "#9aa6b2", via: "streamlink" };
+}
+// Guess a channel name from the URL so you rarely have to type one.
+function nameFromUrl(url) {
+  try {
+    const u = new URL(url);
+    if (/youtu/.test(u.host)) return "YouTube stream";
+    const seg = u.pathname.split("/").filter(Boolean);
+    const handle = seg.find((s) => !/^(videos?|live|watch|c|channel|@)$/i.test(s)) || seg[seg.length - 1] || u.host;
+    return handle.replace(/^@/, "").replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).slice(0, 40);
+  } catch { return ""; }
+}
+
 function customScreen() {
   const list = state.custom;
-  const name = h("input", { placeholder: "Channel name (e.g. ESL CS2)", style: cfInput() });
-  const url = h("input", { placeholder: "Twitch / YouTube / Kick link, or a direct .m3u8", style: cfInput() });
-  const now = h("input", { placeholder: "What's on now (optional, e.g. Pro League Finals)", style: cfInput() });
+  const name = h("input", { placeholder: "Channel name", style: cfInput() });
+  const url = h("input", { placeholder: "Paste a Twitch / YouTube / Kick link, or a direct .m3u8 / .ts", style: cfInput() });
+  const now = h("input", { placeholder: "What's on now (optional)", style: cfInput() });
   const logo = h("input", { placeholder: "Logo URL (optional)", style: cfInput() });
-  const addBtn = h("button", { style: "height:40px;padding:0 18px;border-radius:10px;border:none;background:" + AC + ";color:#06121c;font-size:13.5px;font-weight:800;cursor:pointer;white-space:nowrap", onClick: async (e) => {
-    if (!name.value.trim() || !/^https?:\/\//.test(url.value.trim())) { e.currentTarget.title = "Need a name and an http(s) URL"; return; }
-    e.currentTarget.textContent = "Adding…";
-    const ok = await addCustom({ name: name.value.trim(), url: url.value.trim(), now: now.value.trim(), logoUrl: logo.value.trim() });
-    e.currentTarget.textContent = "+ Add live channel";
-    if (ok) { name.value = url.value = now.value = logo.value = ""; }
-  } }, "+ Add live channel");
+  const badge = h("span", { style: "display:none" });
+  const result = h("div", { style: "display:none;font-size:12.5px;padding:9px 12px;border-radius:9px;line-height:1.45" });
+  const addBtn = h("button", { style: "height:40px;padding:0 18px;border-radius:10px;border:none;background:" + AC + ";color:#06121c;font-size:13.5px;font-weight:800;cursor:pointer;white-space:nowrap" }, "+ Add channel");
+  const checkBtn = h("button", { style: "height:40px;padding:0 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:7px" }, icon("badge-check", 15, 0.8), "Check stream");
 
-  const form = h("div", { style: "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px;max-width:640px" },
-    h("div", { style: "font-size:13px;font-weight:700;color:#dfe3e7" }, "Add a live stream"),
-    h("div", { style: "display:flex;gap:10px;flex-wrap:wrap" }, name, url),
-    h("div", { style: "display:flex;gap:10px;flex-wrap:wrap" }, now, logo),
-    h("div", { style: "display:flex;justify-content:flex-end" }, addBtn),
-    h("div", { style: "font-size:11.5px;color:#6b7178;line-height:1.5" }, "Twitch/YouTube/Kick links resolve automatically. They appear in the guide as a LIVE block using the “what's on now” text you can edit anytime."));
+  // Live platform detection + auto-name as you paste (imperative — no re-render).
+  url.addEventListener("input", () => {
+    const info = platformInfo(url.value);
+    result.style.display = "none";
+    if (info) {
+      badge.style.display = "inline-flex";
+      badge.setAttribute("style", "display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;letter-spacing:.03em;padding:3px 9px;border-radius:7px;color:#0a0c0f;background:" + info.color);
+      badge.textContent = info.label.toUpperCase();
+      if (!name.value.trim()) name.value = nameFromUrl(url.value);
+    } else badge.style.display = "none";
+  });
+
+  const showResult = (ok, text) => {
+    result.style.display = "block";
+    result.style.background = ok ? "rgba(47,174,92,0.12)" : "rgba(255,93,82,0.1)";
+    result.style.border = "1px solid " + (ok ? "rgba(47,174,92,0.35)" : "rgba(255,93,82,0.3)");
+    result.style.color = ok ? "#7fdca0" : "#ff8d84";
+    result.textContent = text;
+  };
+  checkBtn.addEventListener("click", async () => {
+    const u = url.value.trim();
+    if (!/^https?:\/\//.test(u)) { showResult(false, "Enter a full http(s):// URL first."); return; }
+    checkBtn.disabled = true; const label = checkBtn.textContent; checkBtn.textContent = "Checking… (up to 10s)";
+    try {
+      const r = await fetch("/api/custom-channels/probe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: u }) });
+      const d = await r.json();
+      if (d.ok) showResult(true, "✓ Works — resolved via " + (d.resolver || "direct") + ". Add it below.");
+      else showResult(false, "✗ Couldn't play this: " + (d.error || "no stream found") + (d.resolver === "ytdlp" ? " (YouTube from a server is often blocked — try a home connection or a different source.)" : ""));
+    } catch { showResult(false, "✗ Check failed to run."); }
+    checkBtn.disabled = false; checkBtn.textContent = ""; checkBtn.append(icon("badge-check", 15, 0.8), "Check stream");
+  });
+  addBtn.addEventListener("click", async () => {
+    if (!name.value.trim() || !/^https?:\/\//.test(url.value.trim())) { showResult(false, "Need a name and an http(s) URL."); return; }
+    addBtn.textContent = "Adding…"; addBtn.disabled = true;
+    const ok = await addCustom({ name: name.value.trim(), url: url.value.trim(), now: now.value.trim(), logoUrl: logo.value.trim() });
+    addBtn.disabled = false; addBtn.textContent = "+ Add channel";
+    if (!ok) showResult(false, "Couldn't add — is it already in your list?");
+    // success re-renders the screen (loadCustom → render), clearing the form.
+  });
+
+  const urlRow = h("div", { style: "position:relative;display:flex;gap:10px;flex-wrap:wrap;align-items:center" }, url, checkBtn);
+  const form = h("div", { style: "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px;max-width:680px" },
+    h("div", { style: "display:flex;align-items:center;gap:9px" },
+      h("div", { style: "font-size:14px;font-weight:700;color:#eef0f2" }, "Add a live stream"), badge),
+    urlRow,
+    result,
+    h("div", { style: "display:flex;gap:10px;flex-wrap:wrap" }, name, now),
+    h("div", { style: "display:flex;gap:10px;flex-wrap:wrap;align-items:center" }, logo, h("div", { style: "flex:1" }), addBtn),
+    h("div", { style: "font-size:11.5px;color:#6b7178;line-height:1.5" }, "Twitch, Kick and direct .m3u8/.ts links are the most reliable. Streams appear in the guide as a red LIVE block using the “what's on now” text (editable anytime)."));
 
   const cards = (list || []).map((ch) => {
     const nowField = h("input", { value: ch.customNow || "", placeholder: "What's on now…", style: "flex:1;min-width:120px;height:32px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:12.5px;font-family:inherit;outline:none" });
