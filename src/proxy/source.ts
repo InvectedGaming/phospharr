@@ -36,10 +36,15 @@ export interface OpenedSource {
 // in MPEG-TS (YouTube VP9/AV1).
 const ffOut = (copyVideo: boolean) => [
   "-map", "0:v:0", "-map", "0:a:0?",
-  ...(copyVideo ? ["-c:v", "copy"] : [...VENC, "-g", "50", "-bf", "0"]),
+  // dump_extra=freq=keyframe re-inserts H.264 SPS/PPS before EVERY keyframe.
+  // Twitch (and other platforms) emit them only once at the start, so a viewer
+  // attaching mid-stream via the muxer's keyframe preroll got a GOP with no
+  // SPS/PPS → mpegts.js couldn't decode it (the "live streams not playing" bug).
+  // Harmless on sources that already repeat them (duplicate headers are fine).
+  ...(copyVideo ? ["-c:v", "copy", "-bsf:v", "dump_extra=freq=keyframe"] : [...VENC, "-g", "50", "-bf", "0"]),
   "-af", "aresample=async=1000:min_hard_comp=0.100:first_pts=0",
   "-c:a", "aac", "-ac", "2", "-b:a", "128k",
-  "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
+  "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "-mpegts_flags", "+resend_headers", "pipe:1",
 ];
 
 export async function openSource(stream: Stream, signal: AbortSignal): Promise<OpenedSource> {
