@@ -1,7 +1,7 @@
 import { pool } from "../scheduler/pool.ts";
 import { selectStream, rankedStreams, markLive, markDead } from "../scheduler/selector.ts";
 import { cachedSetting } from "../settings.ts";
-import { providerEgress } from "../net/egress.ts";
+import { openSource } from "./source.ts";
 import { TsPreroll } from "../proxy/tspreroll.ts";
 import type { Stream } from "../db/schema.ts";
 
@@ -126,18 +126,12 @@ class ChannelMux {
   }
 
   private async pump() {
-    const eg = providerEgress(this.stream.providerId); // per-source VPN / proxy
-    // Fail closed: a source pinned to a VPN that's down must not leak out direct.
-    if (eg.blocked) throw new Error(`egress blocked: ${eg.reason}`);
-    const res = await fetch(this.stream.url, {
-      signal: this.abort.signal,
-      redirect: "follow",
-      headers: { "User-Agent": "Phospharr/0.1" },
-      ...(eg.proxy ? { proxy: eg.proxy } : {}),
-    });
-    if (!res.ok || !res.body) throw new Error(`upstream ${res.status}`);
-
-    const reader = res.body.getReader();
+    // openSource yields a live MPEG-TS reader whatever the source is: a provider
+    // stream (raw TS over the VPN egress) or a user-added live URL resolved via
+    // streamlink/ffmpeg. The resolver's child processes die when abort fires.
+    const src = await openSource(this.stream, this.abort.signal);
+    const reader = src.reader;
+    this.abort.signal.addEventListener("abort", () => src.close(), { once: true });
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;

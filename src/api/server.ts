@@ -1095,6 +1095,67 @@ app.get("/vod/play/episode/:id", async (c) => {
   return serveVod(c, "series", s.providerId, e.streamId, e.ext);
 });
 
+// ─── Custom live channels (esports, streamers — Twitch/YouTube/Kick/direct) ───
+import { resolverFor } from "../proxy/source.ts";
+import { assignNumbersInBlocks } from "../content/lineup.ts";
+import { pool as slotPool } from "../scheduler/pool.ts";
+
+// The synthetic "Custom" provider that owns every user-added live stream. Local
+// resolver processes aren't provider-connection-capped, so give it generous slots.
+async function customProviderId(): Promise<number> {
+  const existing = db.select().from(providers).where(eq(providers.type, "custom")).get();
+  if (existing) return existing.id;
+  const [row] = await db.insert(providers).values({ name: "Custom", type: "custom", url: "custom://local", maxConnections: 20, enabled: true }).returning();
+  slotPool.setBudget(row.id, 20);
+  return row.id;
+}
+
+app.get("/api/custom-channels", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const rows = await db.select().from(channels).where(eq(channels.kind, "live")).orderBy(channels.number);
+  return c.json(rows);
+});
+app.post("/api/custom-channels", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const b = (await c.req.json().catch(() => ({}))) as Partial<{ name: string; url: string; logoUrl: string; category: string; now: string }>;
+  const name = (b.name ?? "").trim();
+  const url = (b.url ?? "").trim();
+  if (!name || !/^https?:\/\//.test(url)) return c.json({ error: "name and an http(s) URL are required" }, 400);
+  const pid = await customProviderId();
+  const canonicalId = "live." + name.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 40) + "." + Date.now().toString(36);
+  const [ch] = await db.insert(channels).values({
+    canonicalId, name, logoUrl: b.logoUrl?.trim() || null, category: b.category?.trim() || "Live",
+    kind: "live", genre: "Sports", taxLocked: true, customNow: b.now?.trim() || null,
+  }).returning();
+  await db.insert(streams).values({
+    channelId: ch.id, providerId: pid, url, rawName: name, health: "unknown",
+    resolver: resolverFor(url), qualityScore: 500,
+  });
+  await assignNumbersInBlocks([ch.id]);
+  const [full] = await db.select().from(channels).where(eq(channels.id, ch.id));
+  return c.json(full);
+});
+app.patch("/api/custom-channels/:id", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const id = Number(c.req.param("id"));
+  const b = (await c.req.json().catch(() => ({}))) as Partial<{ name: string; now: string; logoUrl: string; category: string }>;
+  const upd: Record<string, unknown> = {};
+  if (typeof b.name === "string") upd.name = b.name.trim();
+  if ("now" in b) upd.customNow = (b.now ?? "").trim() || null;
+  if (typeof b.logoUrl === "string") upd.logoUrl = b.logoUrl.trim() || null;
+  if (typeof b.category === "string") upd.category = b.category.trim() || null;
+  const [row] = await db.update(channels).set(upd).where(and(eq(channels.id, id), eq(channels.kind, "live"))).returning();
+  return row ? c.json(row) : c.json({ error: "not found" }, 404);
+});
+app.delete("/api/custom-channels/:id", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const id = Number(c.req.param("id"));
+  const ch = db.select().from(channels).where(and(eq(channels.id, id), eq(channels.kind, "live"))).get();
+  if (!ch) return c.json({ error: "not found" }, 404);
+  await db.delete(channels).where(eq(channels.id, id)); // streams cascade
+  return c.json({ ok: true });
+});
+
 // ─── Reminders ("tell me when this starts") ───
 app.get("/api/reminders", async (c) => {
   const u = c.get("user");

@@ -9,7 +9,7 @@
  *   genre: one of GENRES below
  */
 
-export type ChannelKind = "network" | "local" | "loop" | "intl" | "event";
+export type ChannelKind = "network" | "local" | "loop" | "intl" | "event" | "live";
 
 export const GENRES = [
   "Sports", "News", "Movies", "Entertainment", "Drama", "Comedy", "Kids",

@@ -56,6 +56,16 @@ RUN mkdir -p /etc/apt/keyrings \
  && ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe \
  && rm -rf /var/lib/apt/lists/*
 
+# Resolvers for user-added live streams (Twitch / YouTube / Kick / generic HLS):
+# streamlink continuously restreams a platform page; yt-dlp is the fallback for
+# sites streamlink misses. streamlink comes from apt (pulls python3); yt-dlp is
+# the standalone release binary (fresher than the apt package).
+RUN apt-get update && apt-get install -y --no-install-recommends streamlink \
+ && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+ && chmod +x /usr/local/bin/yt-dlp \
+ && streamlink --version && yt-dlp --version \
+ && rm -rf /var/lib/apt/lists/*
+
 # microsocks isn't conveniently packaged — build the tiny single-file proxy.
 RUN git clone --depth 1 https://github.com/rofl0r/microsocks /tmp/microsocks \
  && make -C /tmp/microsocks \

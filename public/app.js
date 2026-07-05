@@ -383,6 +383,9 @@ function programsFor(ch) {
   const d = state.data;
   const raw = (d.guide && d.guide[ch.id]) || [];
   if (raw.length) return raw;
+  // User-added live streams have no schedule: show one full-window LIVE block
+  // titled with the editable "now" text (falls back to the channel name).
+  if (ch.kind === "live") return [{ start: d.windowStart, end: d.windowEnd, title: ch.customNow || (ch.name + " · Live"), live: true }];
   return [{ start: d.windowStart, end: d.windowEnd, title: "No guide data", filler: true }];
 }
 function onNowProgram(ch) {
@@ -468,6 +471,7 @@ function leftRail() {
   ];
   const manageNav = [
     { id: "channels", label: "Channels", icon: "list" },
+    { id: "live", label: "Live streams", icon: "radio" },
     { id: "users", label: "Users", icon: "users" },
     { id: "sources", label: "Sources", icon: "database" },
     { id: "rules", label: "Rules", icon: "filter" },
@@ -475,7 +479,7 @@ function leftRail() {
     { id: "epg", label: "EPG Matcher", icon: "git-compare", soon: true },
     { id: "settings", label: "Settings", icon: "settings" },
   ];
-  const built = { home: 1, guide: 1, mosaic: 1, dvr: 1, movies: 1, series: 1, channels: 1, settings: 1, analytics: 1, users: 1, sources: 1, rules: 1 };
+  const built = { home: 1, guide: 1, mosaic: 1, dvr: 1, movies: 1, series: 1, live: 1, channels: 1, settings: 1, analytics: 1, users: 1, sources: 1, rules: 1 };
   const navSrc = state.mode === "watch" ? watchNav : manageNav;
   const d = state.data;
   const healthLine = !d
@@ -1100,7 +1104,7 @@ function detailPane(ambient) {
     onNow ? h("span", { style: "font-size:9.5px;font-weight:700;letter-spacing:.12em;color:#ff9d95;border:1px solid rgba(255,93,82,0.5);border-radius:5px;padding:2px 6px;background:rgba(8,10,12,0.35)" }, "ON NOW") : null);
   const titleEl = h("div", { style: "font-size:" + (mob ? "20px" : "28px") + ";font-weight:800;color:#fff;letter-spacing:-.015em;line-height:1.14;overflow:hidden;display:-webkit-box;-webkit-line-clamp:" + (mob ? "1" : "2") + ";-webkit-box-orient:vertical;" + ts }, p.title);
   const metaEl = h("div", { style: "display:flex;align-items:center;gap:9px;flex-wrap:wrap" },
-    h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#cfd3d8;" + ts }, p.filler ? "No guide data" : fmtClock(p.start) + " – " + fmtClock(p.end)),
+    h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#cfd3d8;" + ts }, p.filler ? "No guide data" : p.live ? "🔴 Live now" : fmtClock(p.start) + " – " + fmtClock(p.end)),
     ...badges.map((b) => h("span", { style: "font-size:11px;font-weight:600;color:#dfe3e7;border:1px solid rgba(255,255,255,0.2);border-radius:5px;padding:2px 7px;background:rgba(8,10,12,0.3)" }, b)));
   // Description eats two lines — drop it on phones to keep the hero compact.
   const descEl = (desc && !mob) ? h("div", { style: "font-size:13.5px;color:#c3c8cd;line-height:1.5;max-width:600px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;" + ts }, desc) : null;
@@ -1246,7 +1250,7 @@ function guideRow(ch, ci, totalW, now, windowStart, ROWH) {
       // The per-cell time line clips to noise ("180", ":80") in narrow phone
       // cells and is redundant with the time axis — drop it on mobile.
       mob ? null : h("div", { style: "display:flex;align-items:center;gap:7px;margin-top:2px;min-width:0" },
-        h("span", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: "10.5px", color: onNow ? "rgba(245,247,249,0.72)" : "#6b7178", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, p.filler ? "" : fmtClock(p.start) + " – " + fmtClock(p.end)),
+        h("span", { style: { fontFamily: "JetBrains Mono, monospace", fontSize: "10.5px", color: onNow ? "rgba(245,247,249,0.72)" : "#6b7178", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, p.filler ? "" : p.live ? "🔴 LIVE" : fmtClock(p.start) + " – " + fmtClock(p.end)),
         onNow ? h("span", { style: "flex:none;display:inline-flex;align-items:center;gap:4px" },
           h("span", { style: "width:5px;height:5px;border-radius:50%;background:#ff5d52;box-shadow:0 0 6px #ff5d52;animation:aerBlink 2s infinite" }),
           h("span", { style: "font-size:9px;font-weight:700;letter-spacing:.13em;color:#ff9d95" }, "LIVE")) : null));
@@ -2453,6 +2457,7 @@ function mainArea() {
   // Only the viewing screens below require synced channels.
   if (state.screen === "users") return usersScreen();
   if (state.screen === "sources") return sourcesScreen();
+  if (state.screen === "live") return customScreen();
   if (state.screen === "rules") return rulesScreen();
   if (state.screen === "settings") return settingsScreen();
   if (!state.data || state.data.channels.length === 0) return centered("No channels yet — add a provider and sync.");
@@ -3025,6 +3030,7 @@ function setScreen(screen) {
   if (screen === "analytics") loadAnalytics();
   if (screen === "users") loadUsers();
   if (screen === "sources") loadSources();
+  if (screen === "live") loadCustom();
   if (screen === "rules") loadRules();
   if (screen === "settings") loadVpns(); // VPN tunnels section
 }
@@ -3499,6 +3505,69 @@ function restrictionSummary(r) {
 }
 
 // ===== SOURCES screen =====
+// ===== Live streams (custom channels: Twitch/YouTube/Kick/direct) =====
+async function loadCustom() {
+  try { const r = await fetch("/api/custom-channels"); if (r.ok) { state.custom = await r.json(); render(); } } catch { /* offline */ }
+}
+async function addCustom(fields, btn) {
+  try {
+    const r = await fetch("/api/custom-channels", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(fields) });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); if (btn) btn.title = e.error || "failed"; return false; }
+    await loadCustom();
+    loadView(); // refresh the lineup so it appears in the guide immediately
+    return true;
+  } catch { return false; }
+}
+function customScreen() {
+  const list = state.custom;
+  const name = h("input", { placeholder: "Channel name (e.g. ESL CS2)", style: cfInput() });
+  const url = h("input", { placeholder: "Twitch / YouTube / Kick link, or a direct .m3u8", style: cfInput() });
+  const now = h("input", { placeholder: "What's on now (optional, e.g. Pro League Finals)", style: cfInput() });
+  const logo = h("input", { placeholder: "Logo URL (optional)", style: cfInput() });
+  const addBtn = h("button", { style: "height:40px;padding:0 18px;border-radius:10px;border:none;background:" + AC + ";color:#06121c;font-size:13.5px;font-weight:800;cursor:pointer;white-space:nowrap", onClick: async (e) => {
+    if (!name.value.trim() || !/^https?:\/\//.test(url.value.trim())) { e.currentTarget.title = "Need a name and an http(s) URL"; return; }
+    e.currentTarget.textContent = "Adding…";
+    const ok = await addCustom({ name: name.value.trim(), url: url.value.trim(), now: now.value.trim(), logoUrl: logo.value.trim() });
+    e.currentTarget.textContent = "+ Add live channel";
+    if (ok) { name.value = url.value = now.value = logo.value = ""; }
+  } }, "+ Add live channel");
+
+  const form = h("div", { style: "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px;max-width:640px" },
+    h("div", { style: "font-size:13px;font-weight:700;color:#dfe3e7" }, "Add a live stream"),
+    h("div", { style: "display:flex;gap:10px;flex-wrap:wrap" }, name, url),
+    h("div", { style: "display:flex;gap:10px;flex-wrap:wrap" }, now, logo),
+    h("div", { style: "display:flex;justify-content:flex-end" }, addBtn),
+    h("div", { style: "font-size:11.5px;color:#6b7178;line-height:1.5" }, "Twitch/YouTube/Kick links resolve automatically. They appear in the guide as a LIVE block using the “what's on now” text you can edit anytime."));
+
+  const cards = (list || []).map((ch) => {
+    const nowField = h("input", { value: ch.customNow || "", placeholder: "What's on now…", style: "flex:1;min-width:120px;height:32px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:#dfe3e7;font-size:12.5px;font-family:inherit;outline:none" });
+    const saveNow = async () => { await fetch("/api/custom-channels/" + ch.id, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ now: nowField.value }) }).catch(() => {}); ch.customNow = nowField.value; loadView(); };
+    nowField.addEventListener("keydown", (e) => { if (e.key === "Enter") saveNow(); });
+    nowField.addEventListener("blur", saveNow);
+    return h("div", { style: "display:flex;align-items:center;gap:12px;padding:12px 14px;background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.06);border-radius:12px" },
+      logoTile({ name: ch.name, logoUrl: ch.logoUrl, mono: initials(ch.name), color: SOLIDS.sports, grad: GRADS.sports }, 38, 12),
+      h("div", { style: "flex:1;min-width:0" },
+        h("div", { style: "display:flex;align-items:center;gap:8px" },
+          h("span", { style: "font-family:'JetBrains Mono',monospace;font-size:11px;color:#6b7178" }, "#" + (ch.number ?? "—")),
+          h("span", { style: "font-size:14px;font-weight:700;color:#eef0f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, ch.name),
+          h("span", { style: "flex:none;font-size:9.5px;font-weight:700;letter-spacing:.1em;color:#ff8d84;border:1px solid rgba(255,93,82,0.4);border-radius:5px;padding:2px 6px" }, "LIVE")),
+        h("div", { style: "display:flex;align-items:center;gap:8px;margin-top:7px" }, nowField)),
+      h("button", { title: "Watch", onClick: () => openPlayer(ch.id), style: "width:36px;height:36px;flex:none;border-radius:9px;border:1px solid rgba(84,182,255,0.4);background:rgba(84,182,255,0.14);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("play", 15, 0.9)),
+      h("button", { title: "Remove", onClick: async () => { await fetch("/api/custom-channels/" + ch.id, { method: "DELETE" }).catch(() => {}); loadCustom(); loadView(); }, style: "width:36px;height:36px;flex:none;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" }, icon("trash-2", 15, 0.7)));
+  });
+
+  return h("div", { style: "flex:1;display:flex;flex-direction:column;min-height:0" },
+    h("div", { style: "flex:none;padding:22px 26px 16px" },
+      h("div", { style: "font-size:23px;font-weight:700;letter-spacing:-.01em" }, "Live streams"),
+      h("div", { style: "font-size:13px;color:#9aa0a6;margin-top:3px" }, "Add esports, streamers, or any live URL as channels in your guide")),
+    h("div", { style: "flex:1;overflow:auto;padding:0 26px 26px;display:flex;flex-direction:column;gap:14px" },
+      form,
+      list == null ? centered("Loading…")
+        : list.length === 0 ? h("div", { style: "padding:26px;text-align:center;color:#6b7178;font-size:13.5px" }, "No live streams yet — add one above.")
+        : h("div", { style: "display:flex;flex-direction:column;gap:10px" }, ...cards)));
+}
+function cfInput() { return "flex:1;min-width:180px;height:40px;padding:0 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#eef0f2;font-size:13.5px;font-family:inherit;outline:none"; }
+
 function sourcesScreen() {
   const list = state.providers;
   const header = h("div", { style: "flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:22px 26px 16px" },

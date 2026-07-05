@@ -15,7 +15,7 @@ import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-or
 export const providers = sqliteTable("providers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
-  type: text("type", { enum: ["m3u", "xtream"] }).notNull(),
+  type: text("type", { enum: ["m3u", "xtream", "custom"] }).notNull(), // 'custom' = the synthetic home of user-added live streams
   url: text("url").notNull(),
   username: text("username"),
   password: text("password"),
@@ -56,9 +56,10 @@ export const channels = sqliteTable(
     logoUrl: text("logo_url"),
     category: text("category"), // RAW provider group-title ("24/7 Drama", "USA Local - ABC") — adult filter keys off this
     // Structured taxonomy (derived by src/content/taxonomy.ts at ingest):
-    kind: text("kind", { enum: ["network", "local", "loop", "intl", "event"] }), // what the channel IS
+    kind: text("kind", { enum: ["network", "local", "loop", "intl", "event", "live"] }), // 'live' = a user-added custom stream
     genre: text("genre"), // normalized: Sports | News | Movies | Drama | ... (see taxonomy.ts GENRES)
     taxLocked: integer("tax_locked", { mode: "boolean" }).notNull().default(false), // admin edited — classifier must not clobber
+    customNow: text("custom_now"), // editable "what's on now" for live/custom channels (no real EPG)
     isHidden: integer("is_hidden", { mode: "boolean" }).notNull().default(false),
     isFavorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
     hiddenReason: text("hidden_reason"), // 'dead' | 'sub-sd' | 'duplicate' | 'rule:<id>' | null
@@ -89,6 +90,10 @@ export const streams = sqliteTable(
     health: text("health", { enum: ["live", "degraded", "dead", "unknown"] })
       .notNull()
       .default("unknown"),
+    // How to turn stream.url into a byte stream: null = raw MPEG-TS over fetch
+    // (provider streams); "streamlink" = resolve a platform page (Twitch/YouTube/
+    // Kick) via streamlink→ffmpeg; "ffmpeg" = a direct HLS (.m3u8) ffmpeg opens.
+    resolver: text("resolver", { enum: ["streamlink", "ffmpeg"] }),
     lastProbedAt: integer("last_probed_at", { mode: "timestamp" }),
     qualityScore: real("quality_score").notNull().default(0), // computed rank
   },

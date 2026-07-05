@@ -25,6 +25,7 @@ import { classify, localNetwork, GENRES, type Taxonomy } from "./taxonomy.ts";
 type Block = { start: number; end: number };
 
 function blockFor(t: Taxonomy): Block {
+  if (t.kind === "live") return { start: 20, end: 99 }; // user-added live streams near the top
   if (t.kind === "local") return { start: 1500, end: 2999 };
   if (t.kind === "loop") return { start: 3000, end: 7999 };
   if (t.kind === "intl") return { start: 8100, end: 9999 };

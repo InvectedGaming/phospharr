@@ -17,6 +17,7 @@ export interface ViewChannel {
   category: string | null;
   kind: string | null;
   genre: string | null;
+  customNow: string | null;
   logoUrl: string | null;
   isHidden: boolean;
   isFavorite: boolean;
@@ -109,6 +110,7 @@ export async function buildView(user?: User | null) {
       category: ch.category,
       kind: ch.kind,
       genre: ch.genre,
+      customNow: ch.customNow,
       logoUrl: ch.logoUrl,
       isHidden: ch.isHidden,
       isFavorite: favSet ? favSet.has(ch.id) : ch.isFavorite,

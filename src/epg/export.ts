@@ -43,7 +43,7 @@ const progStmt = sqlite.prepare(
 export async function exportXmltv(logoBase?: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const chans = db
-    .select({ id: channels.id, name: channels.name, canonicalId: channels.canonicalId, logoUrl: channels.logoUrl, genre: channels.genre, kind: channels.kind })
+    .select({ id: channels.id, name: channels.name, canonicalId: channels.canonicalId, logoUrl: channels.logoUrl, genre: channels.genre, kind: channels.kind, customNow: channels.customNow })
     .from(channels)
     .where(and(eq(channels.isHidden, false), isNotNull(channels.canonicalId)))
     .all();
@@ -101,7 +101,9 @@ export async function exportXmltv(logoBase?: string): Promise<string> {
   // guide is fully populated and the channel is identifiable at a glance. The
   // first category is the Emby color keyword from the channel's genre, so even
   // filler rows are color-coded (a 24/7 Kids loop reads as Kids).
-  const nameByCanonical = new Map(chans.map((c) => [c.canonicalId!, c.name]));
+  // For live/custom channels the filler title is the editable "now" text (falls
+  // back to the channel name) so Emby/Jellyfin show what's on the stream.
+  const nameByCanonical = new Map(chans.map((c) => [c.canonicalId!, (c.kind === "live" && c.customNow) ? c.customNow : c.name]));
   nameByCanonical.set("phospharr.mosaic", "Mosaic — compose in Phospharr");
   const blockSec = 4 * 3600;
   const fillStart = Math.floor((now - WINDOW_BEHIND) / 3600) * 3600;
