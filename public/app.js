@@ -4255,6 +4255,7 @@ function buildPlayerChrome(channelId) {
       h("div", { style: "flex:1" }),
       h("div", { style: "display:flex;gap:8px" },
         lastBtn,
+        topBtn(icon(playerZoom.fit === "cover" ? "scan" : "maximize", 17, 0.85), cycleFit, { title: "Aspect: " + fitLabel() + " (tap to toggle; pinch to zoom)", active: playerZoom.fit === "cover" }),
         topBtn(icon("message-square", 17, 0.85), () => toggleChat(channelId), { title: "Watch-party chat (everyone on this channel)", active: chatOpen }),
         sleepWrap,
         topBtn(icon("chevron-up", 18, 0.85), surf(-1), { title: "Channel up" }),
@@ -4278,6 +4279,74 @@ function stealTilePlayer(channelId) {
     }
   }
   return null;
+}
+
+// ===== Player zoom / aspect =====
+// Two independent controls: a fit MODE (letterbox vs crop-to-fill, chrome button)
+// and free pinch-ZOOM/pan (touch). Both apply to morphState.video via transform.
+const playerZoom = { fit: "contain", scale: 1, x: 0, y: 0 };
+function resetPlayerZoom() { playerZoom.scale = 1; playerZoom.x = 0; playerZoom.y = 0; }
+function applyPlayerZoom() {
+  const v = morphState && morphState.video;
+  if (!v) return;
+  v.style.objectFit = playerZoom.fit;
+  v.style.transformOrigin = "center center";
+  v.style.transform = "translate(" + playerZoom.x + "px," + playerZoom.y + "px) scale(" + playerZoom.scale + ")";
+}
+function cycleFit() {
+  // Fit (letterbox) → Fill (crop to edges). Manual zoom resets so the modes read cleanly.
+  playerZoom.fit = playerZoom.fit === "contain" ? "cover" : "contain";
+  resetPlayerZoom();
+  applyPlayerZoom();
+  refreshPlayerChrome();
+}
+function fitLabel() { return playerZoom.fit === "contain" ? "Fit" : "Fill"; }
+
+// Pinch-to-zoom + drag-to-pan on the morph layer (touch). Double-tap resets.
+function bindPlayerZoomGestures(morph) {
+  let mode = null; // "pinch" | "pan"
+  let startDist = 0, startScale = 1;
+  let startX = 0, startY = 0, panX0 = 0, panY0 = 0;
+  let lastTap = 0;
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  morph.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) {
+      mode = "pinch"; startDist = dist(e.touches); startScale = playerZoom.scale;
+      return;
+    }
+    if (e.touches.length === 1) {
+      // Double-tap → reset must win over pan (you double-tap precisely when zoomed in).
+      const now = Date.now();
+      if (now - lastTap < 300 && playerZoom.scale > 1.01) {
+        resetPlayerZoom(); applyPlayerZoom(); refreshPlayerChrome();
+        lastTap = 0; mode = null; return;
+      }
+      lastTap = now;
+      if (playerZoom.scale > 1.01) {
+        mode = "pan"; startX = e.touches[0].clientX; startY = e.touches[0].clientY; panX0 = playerZoom.x; panY0 = playerZoom.y;
+      } else {
+        mode = null;
+      }
+    }
+  }, { passive: true });
+  morph.addEventListener("touchmove", (e) => {
+    if (mode === "pinch" && e.touches.length === 2) {
+      e.preventDefault();
+      const s = Math.min(4, Math.max(1, startScale * (dist(e.touches) / startDist)));
+      playerZoom.scale = s;
+      if (s <= 1.01) resetPlayerZoom();
+      applyPlayerZoom();
+    } else if (mode === "pan" && e.touches.length === 1) {
+      e.preventDefault();
+      // clamp the pan so the frame can't be dragged entirely off-screen
+      const range = ((playerZoom.scale - 1) * innerWidth) / 2 + 40;
+      const rangeY = ((playerZoom.scale - 1) * innerHeight) / 2 + 40;
+      playerZoom.x = Math.max(-range, Math.min(range, panX0 + (e.touches[0].clientX - startX)));
+      playerZoom.y = Math.max(-rangeY, Math.min(rangeY, panY0 + (e.touches[0].clientY - startY)));
+      applyPlayerZoom();
+    }
+  }, { passive: false });
+  morph.addEventListener("touchend", (e) => { if (e.touches.length === 0) mode = null; }, { passive: true });
 }
 
 function openPlayer(channelId) {
@@ -4330,6 +4399,8 @@ function openPlayer(channelId) {
   const wrapper = h("div", null, morph, chrome);
   playerEl = wrapper;
   morphState = { video, morph, chrome, wrapper, fromRect };
+  resetPlayerZoom(); // fresh session starts unzoomed (fit mode persists across channels)
+  bindPlayerZoomGestures(morph);
   document.body.appendChild(wrapper);
 
   // Pin the morph at the preview's exact rect to start — visually identical to
@@ -4381,7 +4452,7 @@ function openPlayer(channelId) {
       morph.style.width = "100vw";
       morph.style.height = "100vh";
       morph.style.height = "100dvh"; // mobile browser chrome-aware; ignored where unsupported
-      video.style.objectFit = "contain";
+      applyPlayerZoom(); // apply the current fit mode (+ any zoom) instead of hard-coding contain
     }, canFlip ? 440 : 0);
   }, 300);
 }
