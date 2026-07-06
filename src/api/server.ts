@@ -37,7 +37,7 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import {
   SESSION_COOKIE, userForToken, userCount, createUser, login, logout, publicUser, hashPassword, channelVisible,
 } from "../auth.ts";
-import { users } from "../db/schema.ts";
+import { users, viewEvents } from "../db/schema.ts";
 import {
   createShare, listShares, revokeShare, deleteShare, getValidShare,
   issueTicket, redeemTicket, acquireSlot, releaseSlot, liveCount, touchShare,
@@ -55,12 +55,13 @@ function baseUrl(c: { req: { url: string } }): string {
 }
 
 // Record a view session: on client disconnect, log channel + duration for analytics.
-function trackSession(c: Context, channelId: number, source: "passthrough" | "transcode") {
+// userId scopes the per-user "Jump back in" row; null for tuner/key streams.
+function trackSession(c: Context, channelId: number, source: "passthrough" | "transcode", userId?: number | null) {
   const kind = c.req.query("as") === "preview" ? "preview" : "watch";
   const startedAt = Date.now();
   c.req.raw.signal.addEventListener(
     "abort",
-    () => recordView({ channelId, kind, source, startedAt, endedAt: Date.now() }),
+    () => recordView({ channelId, userId, kind, source, startedAt, endedAt: Date.now() }),
     { once: true },
   );
 }
@@ -249,8 +250,9 @@ app.get("/api/health", (c) => c.json({ name: "Phospharr", version: VERSION, stat
 
 // ─── Analytics ───
 app.get("/api/analytics", (c) => ensureAdmin(c) ?? c.json(getAnalytics()));
-// Recently-watched channel ids — powers the Home "Jump back in" row (any user).
-app.get("/api/recent", (c) => c.json(recentChannels(14)));
+// Recently-watched channel ids — powers the Home "Jump back in" row, scoped to
+// the signed-in user (this route is behind the /api/* auth gate).
+app.get("/api/recent", (c) => c.json(recentChannels(c.get("user")?.id, 14)));
 
 // ─── Settings + capabilities ───
 app.get("/api/capabilities", async (c) => c.json(await capabilities()));
@@ -352,7 +354,7 @@ async function serveStream(c: Context<Env>, channelId: number, transcode: boolea
   if (transcode && !(await getSetting("features.transcode"))) return c.text("transcode disabled", 503);
   const body = transcode ? await transcoder.open(channelId, c.req.raw.signal) : await muxer.open(channelId, c.req.raw.signal);
   if (!body) return c.text(transcode ? "transcoder unavailable or no playable source" : "all tuners busy or no playable source", 503);
-  trackSession(c, channelId, transcode ? "transcode" : "passthrough");
+  trackSession(c, channelId, transcode ? "transcode" : "passthrough", user?.id);
   // Real watches (not tile previews) prime the surf ring around this channel.
   if (c.req.query("as") !== "preview") prewarm.onTune(channelId);
   return new Response(body, { headers: STREAM_HEADERS });
@@ -432,7 +434,7 @@ app.get("/timeshift/:channelId", async (c) => {
   }
   const behind = Math.max(0, Number(c.req.query("behind")) || 0);
   const body = timeshift.open(channelId, behind);
-  trackSession(c, channelId, "passthrough");
+  trackSession(c, channelId, "passthrough", auth.user?.id);
   return new Response(body, { headers: STREAM_HEADERS });
 });
 // How much rewind buffer is available (seconds behind live) for a channel.
@@ -1311,6 +1313,11 @@ app.delete("/api/users/:id", (c) => {
     const admins = db.select({ n: sql<number>`count(*)` }).from(users).where(eq(users.role, "admin")).get();
     if ((admins?.n ?? 0) <= 1) return c.json({ error: "can't delete the only admin" }, 400);
   }
+  // Anonymize this user's watch history rather than delete it — keeps the
+  // household analytics aggregate intact, and the view_events FK is NO ACTION
+  // (SQLite ADD COLUMN can't carry ON DELETE SET NULL), so without this the
+  // delete would fail the constraint. Other user-owned rows cascade.
+  db.update(viewEvents).set({ userId: null }).where(eq(viewEvents.userId, id)).run();
   db.delete(users).where(eq(users.id, id)).run();
   return c.json({ ok: true });
 });

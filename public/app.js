@@ -2839,6 +2839,7 @@ async function logoutUser() {
   destroyMpegts(); if (playerEl) { playerEl.remove(); playerEl = null; }
   destroyAllTiles();
   state.data = null; state.users = null;
+  state.recent = null; state.vodContinue = null; // clear per-user history so it can't flash to the next user
   state.auth = { user: null, needsSetup: false, checked: true };
   render();
 }

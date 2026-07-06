@@ -12,6 +12,7 @@ const MIN_SESSION_SEC = 3; // ignore scroll-by/failed connects
 
 export interface ViewSession {
   channelId: number;
+  userId?: number | null; // the web user who watched; null for tuner/key streams
   kind: "watch" | "preview";
   source: "passthrough" | "transcode";
   startedAt: number; // ms
@@ -19,8 +20,8 @@ export interface ViewSession {
 }
 
 const insertStmt = sqlite.prepare(
-  `INSERT INTO view_events (channel_id, program_title, kind, source, started_at, ended_at, duration_sec)
-   VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  `INSERT INTO view_events (user_id, channel_id, program_title, kind, source, started_at, ended_at, duration_sec)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 const canonicalStmt = sqlite.prepare(`SELECT canonical_id FROM channels WHERE id = ?`);
 const programAtStmt = sqlite.prepare(
@@ -42,6 +43,7 @@ export function recordView(s: ViewSession): void {
   try {
     const programTitle = programDuring(s.channelId, s.startedAt, s.endedAt);
     insertStmt.run(
+      s.userId ?? null,
       s.channelId,
       programTitle,
       s.kind,
@@ -55,20 +57,22 @@ export function recordView(s: ViewSession): void {
   }
 }
 
-/** Distinct channels watched most recently (for the Home "Jump back in" row).
- * Global (view_events isn't per-user) — fine for a self-hosted household.
+/** Distinct channels a USER watched most recently (Home "Jump back in" row).
+ * Scoped to the signed-in user so households don't share history; a null userId
+ * returns nothing (tuner/key streams have no personal history to resume).
  * Adult-hidden channels are excluded so watch history can't resurface them;
  * channels hidden only for curation (a hidden category/market) still show — it's
  * the user's own history, and the guide-declutter shouldn't erase quick-resume. */
-export function recentChannels(limit = 12): { id: number; lastAt: number }[] {
+export function recentChannels(userId: number | null | undefined, limit = 12): { id: number; lastAt: number }[] {
+  if (userId == null) return [];
   return sqlite
     .prepare(
       `SELECT v.channel_id AS id, MAX(v.started_at) AS lastAt
        FROM view_events v JOIN channels c ON c.id = v.channel_id
-       WHERE v.kind='watch' AND (c.hidden_reason IS NULL OR c.hidden_reason != 'adult')
+       WHERE v.kind='watch' AND v.user_id = ? AND (c.hidden_reason IS NULL OR c.hidden_reason != 'adult')
        GROUP BY v.channel_id ORDER BY lastAt DESC LIMIT ?`,
     )
-    .all(limit) as { id: number; lastAt: number }[];
+    .all(userId, limit) as { id: number; lastAt: number }[];
 }
 
 function windowTotals(sinceSec: number) {

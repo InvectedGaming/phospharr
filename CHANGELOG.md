@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+- **"Jump back in" is now per-user.** Recently-watched channels were shared
+  across every account (view history had no user attached), so one person's
+  viewing showed up on everyone's Home. History is now scoped to the signed-in
+  user; tuner/key streams (Emby/Plex) count toward household analytics but no
+  one's personal row, and switching accounts no longer flashes the previous
+  user's history.
+
 ### Lineup: America first, dial starts at the top
 - The guide no longer opens on an alphabetical accident: **foreign broadcast
   brands on US feeds** (Al Jazeera, BBC World News, CGTN, France 24, Sky News,

@@ -173,6 +173,10 @@ export const viewEvents = sqliteTable(
   "view_events",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
+    // Who watched — powers the per-user "Jump back in" row. NULL for tuner/key
+    // streams (Emby/Plex via ?key=), which have no web user; those still count
+    // toward the household analytics aggregate but nobody's personal history.
+    userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
     channelId: integer("channel_id").notNull(), // not FK — keep history if a channel is removed
     programTitle: text("program_title"), // the show/movie airing during the session (from EPG)
     kind: text("kind", { enum: ["watch", "preview"] }).notNull().default("watch"),
@@ -184,6 +188,7 @@ export const viewEvents = sqliteTable(
   (t) => ({
     startedIdx: index("view_events_started_idx").on(t.startedAt),
     channelIdx: index("view_events_channel_idx").on(t.channelId),
+    userRecentIdx: index("view_events_user_started_idx").on(t.userId, t.startedAt),
   }),
 );
 
