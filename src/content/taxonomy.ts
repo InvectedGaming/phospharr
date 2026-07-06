@@ -23,6 +23,12 @@ export interface Taxonomy { kind: ChannelKind; genre: Genre }
 // Countries that mark a channel as international relative to a US-first lineup.
 const INTL_RE = /^\s*(uk|ca|au|nz|ie|de|fr|es|it|nl|pt|be|ch|pl|se|no|dk|fi|gr|tr|mx|br|ar|latin|latino|africa|india|asia|arab)\b/i;
 
+// Foreign BROADCAST BRANDS carried on US feeds ("USA BBC World News", "USA AL
+// JAZEERA") — the country prefix says American, the brand says otherwise. In a
+// US-first lineup these belong in the International block, not alphabetically
+// ahead of CNN in the news block. BBC America is a US cable network — excluded.
+const INTL_BRAND_RE = /\b(al ?jazeera|bbc(?!\s*america)|cgtn|france ?24|deutsche welle|dw news|euronews|sky news|russia today|rt news|rt america|trt world|nhk|gb news|cbc news|channel ?news ?asia)\b/i;
+
 // Genre from arbitrary text — most-specific markers first.
 function genreOf(text: string): Genre | null {
   const t = text.toLowerCase();
@@ -70,9 +76,13 @@ export function classify(category: string | null | undefined, name: string | nul
   if (/\blocal\b/i.test(cat) || /\b[KW][A-Z]{3}\b/.test(nm) || /^[A-Z]{2}\s+[A-Z][a-z]+.*\b(ABC|NBC|CBS|FOX|CW|PBS)\b/.test(nm)) {
     return { kind: "local", genre: "Locals" };
   }
-  // International: country-prefixed group or name (non-US).
+  // International: country-prefixed group or name (non-US), or a foreign brand
+  // riding a US feed (Al Jazeera, BBC World, CGTN, …).
   if (INTL_RE.test(cat) || INTL_RE.test(nm)) {
     return { kind: "intl", genre: genreOf(both) ?? "Entertainment" };
+  }
+  if (INTL_BRAND_RE.test(both)) {
+    return { kind: "intl", genre: genreOf(both) ?? "News" };
   }
   // Regular linear networks.
   return { kind: "network", genre: genreOf(both) ?? "Entertainment" };

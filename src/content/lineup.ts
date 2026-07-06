@@ -5,16 +5,18 @@ import { classify, localNetwork, GENRES, type Taxonomy } from "./taxonomy.ts";
 
 /**
  * Cable-style lineup numbering. Channels live in genre/kind blocks like a real
- * cable plan, so surfing and the guide read sensibly:
+ * cable plan, so surfing and the guide read sensibly — and the dial starts AT
+ * THE TOP, with American channels leading:
  *
  *          1  Mosaic (virtual — src/tuner/hdhr.ts, always listed)
- *     2–  99  reserved for manual pins (never auto-assigned)
- *   100– 249  News
- *   250– 449  Sports (+ PPV events)
- *   450–1499  Networks by genre (Movies → Entertainment → … alphabetical inside)
+ *     2–  19  Live streams (user-added — personal channels right up top)
+ *    20– 299  News — American networks first (CNN, Fox News, MSNBC, …)
+ *   300– 499  Sports (+ PPV events)
+ *   500–1499  Networks by genre (Movies → Entertainment → … alphabetical inside)
  *  1500–2999  Locals — ABC, NBC, CBS, FOX, CW, PBS, then misc; by market inside
  *  3000–7999  24/7 loops — grouped by genre, alphabetical inside
- *  8100–9999  International
+ *  8100–9999  International (incl. foreign-brand news on US feeds — Al Jazeera,
+ *             BBC World, CGTN — which used to alphabetize AHEAD of CNN)
  *
  * Numbers are STICKY: syncs only assign numbers to NEW channels (next free slot
  * in their block). reflowLineup() is the explicit, admin-triggered full re-sort.
@@ -25,13 +27,13 @@ import { classify, localNetwork, GENRES, type Taxonomy } from "./taxonomy.ts";
 type Block = { start: number; end: number };
 
 function blockFor(t: Taxonomy): Block {
-  if (t.kind === "live") return { start: 20, end: 99 }; // user-added live streams near the top
+  if (t.kind === "live") return { start: 2, end: 19 }; // user-added live streams at the very top
   if (t.kind === "local") return { start: 1500, end: 2999 };
   if (t.kind === "loop") return { start: 3000, end: 7999 };
   if (t.kind === "intl") return { start: 8100, end: 9999 };
-  if (t.kind === "event" || t.genre === "Sports") return { start: 250, end: 449 };
-  if (t.genre === "News") return { start: 100, end: 249 };
-  return { start: 450, end: 1499 };
+  if (t.kind === "event" || t.genre === "Sports") return { start: 300, end: 499 };
+  if (t.genre === "News") return { start: 20, end: 299 };
+  return { start: 500, end: 1499 };
 }
 
 // Order channels WITHIN a block: locals by network then market/name; everything
@@ -39,12 +41,31 @@ function blockFor(t: Taxonomy): Block {
 const GENRE_ORDER = new Map(GENRES.map((g, i) => [g, i]));
 const NET_ORDER = new Map(["ABC", "NBC", "CBS", "FOX", "CW", "PBS", "MYNETWORK", "METV", "ION"].map((n, i) => [n, i]));
 
+// American news networks first — the guide opens on the news block, and it
+// should read CNN / Fox News / MSNBC, not an alphabetical accident. Matched by
+// substring against the (provider-prefixed) name; unmatched names follow
+// alphabetically. "MS NOW" is MSNBC's rebrand.
+const NEWS_ORDER = [
+  "CNN", "FOX NEWS", "MSNBC", "MS NOW", "ABC NEWS", "CBS NEWS", "NBC NEWS",
+  "CNBC", "FOX BUSINESS", "BLOOMBERG", "NEWSNATION", "NEWSMAX", "HLN",
+  "C-SPAN", "FOX WEATHER", "WEATHER",
+];
+function newsRank(name: string): number {
+  const n = (name || "").toUpperCase();
+  const i = NEWS_ORDER.findIndex((p) => n.includes(p));
+  return i < 0 ? NEWS_ORDER.length : i;
+}
+
 interface Row { id: number; name: string; category: string | null; kind: string | null; genre: string | null }
 
 function blockSort(a: Row, b: Row): number {
   const ka = a.kind === "local" ? (NET_ORDER.get(localNetwork(a.category, a.name)) ?? 99) : (GENRE_ORDER.get(a.genre as never) ?? 99);
   const kb = b.kind === "local" ? (NET_ORDER.get(localNetwork(b.category, b.name)) ?? 99) : (GENRE_ORDER.get(b.genre as never) ?? 99);
   if (ka !== kb) return ka - kb;
+  if (a.genre === "News" && b.genre === "News") {
+    const r = newsRank(a.name) - newsRank(b.name);
+    if (r !== 0) return r;
+  }
   return a.name.localeCompare(b.name);
 }
 

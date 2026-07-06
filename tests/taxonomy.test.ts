@@ -34,6 +34,17 @@ describe("classify", () => {
     expect(classify("USA Entertainment", "Comedy Central").kind).toBe("network");
   });
 
+  test("foreign brands on US feeds go international, not ahead of CNN", () => {
+    expect(classify("USA News", "USA AL JAZEERA")).toEqual({ kind: "intl", genre: "News" });
+    expect(classify("USA News", "USA BBC World News")).toEqual({ kind: "intl", genre: "News" });
+    expect(classify("USA News", "USA CGTN")).toEqual({ kind: "intl", genre: "News" });
+    expect(classify(null, "France 24 English").kind).toBe("intl");
+    // …but BBC America is a US cable network, and American news stays put
+    expect(classify("USA Entertainment", "USA BBC America").kind).toBe("network");
+    expect(classify("USA News", "USA CNN *")).toEqual({ kind: "network", genre: "News" });
+    expect(classify("USA News", "USA Fox News").kind).toBe("network");
+  });
+
   test("music + PPV", () => {
     expect(classify("USA Music", "USA Stingray Karaoke").genre).toBe("Music");
     expect(classify("PPV Events", "UFC 320 PPV")).toEqual({ kind: "event", genre: "Sports" });

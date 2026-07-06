@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Lineup: America first, dial starts at the top
+- The guide no longer opens on an alphabetical accident: **foreign broadcast
+  brands on US feeds** (Al Jazeera, BBC World News, CGTN, France 24, Sky News,
+  …) are classified International (8100s) instead of leading the news block.
+  BBC America stays a US network.
+- The **News block orders American networks first** — CNN, Fox News,
+  MSNBC/MS NOW, ABC/CBS/NBC News, CNBC, Bloomberg, … — then the rest
+  alphabetically.
+- **Numbering starts at the top of the dial**: live streams (your own added
+  channels) now sit at 2–19 right after the Mosaic on 1, News starts at 20
+  (was 100), Sports at 300. Run **reflow** (or it's applied on deploy) to
+  renumber an existing lineup.
+
 ### Fixed
 - **Playback broken after deploy ("play button with a line through it")**:
   stream teardown called `body.cancel()` on a reader-locked stream, whose
@@ -58,7 +71,7 @@
 ### Live streams (custom channels)
 - Add any live stream as a guide channel: **Manage → Live streams**. Paste a
   Twitch/Kick link, a YouTube live, or a direct `.m3u8`/`.ts`. Each becomes a
-  numbered channel (block 20–99) with an editable "what's on now" that shows as a
+  numbered channel (block 2–19, right at the top of the dial) with an editable "what's on now" that shows as a
   red LIVE block in the guide and a LIVE programme in the Emby/XMLTV export.
 - Resolved server-side and fed through the same muxer as everything else, so they
   get multiplexing, keep-warm, failover, and the stall watchdog. Twitch/Kick via
