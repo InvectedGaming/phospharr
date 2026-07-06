@@ -431,15 +431,13 @@ function topBar() {
     h("img", { src: ICON("log-out"), style: "width:15px;height:15px;filter:brightness(0) invert(.65)" }));
 
   if (mob) {
-    const burger = h("button", { title: "Menu", onClick: () => set({ navOpen: !state.navOpen }), style: "width:38px;height:38px;flex:none;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer" },
-      h("span", { style: "width:16px;height:2px;border-radius:2px;background:#cfd3d8" }),
-      h("span", { style: "width:16px;height:2px;border-radius:2px;background:#cfd3d8" }),
-      h("span", { style: "width:16px;height:2px;border-radius:2px;background:#cfd3d8" }));
+    // Primary nav lives in the bottom tab bar now (no hamburger). Top bar is
+    // brand + search + account.
     const searchBtn = h("button", { title: "Search", onClick: openSearch, style: "width:38px;height:38px;flex:none;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;cursor:pointer" },
       icon("search", 16, 0.65));
     return h("div", { class: "aer-topbar",
       style: "flex:none;display:flex;align-items:center;gap:11px;padding:0 12px;border-bottom:1px solid rgba(255,255,255,0.07);background:rgba(18,20,22,0.85);backdrop-filter:blur(20px);position:relative;z-index:30" },
-      burger, brandGlyph,
+      brandGlyph,
       h("div", { style: "font-weight:700;font-size:15px;letter-spacing:.1em;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, "PHOSPHARR"),
       searchBtn, avatar, signOut);
   }
@@ -521,14 +519,49 @@ function leftRail() {
 }
 
 // Mobile nav: the side rail as a slide-in drawer (the rail itself is hidden on
-// phones). Reuses leftRail() wholesale and hosts the Watch/Manage switch.
+// phones). Reuses leftRail() wholesale and hosts the Watch/Manage switch. Opened
+// from the bottom tab bar's "More" tab (which covers the long-tail screens).
 function navDrawer() {
   if (!state.navOpen) return null;
   const isAdmin = state.auth.user && state.auth.user.role === "admin";
-  return h("div", { class: "aer-drawer-scrim", style: "position:fixed;inset:0;z-index:45;background:rgba(6,7,8,0.6);backdrop-filter:blur(3px);animation:aerViewIn .18s ease", onClick: () => set({ navOpen: false }) },
+  return h("div", { class: "aer-drawer-scrim", style: "position:fixed;inset:0;z-index:55;background:rgba(6,7,8,0.6);backdrop-filter:blur(3px);animation:aerViewIn .18s ease", onClick: () => set({ navOpen: false }) },
     h("div", { class: "aer-drawer", style: "position:absolute;top:0;bottom:0;left:0;width:min(264px,82vw);display:flex;flex-direction:column;background:#0e1012;border-right:1px solid rgba(255,255,255,0.08);box-shadow:0 0 60px rgba(0,0,0,0.6);animation:aerDrawerIn .22s cubic-bezier(.2,.8,.3,1)", onClick: (e) => e.stopPropagation() },
       isAdmin ? h("div", { style: "flex:none;padding:14px 12px 2px" }, modeSwitch()) : null,
       leftRail()));
+}
+
+// Mobile primary nav: a bottom tab bar (the AERIAL mobile skeleton). Core Watch
+// screens are one thumb-tap away; "More" opens the drawer for everything else
+// (Movies/Series/Recordings and the whole Manage side + Watch↔Manage switch).
+const BOTTOM_TABS = [
+  { id: "home", label: "Home", icon: "house" },
+  { id: "guide", label: "Guide", icon: "tv" },
+  { id: "mosaic", label: "Mosaic", icon: "grid-2x2" },
+  { id: "more", label: "More", icon: "menu" },
+];
+function goTab(id) {
+  resetGuideHero();
+  set({ mode: "watch", screen: id, navOpen: false, selectedCellId: null });
+  if (id === "home") loadRecent();
+}
+function bottomTabBar() {
+  const onWatchTab = state.screen === "home" || state.screen === "guide" || state.screen === "mosaic";
+  return h("nav", { class: "aer-tabbar", role: "tablist",
+    style: "flex:none;display:flex;align-items:stretch;height:64px;padding-bottom:env(safe-area-inset-bottom,0px);border-top:1px solid rgba(255,255,255,0.07);background:rgba(12,13,14,0.9);backdrop-filter:blur(16px);position:relative;z-index:40" },
+    ...BOTTOM_TABS.map((t) => {
+      const active = t.id === "more" ? (state.navOpen || !onWatchTab) : (state.screen === t.id && !state.navOpen);
+      return h("button", { role: "tab", "aria-selected": active ? "true" : "false", title: t.label,
+        onClick: () => (t.id === "more" ? set({ navOpen: !state.navOpen }) : goTab(t.id)),
+        style: {
+          flex: "1", border: "none", background: "transparent", cursor: "pointer",
+          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "4px",
+          color: active ? AC : "#6b7178", fontSize: "10.5px", fontWeight: 600, position: "relative", transition: "color .16s",
+        },
+      },
+        active ? h("span", { style: "position:absolute;top:0;width:22px;height:2px;border-radius:2px;background:" + AC + ";box-shadow:0 0 8px " + AC }) : null,
+        h("div", { style: { width: "22px", height: "22px", backgroundImage: `url(${ICON(t.icon)})`, backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center", filter: `brightness(0) invert(${active ? 1 : 0.42})` } }),
+        h("span", null, t.label));
+    }));
 }
 
 // ===== GUIDE =====
@@ -2907,6 +2940,7 @@ function render() {
   root.replaceChildren(
     topBar(),
     body,
+    mob ? bottomTabBar() : h("div", { style: "display:none" }),
     mob ? (navDrawer() || h("div", { style: "display:none" })) : h("div", { style: "display:none" }),
     promoteOverlay() || h("div", { style: "display:none" }),
     sourceModal() || h("div", { style: "display:none" }),

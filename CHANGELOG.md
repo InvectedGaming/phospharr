@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Mobile navigation
+- **Bottom tab bar on phones** (replaces the hamburger drawer as primary nav):
+  Home · Guide · Mosaic one thumb-tap away, plus **More** for the long-tail
+  screens (Movies, Series, Recordings) and the whole Manage side + Watch↔Manage
+  switch. Active tab is accent-marked; the top bar drops the hamburger.
+
 ### Fixed
 - **"Jump back in" is now per-user.** Recently-watched channels were shared
   across every account (view history had no user attached), so one person's
