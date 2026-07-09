@@ -163,6 +163,9 @@ const state = {
   data: null, // from /api/view
   settings: null, // from /api/settings
   envLocked: [],
+  downstream: null, // { servers, results } from /api/epg/downstream (guide-sync targets)
+  downstreamDraft: null, // editable copy; API keys never round-trip to the client
+  downstreamBusy: {}, // per-server-id: test/refresh in flight
   analytics: null, // from /api/analytics
   dvr: null, // from /api/dvr (recordings + rules + storage)
   recent: null, // recently-watched channel ids from /api/recent (Home screen)
@@ -1916,6 +1919,67 @@ async function saveVpnEndpoints() {
   if (r && r.ok) { const d = await r.json(); state.settings = d.settings; state.vpnDraft = null; render(); }
 }
 
+// ---- Guide sync: push an EPG refresh to downstream media servers ----
+function loadDownstream() {
+  if (state.downstream && state.downstream.loading) return;
+  if (!state.downstream) state.downstream = { loading: true, servers: [], results: [] };
+  fetch("/api/epg/downstream").then((r) => (r.ok ? r.json() : null)).then((d) => {
+    if (!d) { state.downstream = { loading: false, servers: [], results: [] }; return; }
+    state.downstream = { loading: false, servers: d.servers || [], results: d.results || [] };
+    // Draft mirrors the stored servers but never holds real keys (blank = keep).
+    state.downstreamDraft = (d.servers || []).map((s) => ({ id: s.id, type: s.type, name: s.name, url: s.url, enabled: s.enabled, hasKey: !!s.hasKey, apiKey: "" }));
+    render();
+  }).catch(() => { state.downstream = { loading: false, servers: [], results: [] }; render(); });
+}
+function downstreamResultFor(id) { return (state.downstream && state.downstream.results || []).find((r) => r.id === id); }
+async function saveDownstream() {
+  const servers = (state.downstreamDraft || []).map((s) => ({ id: s.id, type: s.type, name: (s.name || "").trim(), url: (s.url || "").trim(), enabled: s.enabled !== false, apiKey: s.apiKey || "", hasKey: !!s.hasKey }));
+  const r = await fetch("/api/epg/downstream", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ servers }) }).catch(() => null);
+  if (r && r.ok) { const d = await r.json(); state.downstream = { loading: false, servers: d.servers || [], results: (state.downstream && state.downstream.results) || [] }; state.downstreamDraft = (d.servers || []).map((s) => ({ id: s.id, type: s.type, name: s.name, url: s.url, enabled: s.enabled, hasKey: !!s.hasKey, apiKey: "" })); render(); }
+}
+async function testDownstream(i) {
+  const draft = state.downstreamDraft || [];
+  const s = draft[i]; if (!s) return;
+  await saveDownstream(); // persist current edits so the server tests what you see
+  state.downstreamBusy = { ...state.downstreamBusy, [s.id]: true }; render();
+  const r = await fetch("/api/epg/downstream/" + encodeURIComponent(s.id) + "/test", { method: "POST" }).then((x) => x.ok ? x.json() : null).catch(() => null);
+  const results = ((state.downstream && state.downstream.results) || []).filter((x) => x.id !== s.id);
+  if (r) results.unshift(r);
+  state.downstream = { ...(state.downstream || {}), results };
+  state.downstreamBusy = { ...state.downstreamBusy, [s.id]: false };
+  render();
+}
+function downstreamSection() {
+  if (state.downstream == null) { loadDownstream(); return centered("…"); }
+  const draft = state.downstreamDraft || [];
+  const input = "height:38px;padding:0 11px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#eef0f2;font-size:13px;font-family:inherit;outline:none";
+  const typeOpts = [["emby", "Emby"], ["jellyfin", "Jellyfin"], ["plex", "Plex"]];
+  return h("div", { style: "padding:16px;display:flex;flex-direction:column;gap:14px" },
+    h("div", { style: "font-size:12.5px;color:#7e858c;line-height:1.5" }, "After Phospharr refreshes its guide, ping these servers so they reload theirs — no more waiting on their slow built-in schedule. Emby/Jellyfin trigger the Refresh Guide task; Plex reloads each DVR's guide. Create the API key in the server (Emby/Jellyfin: Dashboard → API Keys; Plex: your X-Plex-Token)."),
+    ...draft.map((s, i) => {
+      const res = downstreamResultFor(s.id);
+      const busy = state.downstreamBusy[s.id];
+      return h("div", { style: "border:1px solid rgba(255,255,255,0.08);border-radius:11px;padding:12px;display:flex;flex-direction:column;gap:9px;background:rgba(255,255,255,0.015)" },
+        h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
+          h("select", { onChange: (e) => { draft[i].type = e.target.value; }, style: input + ";flex:none;width:110px;cursor:pointer" },
+            ...typeOpts.map(([v, l]) => h("option", { value: v, selected: s.type === v }, l))),
+          h("input", { value: s.name || "", placeholder: "Name (e.g. Living Room Emby)", onInput: (e) => { draft[i].name = e.target.value; }, style: input + ";flex:1;min-width:150px" }),
+          h("label", { style: "display:flex;align-items:center;gap:6px;font-size:12px;color:#aeb4ba;cursor:pointer;flex:none" },
+            h("input", { type: "checkbox", checked: s.enabled !== false, onChange: (e) => { draft[i].enabled = e.target.checked; render(); } }), "On"),
+          h("button", { onClick: () => { draft.splice(i, 1); render(); }, title: "Remove", style: "width:34px;height:34px;flex:none;border-radius:8px;border:1px solid rgba(255,93,82,0.25);background:rgba(255,93,82,0.07);color:#ff8077;cursor:pointer;font-size:14px" }, "✕")),
+        h("input", { value: s.url || "", placeholder: s.type === "plex" ? "http://plex:32400" : "http://emby:8096", onInput: (e) => { draft[i].url = e.target.value; }, style: input + ";font-family:'JetBrains Mono',monospace;font-size:12.5px" }),
+        h("input", { type: "password", value: s.apiKey || "", placeholder: s.hasKey ? "•••••••• stored — leave blank to keep" : (s.type === "plex" ? "X-Plex-Token" : "API key"), onInput: (e) => { draft[i].apiKey = e.target.value; }, style: input + ";font-family:'JetBrains Mono',monospace;font-size:12.5px" }),
+        h("div", { style: "display:flex;align-items:center;gap:10px" },
+          h("button", { onClick: () => testDownstream(i), disabled: busy, style: "height:34px;padding:0 14px;border-radius:8px;border:1px solid rgba(84,182,255,0.35);background:rgba(84,182,255,0.1);color:#9bd0ff;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;opacity:" + (busy ? "0.6" : "1") }, busy ? "Testing…" : "Save & test"),
+          res ? h("div", { style: "font-size:12px;display:flex;align-items:center;gap:6px;color:" + (res.ok ? "#7fdca0" : "#ff8077") },
+            h("span", null, res.ok ? "✓" : "✕"), h("span", null, res.message || (res.ok ? "ok" : "failed"))) : h("div", { style: "font-size:12px;color:#5c6166" }, "not tested yet")));
+    }),
+    h("div", { style: "display:flex;gap:8px;margin-top:2px;align-items:center" },
+      h("button", { onClick: () => { (state.downstreamDraft = draft).push({ id: (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)), type: "emby", name: "", url: "", enabled: true, hasKey: false, apiKey: "" }); render(); }, style: "height:36px;padding:0 14px;border-radius:9px;border:1px dashed rgba(255,255,255,0.2);background:transparent;color:#aeb4ba;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit" }, "+ Add server"),
+      h("div", { style: "flex:1" }),
+      h("button", { onClick: saveDownstream, style: "height:36px;padding:0 18px;border-radius:9px;border:none;background:" + AC + ";color:#06121c;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit" }, "Save")));
+}
+
 async function regenerateStreamKey() {
   if (!confirm("Generate a new stream key?\n\nExisting tuner setups (Plex/Jellyfin) and any ?key= links will STOP working until you update them with the new key.")) return;
   const key = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "").slice(0, 27);
@@ -1997,7 +2061,8 @@ function settingsScreen() {
         settingsSection("VPN TUNNELS", vpnsRow()),
         settingsSection("VPN ENDPOINTS (external proxies)", vpnEndpointsRow()),
         settingsSection("GUIDE",
-          settingRow({ title: "EPG refresh interval", desc: "How often auto-refresh pulls new EPG.", key: "epg.refreshHours", type: "number", suffix: "hours" })))));
+          settingRow({ title: "EPG refresh interval", desc: "How often auto-refresh pulls new EPG.", key: "epg.refreshHours", type: "number", suffix: "hours" })),
+        settingsSection("GUIDE SYNC — refresh downstream media servers", downstreamSection()))));
 }
 
 // ===== ADD SOURCE (provider) modal =====

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Guide sync — push EPG refresh to your media servers
+- Add your **Emby / Jellyfin / Plex** servers (Settings → Guide Sync) with an
+  API key, and Phospharr nudges each to reload its guide the moment ours
+  refreshes — no more waiting on their slow built-in schedule. Fires after both
+  scheduled and manual EPG refreshes. Emby/Jellyfin run their Refresh Guide
+  task; Plex reloads each DVR's guide. Per-server **Save & test** with the live
+  result; API keys are write-only (never returned once saved).
+
 ### Mobile navigation
 - **Bottom tab bar on phones** (replaces the hamburger drawer as primary nav):
   Home · Guide · Mosaic one thumb-tap away, plus **More** for the long-tail

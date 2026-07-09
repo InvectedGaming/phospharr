@@ -13,6 +13,7 @@ import { egress, providerEgress } from "../net/egress.ts";
 import { vpnProxyUrl } from "../net/tunnel.ts";
 import { nordCountries, nordRecommend, isNordConfig, setNordServer, setLocationComment, parseNordInfo } from "../net/nordvpn.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
+import { refreshDownstreamGuides, refreshOne, downstreamResults } from "../epg/downstream.ts";
 import { applyRules } from "../rules/engine.ts";
 import { reconcileAutoHides, listCategories, listProviderCategories } from "../content/filter.ts";
 import { muxer } from "../proxy/muxer.ts";
@@ -262,7 +263,13 @@ app.get("/api/categories", async (c) => {
   return c.json(await listCategories());
 });
 
-app.get("/api/settings", async (c) => c.json({ settings: await getSettings(), envLocked: envLockedKeys() }));
+app.get("/api/settings", async (c) => {
+  // Strip downstream API keys — those are managed (and redacted) via the
+  // dedicated /api/epg/downstream endpoints, never leaked through settings.
+  const settings = { ...(await getSettings()) };
+  settings["epg.downstream"] = (settings["epg.downstream"] ?? []).map(({ apiKey, ...s }) => ({ ...s, apiKey: "" }));
+  return c.json({ settings, envLocked: envLockedKeys() });
+});
 app.patch("/api/settings", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;
   const body = (await c.req.json().catch(() => ({}))) as Partial<Settings>;
@@ -1236,7 +1243,45 @@ app.post("/api/epg/sync", async (c) => {
   // Explicit urls win; otherwise derive one per enabled provider.
   const urls: string[] = body.urls?.length ? body.urls : await providerEpgUrls(body.providerId ? Number(body.providerId) : undefined);
   if (urls.length === 0) return c.json({ error: "no EPG sources available" }, 400);
-  return c.json(await syncEpgFromUrls(urls));
+  const results = await syncEpgFromUrls(urls);
+  // Ours is fresh — nudge downstream media servers (Emby/Plex/Jellyfin) to reload.
+  const downstream = await refreshDownstreamGuides().catch(() => []);
+  return c.json({ results, downstream });
+});
+
+// ─── Downstream guide sync: media servers we push a guide-refresh to ───
+// API keys are secrets — never returned. The UI sends "hasKey" back untouched;
+// a real apiKey only travels client→server when the admin (re)enters it.
+const redactDownstream = (list: import("../settings.ts").DownstreamServer[]) =>
+  (list ?? []).map(({ apiKey, ...rest }) => ({ ...rest, hasKey: !!apiKey }));
+app.get("/api/epg/downstream", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const list = await getSetting("epg.downstream");
+  return c.json({ servers: redactDownstream(list), results: downstreamResults() });
+});
+app.put("/api/epg/downstream", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const body = (await c.req.json().catch(() => ({}))) as { servers?: (Partial<import("../settings.ts").DownstreamServer> & { hasKey?: boolean })[] };
+  const existing = await getSetting("epg.downstream");
+  const byId = new Map(existing.map((s) => [s.id, s]));
+  const next: import("../settings.ts").DownstreamServer[] = (body.servers ?? []).map((s) => {
+    const id = String(s.id || (crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)));
+    const type = s.type === "plex" || s.type === "jellyfin" || s.type === "emby" ? s.type : "emby";
+    // A blank apiKey with hasKey=true means "keep the stored secret" (the UI
+    // never received it to echo back); a non-empty apiKey replaces it.
+    const apiKey = s.apiKey ? String(s.apiKey) : (s.hasKey ? (byId.get(id)?.apiKey ?? "") : "");
+    return { id, type, name: String(s.name ?? "").trim(), url: String(s.url ?? "").trim(), apiKey, enabled: s.enabled !== false };
+  });
+  await setSetting("epg.downstream", next);
+  return c.json({ servers: redactDownstream(next) });
+});
+// Fire a guide refresh at ONE server now (the Test button). Uses the stored key.
+app.post("/api/epg/downstream/:id/test", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const list = await getSetting("epg.downstream");
+  const server = list.find((s) => s.id === c.req.param("id"));
+  if (!server) return c.json({ error: "not found" }, 404);
+  return c.json(await refreshOne(server));
 });
 
 // ─── Rules ───

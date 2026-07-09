@@ -14,6 +14,18 @@ const projectRoot = new URL("..", import.meta.url).pathname
   .replace(/^\/([A-Za-z]:)/, "$1")
   .replace(/\/$/, "");
 
+// A downstream media server (Emby/Jellyfin/Plex) that consumes our tuner + EPG.
+// After Phospharr refreshes its own guide we ping each of these so their cached
+// guide follows suit. apiKey is a secret — redacted whenever it leaves the API.
+export interface DownstreamServer {
+  id: string;
+  type: "emby" | "jellyfin" | "plex";
+  name: string;
+  url: string; // base URL, e.g. http://10.0.0.5:8096
+  apiKey: string;
+  enabled: boolean;
+}
+
 export interface Settings {
   "features.hdhr": boolean; // HDHomeRun emulation (Plex/Emby/Jellyfin tuner)
   "features.transcode": boolean; // browser audio transcode (AC-3 → AAC)
@@ -27,6 +39,7 @@ export interface Settings {
   "dvr.maxConcurrentRecordings": number;
   "timeshift.windowMinutes": number;
   "epg.refreshHours": number;
+  "epg.downstream": DownstreamServer[]; // media servers to nudge after our EPG refresh
   "stream.keepWarmSeconds": number; // hold a channel's upstream this long after the last viewer
   "vpn.endpoints": { name: string; url: string }[]; // named VPN/proxy endpoints sources can pick from
   "access.streamKey": string; // secret gating /stream, /watch, and HDHR (devices use ?key=)
@@ -51,6 +64,7 @@ const DEFAULTS: Settings = {
   "dvr.maxConcurrentRecordings": 4,
   "timeshift.windowMinutes": 120,
   "epg.refreshHours": 6,
+  "epg.downstream": [],
   "stream.keepWarmSeconds": 5,
   "vpn.endpoints": [],
   "access.streamKey": "", // auto-generated on first boot if unset

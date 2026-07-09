@@ -1,4 +1,5 @@
 import { providerEpgUrls, syncEpgFromUrls } from "./merge.ts";
+import { refreshDownstreamGuides } from "./downstream.ts";
 import { getSetting } from "../settings.ts";
 
 /**
@@ -23,6 +24,8 @@ async function runOnce(): Promise<void> {
     lastRunMs = Date.now();
     const bound = results.reduce((n, r) => n + r.programmesBound, 0);
     console.log(`[epg] auto-refresh: ${bound} programmes from ${urls.length} feed(s) in ${Date.now() - t0}ms`);
+    // Our guide is fresh — nudge downstream media servers to reload theirs.
+    await refreshDownstreamGuides().catch(() => { /* best-effort, never blocks */ });
   } catch (e) {
     console.error("[epg] auto-refresh failed:", e instanceof Error ? e.message : e);
   } finally {
