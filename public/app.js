@@ -216,7 +216,7 @@ const state = {
   addOpen: false,
   addBusy: false,
   addError: null,
-  addForm: { name: "", type: "xtream", url: "", username: "", password: "", maxConnections: 4, epgUrl: "" },
+  addForm: { name: "", type: "xtream", url: "", username: "", password: "", maxConnections: 4, epgUrl: "", mirrorHosts: "" },
 };
 let dragId = null;
 let detailDragged = false; // suppress the pane's click after a resize drag
@@ -2014,6 +2014,7 @@ function settingsScreen() {
   const s = state.settings;
   const dvrOn = !!s["features.dvr"];
   const tsOn = !!s["features.timeshift"];
+  const vodLibOn = !!s["features.vodLibrary"];
   // Lineup stats (moved here from the guide header).
   const chans = (state.data && state.data.channels) || [];
   const totalCh = chans.filter((c) => !c.isHidden).length;
@@ -2042,7 +2043,9 @@ function settingsScreen() {
           settingRow({ title: "EPG auto-refresh", desc: "Pull the guide on a schedule so it stays current.", key: "features.epgAutoRefresh", type: "toggle" }),
           settingRow({ title: "Health probing", desc: "Probe streams to show real Live / SD / Dead badges.", key: "features.healthProbe", type: "toggle" }),
           settingRow({ title: "Timeshift (pause / rewind)", desc: "Keep a rolling buffer of each channel you watch so you can pause and rewind live TV.", key: "features.timeshift", type: "toggle" }),
-          settingRow({ title: "DVR recordings", desc: "Record programs to disk and build a recordings library.", key: "features.dvr", type: "toggle" })),
+          settingRow({ title: "DVR recordings", desc: "Record programs to disk and build a recordings library.", key: "features.dvr", type: "toggle" }),
+          settingRow({ title: "Provider auto-sync", desc: "Re-sync each provider's channel lineup on a schedule so new / removed channels appear automatically.", key: "features.providerAutoSync", type: "toggle" }),
+          settingRow({ title: "VOD library for Emby / Jellyfin", desc: "Mirror VOD movies as a .strm/.nfo folder your media server can scan, and trigger a scan when the catalog changes.", key: "features.vodLibrary", type: "toggle" })),
         (dvrOn || tsOn)
           ? settingsSection("STORAGE & RETENTION",
               settingRow({ title: "Storage path", desc: "Where segments and recordings live on disk.", key: "dvr.storagePath", type: "text" }),
@@ -2061,7 +2064,14 @@ function settingsScreen() {
         settingsSection("VPN TUNNELS", vpnsRow()),
         settingsSection("VPN ENDPOINTS (external proxies)", vpnEndpointsRow()),
         settingsSection("GUIDE",
-          settingRow({ title: "EPG refresh interval", desc: "How often auto-refresh pulls new EPG.", key: "epg.refreshHours", type: "number", suffix: "hours" })),
+          settingRow({ title: "EPG refresh interval", desc: "How often auto-refresh pulls new EPG.", key: "epg.refreshHours", type: "number", suffix: "hours" }),
+          settingRow({ title: "Provider sync interval", desc: "How often to re-ingest provider channel lineups (new / removed channels).", key: "providers.syncHours", type: "number", suffix: "hours" })),
+        vodLibOn ? settingsSection("VOD LIBRARY (EMBY / JELLYFIN)",
+          settingRow({ title: "Library path", desc: "Where the .strm/.nfo tree is written. Point an Emby Movies library at <path>/Movies (share the folder into Emby if it runs elsewhere).", key: "vod.libraryPath", type: "text" }),
+          settingRow({ title: "Public URL", desc: "Absolute base URL Emby uses to reach playback, e.g. http://10.0.0.5:7777 (falls back to BASE_URL).", key: "vod.publicUrl", type: "text" }),
+          settingRow({ title: "Skip movies you already own", desc: "Don't mirror a VOD movie that's already a real file in your Emby / Jellyfin library — and prune the .strm later if you add the real file. Uses the servers configured under Guide Sync.", key: "vod.skipOwned", type: "toggle" }),
+          settingRow({ title: "VOD refresh interval", desc: "How often to pull new VOD and rebuild the library — this is what prunes a VOD title once you've downloaded the real file.", key: "vod.syncHours", type: "number", suffix: "hours" }),
+          h("div", { style: "padding:11px 16px;font-size:12px;color:#7e858c;border-top:1px solid rgba(255,255,255,0.045)" }, "With 50k+ movies, set the vod.libraryCategories setting to mirror only the categories you want (keeps the whole catalog — incl. adult — out of Emby). Rebuilds after each VOD sync.")) : null,
         settingsSection("GUIDE SYNC — refresh downstream media servers", downstreamSection()))));
 }
 
@@ -2120,6 +2130,12 @@ function sourceModal() {
         h("div", { style: "display:flex;gap:12px" },
           h("div", { style: "width:130px" }, field("MAX STREAMS", "maxConnections", "4", "number")),
           h("div", { style: "flex:1" }, field("EPG URL (OPTIONAL)", "epgUrl", "xmltv.php?…"))),
+        // Mirror hosts — same login on backup servers; each channel fans across them
+        h("div", null,
+          h("div", { style: "font-size:11px;font-weight:600;letter-spacing:.4px;color:#8b9199;margin:2px 0 5px" }, "MIRROR HOSTS (OPTIONAL, ONE PER LINE)"),
+          h("textarea", { value: f.mirrorHosts || "", rows: 2, placeholder: "http://mirror1.example.com:8080\nhttp://mirror2.example.com:8080", onInput: (e) => { f.mirrorHosts = e.target.value; },
+            style: "width:100%;box-sizing:border-box;padding:9px 11px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);color:#dfe3e7;font-size:13px;font-family:inherit;resize:vertical" }),
+          h("div", { style: "font-size:11.5px;color:#7e858c;margin-top:4px" }, "Same login, backup servers. Each channel gets a stream per host — Phospharr probes them and auto-picks the best, failing over if one dies.")),
         // VPN endpoint picker
         h("div", { style: "display:flex;align-items:center;justify-content:space-between;gap:11px;padding:11px 13px;border-radius:10px;border:1px solid " + (f.proxyUrl ? "rgba(127,220,160,0.4)" : "rgba(255,255,255,0.1)") + ";background:" + (f.proxyUrl ? "rgba(127,220,160,0.08)" : "rgba(255,255,255,0.03)") },
           h("div", null,
@@ -2169,7 +2185,7 @@ async function testSource() {
   render();
 }
 function openAddSource() {
-  state.addForm = { name: "", type: "xtream", url: "", username: "", password: "", maxConnections: 4, epgUrl: "", proxyUrl: "" };
+  state.addForm = { name: "", type: "xtream", url: "", username: "", password: "", maxConnections: 4, epgUrl: "", proxyUrl: "", mirrorHosts: "" };
   set({ addOpen: true, addError: null, addBusy: false, addTest: null });
 }
 function closeAddSource() {
@@ -2192,6 +2208,7 @@ async function submitAddSource() {
       maxConnections: Number(f.maxConnections) || 1,
       epgUrl: f.epgUrl.trim() || null,
       proxyUrl: f.proxyUrl || null,
+      mirrorHosts: f.mirrorHosts || "",
     };
     const res = await fetch("/api/providers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) throw new Error(`couldn't save source (${res.status})`);

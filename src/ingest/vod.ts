@@ -130,12 +130,14 @@ export async function ensureEpisodes(seriesRowId: number, maxAgeMs = 24 * 3600_0
   const rows: (typeof vodEpisodes.$inferInsert)[] = [];
   for (const [seasonKey, eps] of Object.entries(seasons)) {
     for (const e of eps ?? []) {
+      const streamId = Number(e.id);
+      if (!Number.isFinite(streamId)) continue; // skip malformed episode ids (NOT NULL column)
       rows.push({
         seriesRowId: s.id,
         season: Number(seasonKey) || 0,
         episode: Number(e.episode_num) || 0,
         title: e.title || null,
-        streamId: Number(e.id),
+        streamId,
         ext: (e.container_extension || "mp4").toLowerCase(),
         plot: e.info?.plot || null,
         durationSec: e.info?.duration_secs ? Number(e.info.duration_secs) : null,

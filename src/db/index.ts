@@ -12,6 +12,10 @@ const sqlite = new Database(url, { create: true });
 sqlite.exec("PRAGMA journal_mode = WAL;");
 sqlite.exec("PRAGMA synchronous = NORMAL;");
 sqlite.exec("PRAGMA foreign_keys = ON;");
+// Wait up to 5s for a locked DB instead of throwing SQLITE_BUSY immediately —
+// an external opener (backup/litestream) or a WAL checkpoint can briefly hold
+// the write lock, and a bare throw would surface as a 500 / background crash.
+sqlite.exec("PRAGMA busy_timeout = 5000;");
 
 export const db = drizzle(sqlite, { schema });
 // Raw handle for manual transaction control (BEGIN/COMMIT) around streaming writes.

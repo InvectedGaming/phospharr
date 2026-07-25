@@ -1,0 +1,1 @@
+ALTER TABLE `providers` ADD `mirror_hosts` text;

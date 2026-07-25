@@ -82,13 +82,18 @@ export async function applyRules(): Promise<{ applied: number; affected: number 
       const act = rule.action as unknown as Action;
       if (!evalOp(cond.op, ctx[cond.field], cond.value)) continue;
 
-      if (act.set === "isHidden" && act.value) {
-        updates.isHidden = true;
-        updates.hiddenReason = `rule:${rule.id}`;
+      // Keep ctx in sync so a later rule conditioned on a field an earlier rule
+      // changed (e.g. isHidden) evaluates against the new value, not the stale row.
+      if (act.set === "isHidden") {
+        updates.isHidden = !!act.value; // also handles the unhide case (value=false)
+        updates.hiddenReason = act.value ? `rule:${rule.id}` : null;
+        ctx.isHidden = updates.isHidden;
       } else if (act.set === "category") {
         updates.category = String(act.value);
+        ctx.category = updates.category;
       } else if (act.set === "name") {
         updates.name = String(act.value);
+        ctx.name = updates.name;
       }
     }
 

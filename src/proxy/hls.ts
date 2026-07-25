@@ -23,6 +23,7 @@ const START_TIMEOUT_MS = 20_000;
 
 type Session = { proc: ReturnType<typeof Bun.spawn>; dir: string; lastAccess: number };
 const sessions = new Map<number, Session>();
+const starting = new Map<number, Promise<Session | null>>(); // in-flight start()s (dedup concurrent first requests)
 let reaper: ReturnType<typeof setInterval> | null = null;
 
 function ensureReaper() {
@@ -40,6 +41,8 @@ function stop(channelId: number) {
   if (!s) return;
   sessions.delete(channelId);
   try { s.proc.kill(); } catch { /* gone */ }
+  // Escalate to SIGKILL if ffmpeg ignores SIGTERM (e.g. wedged on I/O).
+  const t = setTimeout(() => { try { s.proc.kill(9); } catch { /* gone */ } }, 3000); t.unref?.();
   try { rmSync(s.dir, { recursive: true, force: true }); } catch { /* busy */ }
 }
 
@@ -81,7 +84,13 @@ async function start(channelId: number): Promise<Session | null> {
 /** Playlist text (starts the segmenter on first request; waits for the first segments). */
 export async function playlist(channelId: number): Promise<string | null> {
   let s = sessions.get(channelId);
-  if (!s) s = (await start(channelId)) ?? undefined as never;
+  if (!s) {
+    // Dedup: two near-simultaneous first requests must not each spawn ffmpeg
+    // (the second's sessions.set would orphan the first). Share one start().
+    let p = starting.get(channelId);
+    if (!p) { p = start(channelId); starting.set(channelId, p); void p.finally(() => starting.delete(channelId)); }
+    s = (await p) ?? undefined as never;
+  }
   if (!s) return null;
   s.lastAccess = Date.now();
   const file = join(s.dir, "index.m3u8");

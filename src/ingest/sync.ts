@@ -51,6 +51,25 @@ export interface SyncResult {
   streamsUpserted: number;
 }
 
+/** One stream URL per host: the original plus one per mirror host (same path,
+ *  swapped origin). This fans a channel across mirror servers so the health probe
+ *  + selector pick the best-performing host and the muxer fails over between them. */
+function hostVariants(url: string, mirrors: string[] | null | undefined): string[] {
+  const out = [url];
+  for (const h of mirrors ?? []) {
+    const host = h.trim();
+    if (!host) continue;
+    try {
+      const u = new URL(url);
+      const m = new URL(host.includes("://") ? host : `http://${host}`);
+      u.protocol = m.protocol;
+      u.host = m.host;
+      out.push(u.toString());
+    } catch { /* skip a malformed mirror host */ }
+  }
+  return [...new Set(out)];
+}
+
 export async function syncProvider(providerId: number): Promise<SyncResult> {
   const [p] = await db.select().from(providers).where(eq(providers.id, providerId));
   if (!p) throw new Error(`Provider ${providerId} not found`);
@@ -108,29 +127,32 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
     }
     touched.add(channelId);
 
-    // Upsert the stream (one per provider+url).
+    // Upsert one stream per host (primary + mirrors) — same channel, so the
+    // selector auto-picks the best host and the muxer fails over between them.
     const score = qualityScore(match.resolution, "unknown");
-    const existing = await db
-      .select({ id: streams.id })
-      .from(streams)
-      .where(and(eq(streams.providerId, p.id), eq(streams.url, entry.url)));
+    for (const url of hostVariants(entry.url, p.mirrorHosts)) {
+      const existing = await db
+        .select({ id: streams.id })
+        .from(streams)
+        .where(and(eq(streams.providerId, p.id), eq(streams.url, url)));
 
-    if (existing.length) {
-      await db
-        .update(streams)
-        .set({ channelId, rawName: entry.rawName, resolution: match.resolution, qualityScore: score })
-        .where(eq(streams.id, existing[0].id));
-    } else {
-      await db.insert(streams).values({
-        channelId,
-        providerId: p.id,
-        url: entry.url,
-        rawName: entry.rawName,
-        resolution: match.resolution,
-        qualityScore: score,
-      });
+      if (existing.length) {
+        await db
+          .update(streams)
+          .set({ channelId, rawName: entry.rawName, resolution: match.resolution, qualityScore: score })
+          .where(eq(streams.id, existing[0].id));
+      } else {
+        await db.insert(streams).values({
+          channelId,
+          providerId: p.id,
+          url,
+          rawName: entry.rawName,
+          resolution: match.resolution,
+          qualityScore: score,
+        });
+      }
+      streamsUpserted++;
     }
-    streamsUpserted++;
   }
 
   await db.update(providers).set({ lastSyncedAt: new Date() }).where(eq(providers.id, p.id));

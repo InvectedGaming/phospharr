@@ -108,7 +108,9 @@ async function materializeRules(): Promise<void> {
 async function startRecording(rec: Recording): Promise<void> {
   const file = join(DVR_DIR, `${rec.id}-${rec.title.replace(/[^a-zA-Z0-9 _-]+/g, "").slice(0, 60).trim() || "recording"}.ts`);
   const abort = new AbortController();
-  const body = await muxer.open(rec.channelId, abort.signal);
+  // lossless: a recording must never drop TS packets under backpressure (that's a
+  // permanent gap in the file). We apply disk-write backpressure below instead.
+  const body = await muxer.open(rec.channelId, abort.signal, { lossless: true });
   if (!body) {
     console.error(`[dvr] no source for "${rec.title}" (channel ${rec.channelId}) — will retry next tick`);
     return;
@@ -119,6 +121,7 @@ async function startRecording(rec: Recording): Promise<void> {
   console.log(`[dvr] ● recording "${rec.title}" → ${file}`);
   void (async () => {
     const sink = Bun.file(file).writer();
+    let sinceFlush = 0;
     try {
       const reader = body.getReader();
       while (active.has(rec.id)) {
@@ -127,15 +130,19 @@ async function startRecording(rec: Recording): Promise<void> {
         if (value) {
           sink.write(value);
           entry.bytes += value.length;
+          // Flush periodically and AWAIT it — this is the disk-write backpressure
+          // that lets the lossless muxer subscriber block rather than buffer
+          // unbounded when the disk can't keep up, while bounding memory to ~4MB.
+          sinceFlush += value.length;
+          if (sinceFlush >= 4 * 1024 * 1024) { await sink.flush(); sinceFlush = 0; }
         }
       }
     } catch { /* aborted or upstream exhausted — finalize below */ }
     try { await sink.end(); } catch { /* already closed */ }
     const stillActive = active.delete(rec.id);
-    // Finalize: completed if we got through (or got SOMETHING and the window
-    // passed); failed only when nothing was captured.
-    const done = Date.now() >= rec.endTime.getTime();
-    const status = entry.bytes > 500_000 ? "completed" : done ? "failed" : "failed";
+    // Finalize: anything past the trivial threshold counts as a real recording;
+    // failed only when essentially nothing was captured.
+    const status = entry.bytes > 500_000 ? "completed" : "failed";
     await db.update(recordings).set({ status, sizeBytes: entry.bytes }).where(eq(recordings.id, rec.id)).catch?.(() => {});
     if (stillActive) console.log(`[dvr] ■ "${rec.title}" ${status} (${(entry.bytes / 1048576).toFixed(0)}MB)`);
   })();
@@ -201,6 +208,7 @@ async function tick(): Promise<void> {
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
+let ticking = false;
 
 export function startDvr(): void {
   if (timer) return;
@@ -218,8 +226,24 @@ export function startDvr(): void {
         .where(eq(recordings.id, r.id));
     }
   })();
-  timer = setInterval(() => { tick().catch((e) => console.error("[dvr] tick:", e instanceof Error ? e.message : e)); }, 15_000);
+  timer = setInterval(() => {
+    // A tick can outrun the 15s interval on a loaded DB (rules × programs × queries).
+    // Without this guard two ticks race the same status='scheduled' rows and start
+    // the recording twice — two slots, two writers clobbering one file.
+    if (ticking) return;
+    ticking = true;
+    tick()
+      .catch((e) => console.error("[dvr] tick:", e instanceof Error ? e.message : e))
+      .finally(() => { ticking = false; });
+  }, 15_000);
   if (typeof timer.unref === "function") timer.unref();
+}
+
+/** Stop the scheduler and abort in-flight recordings so their writers flush and
+ *  finalize. Used on graceful shutdown; anything still open is recovered on boot. */
+export function stopDvr(): void {
+  if (timer) { clearInterval(timer); timer = null; }
+  for (const [id, a] of [...active]) { active.delete(id); a.abort.abort(); }
 }
 
 /** Everything the DVR screen needs in one call. */

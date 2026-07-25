@@ -223,6 +223,12 @@ export function stopVpn(id: number): void {
   entry.status = "down";
 }
 
+/** Stop every running tunnel — used on graceful shutdown so openvpn/wireproxy
+ *  and the HTTP bridges don't orphan when Phospharr exits. */
+export function stopAllVpns(): void {
+  for (const id of [...tunnels.keys()]) stopVpn(id);
+}
+
 /** The live proxy URL for a VPN, or undefined if it isn't up. This is the
  *  HTTP→SOCKS bridge (`http://…`) because Bun's fetch can't use SOCKS directly. */
 export function vpnProxyUrl(id: number): string | undefined {

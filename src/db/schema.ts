@@ -25,6 +25,7 @@ export const providers = sqliteTable("providers", {
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   viaVpn: integer("via_vpn", { mode: "boolean" }).notNull().default(false), // deprecated — superseded by proxyUrl
   proxyUrl: text("proxy_url"), // route this provider's upstream through this proxy (a Gluetun/VPN endpoint); null = direct
+  mirrorHosts: text("mirror_hosts", { mode: "json" }).$type<string[]>(), // extra mirror base URLs (same line); each channel gets a stream per host and the selector auto-picks the best
 
   lastSyncedAt: integer("last_synced_at", { mode: "timestamp" }),
 });

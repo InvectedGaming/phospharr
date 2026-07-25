@@ -73,6 +73,8 @@ class TranscodeChannel {
   private rawStream: ReadableStream<Uint8Array> | null = null;
   private grace: ReturnType<typeof setTimeout> | null = null;
   private started = false;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
+  private lastByteAt = Date.now();
 
   constructor(
     readonly channelId: number,
@@ -104,7 +106,19 @@ class TranscodeChannel {
       return false; // ffmpeg binary missing
     }
     this.started = true;
-    this.pump().catch(() => this.teardown());
+    // Stall watchdog: a wedged-but-alive ffmpeg (silent, never exits) would hang
+    // viewers forever. Kill it if no bytes flow for 15s with viewers waiting —
+    // pump() then ends and force-tears down, so viewers re-tune onto a fresh one.
+    this.lastByteAt = Date.now();
+    this.watchdog = setInterval(() => {
+      if (this.subs.size > 0 && Date.now() - this.lastByteAt > 15_000) {
+        try { this.proc?.kill(); } catch { /* noop */ }
+      }
+    }, 4_000);
+    if (typeof this.watchdog.unref === "function") this.watchdog.unref();
+    // If pump ends/throws, ffmpeg is dead — force teardown even with viewers
+    // attached, or the channel wedges and new viewers attach to a corpse.
+    this.pump().catch(() => this.teardown(true));
     return true;
   }
 
@@ -114,6 +128,7 @@ class TranscodeChannel {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
+        this.lastByteAt = Date.now();
         for (const sub of this.subs.values()) {
           try {
             sub.push(value);
@@ -123,7 +138,11 @@ class TranscodeChannel {
         }
       }
     }
-    this.teardown();
+    // The reader ended → ffmpeg exited (crash/OOM/kill). Force a full teardown so
+    // the dead channel is cleared from Transcoder.active and every viewer is
+    // closed (they re-tune). Without force, teardown() early-returns while subs
+    // exist and leaves a wedged, byte-less channel that new viewers attach to.
+    this.teardown(true);
   }
 
   attach(sub: Omit<Subscriber, "id">): number {
@@ -150,10 +169,14 @@ class TranscodeChannel {
     }
   }
 
-  private teardown() {
+  private teardown(force = false) {
     if (this.grace) clearTimeout(this.grace);
     this.grace = null;
-    if (this.subs.size > 0) return;
+    // Non-force (idle grace timer) respects a viewer who re-attached during the
+    // grace window. Force (ffmpeg died) tears down regardless — the subs are
+    // attached to a dead process, so keeping them serves nothing but a hang.
+    if (!force && this.subs.size > 0) return;
+    if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
     try { this.proc?.kill(); } catch { /* noop */ }
     // Belt over proc.kill(): the muxer stream is LOCKED by Bun.spawn's stdin, so
     // this cancel() rejects with ERR_INVALID_STATE — swallow the promise (a bare

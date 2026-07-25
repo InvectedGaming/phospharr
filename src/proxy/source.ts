@@ -68,7 +68,7 @@ export async function openSource(stream: Stream, signal: AbortSignal): Promise<O
   }
 
   const procs: ReturnType<typeof Bun.spawn>[] = [];
-  const kill = () => { for (const p of procs) { try { p.kill(); } catch { /* gone */ } } };
+  const kill = () => { for (const p of procs) { try { p.kill(); } catch { /* gone */ } const t = setTimeout(() => { try { p.kill(9); } catch { /* gone */ } }, 3000); t.unref?.(); } };
   signal.addEventListener("abort", kill, { once: true });
 
   let out: ReturnType<typeof Bun.spawn>;
@@ -101,8 +101,12 @@ export async function openSource(stream: Stream, signal: AbortSignal): Promise<O
     procs.push(out);
   } else {
     // Direct HLS: ffmpeg opens the URL itself, with reconnect for flaky CDNs.
+    // protocol_whitelist WITHOUT file/concat: the URL is untrusted provider data,
+    // and a `.m3u8` resolves here — without this, `file:///etc/passwd.m3u8` (or a
+    // manifest referencing local files) would let ffmpeg read host files.
     out = Bun.spawn(
-      [FFMPEG, "-hide_banner", "-loglevel", "error", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+      [FFMPEG, "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "tls,tcp,https,http,crypto,hls,fragment",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-fflags", "nobuffer+genpts", "-i", stream.url, ...ffOut(true)],
       { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
     );
@@ -128,7 +132,7 @@ export async function probeSource(url: string, ms = 9000): Promise<{ ok: boolean
     } catch (e) { return { ok: false, resolver, bytes: 0, error: e instanceof Error ? e.message : String(e) }; }
   }
   const procs: ReturnType<typeof Bun.spawn>[] = [];
-  const kill = () => { for (const p of procs) { try { p.kill(); } catch { /* gone */ } } };
+  const kill = () => { for (const p of procs) { try { p.kill(); } catch { /* gone */ } const t = setTimeout(() => { try { p.kill(9); } catch { /* gone */ } }, 3000); t.unref?.(); } };
   let out: ReturnType<typeof Bun.spawn>;
   let errProc: ReturnType<typeof Bun.spawn>;
   if (resolver === "streamlink") {
@@ -142,7 +146,8 @@ export async function probeSource(url: string, ms = 9000): Promise<{ ok: boolean
     out = Bun.spawn([FFMPEG, "-hide_banner", "-loglevel", "error", "-i", "pipe:0", ...ffOut(false)], { stdin: dl.stdout, stdout: "pipe", stderr: "ignore" });
     procs.push(out);
   } else {
-    out = Bun.spawn([FFMPEG, "-hide_banner", "-loglevel", "error", "-i", url, ...ffOut(true)], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    // Untrusted URL (see the live path) — no file/concat protocols.
+    out = Bun.spawn([FFMPEG, "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "tls,tcp,https,http,crypto,hls,fragment", "-i", url, ...ffOut(true)], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     procs.push(out); errProc = out;
   }
   let bytes = 0; const t0 = Date.now(); const rd = (out.stdout as ReadableStream<Uint8Array>).getReader();

@@ -1,8 +1,28 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
-import { db } from "../db/index.ts";
+import { db, sqlite } from "../db/index.ts";
 import { channels } from "../db/schema.ts";
+import { isLocalIp } from "../net/access.ts";
+import { providerEgress } from "../net/egress.ts";
+
+// Logo URLs come from the (untrusted) provider playlist. Refuse http(s)-only and
+// reject any literal private/loopback/link-local host so a crafted logoUrl like
+// http://169.254.169.254/… or http://127.0.0.1:port/… can't turn this fetch into
+// an SSRF read of internal services. (DNS names resolving to private ranges are a
+// residual gap; routing through the provider proxy below covers proxied sources.)
+function logoUrlSafe(raw: string): boolean {
+  let u: URL;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  return !isLocalIp(u.hostname.replace(/^\[|\]$/g, ""));
+}
+
+// A representative provider for this channel — its egress proxy is used for the
+// logo fetch so a VPN-pinned source doesn't leak the host IP to a logo host.
+const firstProviderStmt = sqlite.prepare(
+  "SELECT provider_id FROM streams WHERE channel_id = ? ORDER BY id LIMIT 1",
+);
 
 /**
  * Channel-logo proxy + disk cache. Tuner consumers (Emby/Plex) fetch a logo per
@@ -38,12 +58,18 @@ export async function getLogo(channelId: number): Promise<Logo | null> {
   if (failedAt && Date.now() - failedAt < NEGATIVE_MS) return null;
 
   const ch = db.select({ logoUrl: channels.logoUrl }).from(channels).where(eq(channels.id, channelId)).get();
-  if (!ch?.logoUrl) return null;
+  if (!ch?.logoUrl || !logoUrlSafe(ch.logoUrl)) { negative.set(channelId, Date.now()); return null; }
+  // Route the logo fetch through the provider's egress (fail-closed if a pinned
+  // VPN tunnel is down — never fall back to a direct connection that leaks the IP).
+  const provId = (firstProviderStmt.get(channelId) as { provider_id: number } | undefined)?.provider_id;
+  const eg = providerEgress(provId);
+  if (eg.blocked) { negative.set(channelId, Date.now()); return null; }
   try {
     const res = await fetch(ch.logoUrl, {
       redirect: "follow",
       headers: { "User-Agent": "Phospharr/1.0" },
       signal: AbortSignal.timeout(8000),
+      ...(eg.proxy ? { proxy: eg.proxy } : {}),
     });
     if (!res.ok) throw new Error(`upstream ${res.status}`);
     const bytes = new Uint8Array(await res.arrayBuffer());

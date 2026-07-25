@@ -33,6 +33,14 @@ export interface Settings {
   "features.healthProbe": boolean; // probe streams → real health badges
   "features.timeshift": boolean; // rolling buffer → pause / rewind
   "features.dvr": boolean; // record to disk + recordings library
+  "features.providerAutoSync": boolean; // scheduled re-ingest of provider channel lineups
+  "providers.syncHours": number; // re-sync each provider's lineup every N hours
+  "features.vodLibrary": boolean; // mirror VOD as .strm files for Emby/Jellyfin to scan
+  "vod.libraryPath": string; // where the .strm/.nfo library tree is written
+  "vod.publicUrl": string; // absolute base URL Emby uses to reach playback (else BASE_URL)
+  "vod.libraryCategories": string[]; // only mirror these VOD categories (empty = all)
+  "vod.skipOwned": boolean; // don't mirror a VOD movie already in the Emby/Jellyfin library
+  "vod.syncHours": number; // scheduled VOD refresh + library rebuild every N hours (prunes owned)
   "dvr.storagePath": string;
   "dvr.retentionDays": number;
   "dvr.maxGB": number;
@@ -58,6 +66,14 @@ const DEFAULTS: Settings = {
   "features.healthProbe": true,
   "features.timeshift": true, // pause / rewind / start-over on live TV (rolling buffer)
   "features.dvr": true,
+  "features.providerAutoSync": true,
+  "providers.syncHours": 12,
+  "features.vodLibrary": false, // opt-in — writes a .strm/.nfo tree to disk
+  "vod.libraryPath": `${projectRoot}/vod-library`,
+  "vod.publicUrl": "",
+  "vod.libraryCategories": [],
+  "vod.skipOwned": true,
+  "vod.syncHours": 24,
   "dvr.storagePath": `${projectRoot}/dvr`,
   "dvr.retentionDays": 14,
   "dvr.maxGB": 100,
@@ -84,6 +100,12 @@ const ENV_MAP: Partial<Record<keyof Settings, string>> = {
   "features.healthProbe": "PHOSPHARR_HEALTH_PROBE",
   "features.timeshift": "PHOSPHARR_TIMESHIFT",
   "features.dvr": "PHOSPHARR_DVR",
+  "features.providerAutoSync": "PHOSPHARR_PROVIDER_AUTOSYNC",
+  "providers.syncHours": "PHOSPHARR_PROVIDER_SYNC_HOURS",
+  "vod.syncHours": "PHOSPHARR_VOD_SYNC_HOURS",
+  "features.vodLibrary": "PHOSPHARR_VOD_LIBRARY",
+  "vod.libraryPath": "PHOSPHARR_VOD_LIBRARY_PATH",
+  "vod.publicUrl": "PHOSPHARR_PUBLIC_URL",
   "dvr.storagePath": "PHOSPHARR_DVR_PATH",
   "dvr.retentionDays": "PHOSPHARR_DVR_RETENTION_DAYS",
   "dvr.maxGB": "PHOSPHARR_DVR_MAX_GB",

@@ -23,7 +23,13 @@ import { cachedSetting } from "../settings.ts";
  */
 
 const HARD_MEMORY_CAP = 640 * 1024 * 1024; // ceiling per channel, regardless of window
+const GLOBAL_MEMORY_CAP = 1536 * 1024 * 1024; // aggregate ceiling across ALL timeshift channels
 const IDLE_TEARDOWN_MS = 30_000; // stop recording + free the buffer this long after the last reader leaves
+
+// Live total across every TimeshiftBuffer — bounds N channels × per-channel cap so
+// many simultaneous timeshifts can't sum past a hard ceiling. Each appending
+// buffer evicts its own oldest chunks while the total is over budget.
+let globalBytes = 0;
 
 type Chunk = { data: Uint8Array; t: number };
 type Reader = { wake: (() => void) | null };
@@ -78,10 +84,13 @@ class TimeshiftBuffer {
   private append(data: Uint8Array) {
     this.chunks.push({ data, t: Date.now() });
     this.bytes += data.byteLength;
-    // Evict by age first, then by the memory ceiling.
+    globalBytes += data.byteLength;
+    // Evict by age first, then by the per-channel and global memory ceilings.
     const minT = Date.now() - windowMs();
-    while (this.chunks.length > 1 && (this.chunks[0].t < minT || this.bytes > HARD_MEMORY_CAP)) {
-      this.bytes -= this.chunks[0].data.byteLength;
+    while (this.chunks.length > 1 && (this.chunks[0].t < minT || this.bytes > HARD_MEMORY_CAP || globalBytes > GLOBAL_MEMORY_CAP)) {
+      const sz = this.chunks[0].data.byteLength;
+      this.bytes -= sz;
+      globalBytes -= sz;
       this.chunks.shift();
       this.evicted++;
     }
@@ -123,7 +132,7 @@ class TimeshiftBuffer {
    * A continuous TS stream starting `behindMs` in the past and running on into
    * live. Used both for the initial tune (behind=0) and every rewind/seek.
    */
-  replay(behindMs: number): ReadableStream<Uint8Array> {
+  replay(behindMs: number, signal?: AbortSignal): ReadableStream<Uint8Array> {
     this.touch();
     void this.ensureRecording();
     let idx = this.indexForBehind(behindMs);
@@ -131,6 +140,15 @@ class TimeshiftBuffer {
     const self = this;
     const reader: Reader = { wake: null };
     this.readers.add(reader);
+    const drop = () => {
+      if (!self.readers.delete(reader)) return; // already removed (cancel or a prior abort)
+      if (reader.wake) reader.wake(); // unblock a parked pull so its loop can exit
+      self.maybeIdle();
+    };
+    // Bun fires the request signal on client disconnect; ReadableStream.cancel()
+    // alone is unreliable (same reason the muxer wires the signal), so without
+    // this a dropped viewer pins the buffer + provider slot + up to 640MB forever.
+    if (signal) signal.addEventListener("abort", drop, { once: true });
 
     return new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -157,8 +175,7 @@ class TimeshiftBuffer {
         }
       },
       cancel() {
-        self.readers.delete(reader);
-        self.maybeIdle();
+        drop();
       },
     }, new ByteLengthQueuingStrategy({ highWaterMark: 16 * 1024 * 1024 }));
   }
@@ -174,6 +191,7 @@ class TimeshiftBuffer {
     if (this.readers.size > 0) return; // a reader re-attached during the idle grace
     this.ended = true;
     try { this.abort.abort(); } catch { /* noop */ }
+    globalBytes -= this.bytes;
     this.chunks = [];
     this.bytes = 0;
     this.onTeardown();
@@ -193,8 +211,8 @@ class Timeshift {
   }
 
   /** Open a replay stream for a channel, `behindSec` seconds behind live. */
-  open(channelId: number, behindSec: number): ReadableStream<Uint8Array> {
-    return this.get(channelId).replay(Math.max(0, behindSec) * 1000);
+  open(channelId: number, behindSec: number, signal?: AbortSignal): ReadableStream<Uint8Array> {
+    return this.get(channelId).replay(Math.max(0, behindSec) * 1000, signal);
   }
 
   /** How much buffer is available behind live, in seconds (0 if not buffering). */

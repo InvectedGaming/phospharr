@@ -13,7 +13,8 @@ import { egress, providerEgress } from "../net/egress.ts";
 import { vpnProxyUrl } from "../net/tunnel.ts";
 import { nordCountries, nordRecommend, isNordConfig, setNordServer, setLocationComment, parseNordInfo } from "../net/nordvpn.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
-import { refreshDownstreamGuides, refreshOne, downstreamResults } from "../epg/downstream.ts";
+import { refreshDownstreamGuides, refreshOne, downstreamResults, scanDownstreamLibraries } from "../epg/downstream.ts";
+import { rebuildVodLibrary } from "../ingest/vodlibrary.ts";
 import { applyRules } from "../rules/engine.ts";
 import { reconcileAutoHides, listCategories, listProviderCategories } from "../content/filter.ts";
 import { muxer } from "../proxy/muxer.ts";
@@ -74,6 +75,17 @@ const { upgradeWebSocket, websocket } = createBunWebSocket();
 export { websocket };
 
 const COOKIE_OPTS = { httpOnly: true, sameSite: "Lax" as const, path: "/", maxAge: 30 * 24 * 3600 };
+/** Session-cookie options, adding Secure when the request arrived over HTTPS so
+ *  the 30-day token isn't transmitted in cleartext behind a TLS proxy. Plain-HTTP
+ *  LAN keeps it off so the cookie still works there. */
+function cookieOpts(c: Context<Env>) {
+  let https = false;
+  try {
+    const fwd = cachedSetting("access.trustProxy") ? c.req.header("x-forwarded-proto")?.split(",")[0].trim() : undefined;
+    https = fwd ? fwd === "https" : new URL(c.req.url).protocol === "https:";
+  } catch { /* default to not-secure */ }
+  return https ? { ...COOKIE_OPTS, secure: true } : COOKIE_OPTS;
+}
 /** 403 unless the request's user is an admin; null means OK to proceed. */
 function ensureAdmin(c: Context<Env>) {
   const u = c.get("user");
@@ -207,7 +219,7 @@ app.post("/api/auth/register", async (c) => {
   if (first) {
     // Auto-login the very first admin so setup flows straight into the app.
     const res = await login(username, password);
-    if (res) setCookie(c, SESSION_COOKIE, res.token, COOKIE_OPTS);
+    if (res) setCookie(c, SESSION_COOKIE, res.token, cookieOpts(c));
   }
   return c.json({ user: publicUser(user) });
 });
@@ -230,7 +242,7 @@ app.post("/api/auth/login", async (c) => {
     return c.json({ error: "invalid username or password" }, 401);
   }
   loginFails.delete(ip); // success clears the counter
-  setCookie(c, SESSION_COOKIE, res.token, COOKIE_OPTS);
+  setCookie(c, SESSION_COOKIE, res.token, cookieOpts(c));
   return c.json({ user: publicUser(res.user) });
 });
 app.post("/api/auth/logout", (c) => {
@@ -264,10 +276,15 @@ app.get("/api/categories", async (c) => {
 });
 
 app.get("/api/settings", async (c) => {
+  const isAdmin = c.get("user")?.role === "admin";
   // Strip downstream API keys — those are managed (and redacted) via the
   // dedicated /api/epg/downstream endpoints, never leaked through settings.
   const settings = { ...(await getSettings()) };
   settings["epg.downstream"] = (settings["epg.downstream"] ?? []).map(({ apiKey, ...s }) => ({ ...s, apiKey: "" }));
+  // The master stream key grants FULL, restriction-free access (a valid key = the
+  // whole lineup via ?key=…). Never hand it to a non-admin, or a restricted/child
+  // account could read it here and stream anything it isn't allowed to see.
+  if (!isAdmin) settings["access.streamKey"] = "";
   return c.json({ settings, envLocked: envLockedKeys() });
 });
 app.patch("/api/settings", async (c) => {
@@ -440,7 +457,7 @@ app.get("/timeshift/:channelId", async (c) => {
     if (!channelVisible({ id: channelId, category: ch?.category ?? null }, auth.user.restrictions)) return c.text("forbidden", 403);
   }
   const behind = Math.max(0, Number(c.req.query("behind")) || 0);
-  const body = timeshift.open(channelId, behind);
+  const body = timeshift.open(channelId, behind, c.req.raw.signal);
   trackSession(c, channelId, "passthrough", auth.user?.id);
   return new Response(body, { headers: STREAM_HEADERS });
 });
@@ -491,9 +508,14 @@ app.get("/livefeed/:channelId", async (c) => {
   return new Response(body, { headers: STREAM_HEADERS });
 });
 
-// Mosaic status for the app: encode + per-tile health, and the stream key for
-// building shareable/castable links.
-app.get("/api/mosaic/status", (c) => c.json({ ...compositor.status(), key: String(cachedSetting("access.streamKey") || "") }));
+// Mosaic status for the app: encode + per-tile health. The stream key (for
+// building castable/shareable keyed links to keyless devices) is admin-only —
+// it grants full access, so restricted users get "" and cast in-browser via
+// their session cookie instead.
+app.get("/api/mosaic/status", (c) => {
+  const isAdmin = c.get("user")?.role === "admin";
+  return c.json({ ...compositor.status(), key: isAdmin ? String(cachedSetting("access.streamKey") || "") : "" });
+});
 
 // ─── Exports under /t/<stream key>/ so the key rides every derived URL. Point
 // Plex/Jellyfin at  http://<host>:7777/t/<key>  (HDHR), or use the M3U/XMLTV
@@ -577,6 +599,13 @@ app.get("/api/providers", async (c) => {
   })));
 });
 
+/** Normalize a mirror-hosts input (array or newline/comma string) → clean list or null. */
+function normHosts(v: unknown): string[] | null {
+  const arr = Array.isArray(v) ? v : typeof v === "string" ? v.split(/[\n,]+/) : [];
+  const clean = arr.map((s) => String(s).trim()).filter(Boolean);
+  return clean.length ? clean : null;
+}
+
 app.patch("/api/providers/:id", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;
   const id = Number(c.req.param("id"));
@@ -584,6 +613,7 @@ app.patch("/api/providers/:id", async (c) => {
   const allowed = ["name", "url", "username", "password", "maxConnections", "epgUrl", "priority", "enabled", "proxyUrl"];
   const updates: Record<string, unknown> = {};
   for (const k of allowed) if (k in body && body[k] !== "") updates[k] = body[k];
+  if ("mirrorHosts" in body) updates.mirrorHosts = normHosts(body.mirrorHosts); // array or newline string → list (null clears)
   if (!Object.keys(updates).length) return c.json({ error: "nothing to update" }, 400);
   const [row] = await db.update(providers).set(updates).where(eq(providers.id, id)).returning();
   if (!row) return c.json({ error: "not found" }, 404);
@@ -614,6 +644,7 @@ app.post("/api/providers", async (c) => {
       epgUrl: body.epgUrl ?? null,
       priority: body.priority ?? 100,
       proxyUrl: body.proxyUrl || null,
+      mirrorHosts: normHosts(body.mirrorHosts),
     })
     .returning();
   pool.setBudget(row.id, row.maxConnections);
@@ -799,6 +830,9 @@ app.post("/api/providers/:id/sync", async (c) => {
   const deny = ensureAdmin(c); if (deny) return deny;
   const id = Number(c.req.param("id"));
   const result = await syncProvider(id);
+  // Radarr/Sonarr-style: once the lineup sync lands, nudge downstream media
+  // servers so the new/removed channels + guide show up now (fire-and-forget).
+  void refreshDownstreamGuides().catch(() => {});
   return c.json(result);
 });
 
@@ -1010,7 +1044,21 @@ app.post("/api/vod/sync", async (c) => {
   const provs = await db.select().from(providers).where(eq(providers.enabled, true));
   const results = [];
   for (const p of provs) if (p.type === "xtream") results.push({ providerId: p.id, ...(await syncVod(p.id)) });
+  // Rebuild the Emby/Jellyfin .strm library and, if it changed, trigger a scan
+  // (Radarr-style; fire-and-forget, gated on features.vodLibrary inside).
+  void (async () => {
+    const lib = await rebuildVodLibrary();
+    if (!lib.skipped && (lib.written || lib.pruned)) await scanDownstreamLibraries();
+  })().catch(() => {});
   return c.json(results);
+});
+
+// Manually rebuild the VOD .strm library (and scan Emby) without a full re-sync.
+app.post("/api/vod/library/rebuild", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const lib = await rebuildVodLibrary();
+  if (!lib.skipped) await scanDownstreamLibraries().catch(() => {});
+  return c.json(lib);
 });
 
 // VOD playback: remux the provider file (video copy, audio → AAC, MPEG-TS out)
@@ -1218,6 +1266,12 @@ app.get("/dvr/:id", async (c) => {
   if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
   const rec = db.select().from(recordings).where(eq(recordings.id, Number(c.req.param("id")))).get();
   if (!rec?.filePath) return c.text("not found", 404);
+  // A restricted (non-admin) viewer can't play a recording of a channel they
+  // aren't allowed to see — an adult/hidden channel's DVR is off-limits too.
+  if (auth.user && auth.user.role !== "admin") {
+    const ch = db.select({ category: channels.category, isHidden: channels.isHidden }).from(channels).where(eq(channels.id, rec.channelId)).get();
+    if (ch && (ch.isHidden || !channelVisible({ id: rec.channelId, category: ch.category ?? null }, auth.user.restrictions))) return c.text("forbidden", 403);
+  }
   const f = Bun.file(rec.filePath);
   if (!(await f.exists())) return c.text("file missing", 404);
   const size = f.size;

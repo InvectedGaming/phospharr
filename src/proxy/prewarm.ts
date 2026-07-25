@@ -92,13 +92,16 @@ async function targets(channelId: number): Promise<number[]> {
   // the lineup's habit: most-watched channel for this hour of day, last 14 days
   try {
     const hour = new Date().getHours();
+    // Wrap around midnight: BETWEEN hour-1 AND hour+1 loses an hour at the 0/23
+    // seam (at 0 it queries -1..1, missing 23). Use an explicit wrapped set.
+    const hrs = [(hour + 23) % 24, hour, (hour + 1) % 24];
     const rows = await db
       .select({ channelId: viewEvents.channelId, secs: sql<number>`SUM(${viewEvents.durationSec})` })
       .from(viewEvents)
       .where(and(
         eq(viewEvents.kind, "watch"),
         gte(viewEvents.startedAt, new Date(Date.now() - 14 * 86400_000)),
-        sql`CAST(strftime('%H', ${viewEvents.startedAt}, 'unixepoch') AS INTEGER) BETWEEN ${hour - 1} AND ${hour + 1}`,
+        sql`CAST(strftime('%H', ${viewEvents.startedAt}, 'unixepoch') AS INTEGER) IN (${hrs[0]}, ${hrs[1]}, ${hrs[2]})`,
       ))
       .groupBy(viewEvents.channelId)
       .orderBy(sql`SUM(${viewEvents.durationSec}) DESC`)

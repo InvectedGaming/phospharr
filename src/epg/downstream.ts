@@ -96,6 +96,33 @@ function record(r: SyncResult): SyncResult {
   return r;
 }
 
+/** Trigger an Emby/Jellyfin media-library scan (picks up new VOD .strm files).
+ *  Plex is skipped — its scan needs a per-section id, unlike the guide reload. */
+async function scanEmbyLibrary(s: DownstreamServer): Promise<string> {
+  const base = trimUrl(s.url);
+  const headers = { "X-Emby-Token": s.apiKey, "X-MediaBrowser-Token": s.apiKey, Authorization: `MediaBrowser Token="${s.apiKey}"`, Accept: "application/json" };
+  const r = await jfetch(`${base}/Library/Refresh`, { method: "POST", headers });
+  if (r.status === 401 || r.status === 403) throw new Error("unauthorized — check the API key");
+  if (!r.ok && r.status !== 204) throw new Error(`Library/Refresh HTTP ${r.status}`);
+  return "library scan started";
+}
+
+/** Ask every enabled Emby/Jellyfin server to rescan its libraries — call after
+ *  the VOD .strm library is rebuilt so new movies show up. Best-effort. */
+export async function scanDownstreamLibraries(): Promise<SyncResult[]> {
+  let servers: DownstreamServer[] = [];
+  try { servers = (await getSetting("epg.downstream")) ?? []; } catch { return []; }
+  const targets = servers.filter((s) => s.enabled && s.url && s.apiKey && s.type !== "plex");
+  if (!targets.length) return [];
+  const results = await Promise.all(targets.map(async (s) => {
+    const at = Date.now();
+    try { return record({ id: s.id, name: s.name || s.url, type: s.type, ok: true, at, message: await scanEmbyLibrary(s) }); }
+    catch (e) { return record({ id: s.id, name: s.name || s.url, type: s.type, ok: false, at, message: e instanceof Error ? e.message : String(e) }); }
+  }));
+  console.log(`[vod] downstream library scan: ${results.filter((r) => r.ok).length}/${results.length} server(s)`);
+  return results;
+}
+
 /** Nudge every ENABLED downstream server. Called after each EPG refresh. */
 export async function refreshDownstreamGuides(): Promise<SyncResult[]> {
   let servers: DownstreamServer[] = [];

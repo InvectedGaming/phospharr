@@ -55,6 +55,18 @@ export function similarity(a: string, b: string): number {
 const FUZZY_THRESHOLD = 0.86;
 
 /**
+ * Digit-groups of a slug in order, e.g. "skysports1" → "1", "bbc2hd" → "2".
+ * Numbered siblings ("Sky Sports 1" vs "2", "beIN 1" vs "12") differ by a single
+ * character over a long slug, so their similarity is ~0.90 — above the fuzzy
+ * threshold. They are DISTINCT channels and must never merge, so a fuzzy match
+ * additionally requires identical digit-groups. HD/quality variants (same number)
+ * still merge correctly, since their digit-groups match.
+ */
+function digitRuns(s: string): string {
+  return (s.match(/\d+/g) ?? []).join(",");
+}
+
+/**
  * Resolve a raw entry to a canonicalId, reusing an existing one when the entry
  * is the same channel from a different provider.
  *
@@ -78,10 +90,14 @@ export function matchCanonical(input: MatchInput, known: Map<string, string>): M
     return { canonicalId: candidate, display: norm.display, resolution: norm.resolution, norm };
   }
 
-  // 3. Fuzzy match against known slugs (same country bucket).
+  // 3. Fuzzy match against known slugs (same country bucket), but only when the
+  // two slugs carry the same numbers — so "skysports1" and "skysports2" (0.90
+  // similar) stay separate channels while "bbc" ≈ "bbcone" still merge.
+  const inputDigits = digitRuns(norm.slug);
   let best: { id: string; score: number } | null = null;
   for (const [id, slug] of known) {
     if (!id.endsWith(`.${country}`)) continue;
+    if (digitRuns(slug) !== inputDigits) continue;
     const score = similarity(norm.slug, slug);
     if (score >= FUZZY_THRESHOLD && (!best || score > best.score)) {
       best = { id, score };

@@ -91,6 +91,14 @@ class ChannelMux {
       } catch { /* upstream failed — fall through to failover */ }
       if (this.stopping) return; // teardown() already ran (idle reap / kill)
       if (this.subs.size === 0) { this.teardown(true); return; }
+      // Close the old source's reader + child processes (streamlink/yt-dlp/ffmpeg)
+      // before moving on — on a clean upstream EOF the abort never fired, so
+      // without this the old resolver process lingers until it dies on its own.
+      try { this.abort.abort(); } catch { /* noop */ }
+      // Backoff: a channel whose sources fail instantly (egress-blocked/refused)
+      // would otherwise burn through every ranked source — a DB query + provider
+      // hit each — in a tight synchronous loop. Throttle each failover attempt.
+      await Bun.sleep(200);
       const next = await this.nextSource();
       if (!next) {
         console.log(`[muxer] channel ${this.channelId}: source ${this.stream.id} died, no alternates — dropping ${this.subs.size} viewer(s)`);
@@ -245,26 +253,30 @@ class Muxer {
    * Open a viewer stream for a channel. Returns a ReadableStream (MPEG-TS
    * passthrough) or null if the pool is full / no playable source.
    */
-  async open(channelId: number, signal?: AbortSignal, opts?: { preroll?: boolean }): Promise<ReadableStream<Uint8Array> | null> {
-    let selection = await selectStream(channelId);
-    if (!selection && this.evictor?.()) selection = await selectStream(channelId); // free a prewarm slot, retry once
-    if (!selection) return null;
+  async open(channelId: number, signal?: AbortSignal, opts?: { preroll?: boolean; lossless?: boolean }): Promise<ReadableStream<Uint8Array> | null> {
+    // Acquire a source, retrying the next-ranked one if the slot races away
+    // between the peek (selectStream sees a free slot) and the real pool.acquire
+    // inside mux.start(). Without this, a viewer gets "all tuners busy" while
+    // another provider still had capacity.
+    let mux: ChannelMux | null = null;
+    for (let attempt = 0; attempt < 4 && !mux; attempt++) {
+      let selection = await selectStream(channelId);
+      if (!selection && this.evictor?.()) selection = await selectStream(channelId); // free a prewarm slot, retry once
+      if (!selection) return null;
 
-    let mux = this.active.get(selection.stream.id);
-    if (!mux) {
+      const existing = this.active.get(selection.stream.id);
+      if (existing) { mux = existing; break; } // already live — multiplex onto it
+
       const created = new ChannelMux(
         selection.stream,
         () => { for (const [id, m] of this.active) if (m === created) this.active.delete(id); },
         (oldId, newId) => { if (this.active.get(oldId) === created) this.active.delete(oldId); this.active.set(newId, created); },
       );
-      mux = created;
-      this.active.set(selection.stream.id, mux);
-      const ok = await mux.start();
-      if (!ok) {
-        this.active.delete(selection.stream.id);
-        return null; // slot raced away
-      }
+      this.active.set(selection.stream.id, created);
+      if (await created.start()) { mux = created; break; }
+      this.active.delete(selection.stream.id); // slot raced away — try the next-ranked source
     }
+    if (!mux) return null;
 
     const mref = mux;
     let subId = -1;
@@ -273,10 +285,12 @@ class Muxer {
         start(controller) {
           subId = mref.attach({
             push: (chunk) => {
-              // Drop when the client is backpressured instead of buffering
-              // unbounded — a stalled viewer must never OOM the server. For live
-              // TV, dropping keeps us near the edge; a healthy client never hits this.
-              if (controller.desiredSize !== null && controller.desiredSize <= 0) return;
+              // Live viewers DROP when backpressured instead of buffering unbounded
+              // — a stalled viewer must never OOM the server, and for live TV dropping
+              // keeps us near the edge. But a DVR recorder (lossless) must NOT drop:
+              // a dropped TS packet is a permanent gap in the saved file. It applies
+              // its own write-backpressure instead (see dvr/recorder.ts).
+              if (!opts?.lossless && controller.desiredSize !== null && controller.desiredSize <= 0) return;
               try {
                 controller.enqueue(chunk);
               } catch {
@@ -301,6 +315,12 @@ class Muxer {
       },
       new ByteLengthQueuingStrategy({ highWaterMark: 24 * 1024 * 1024 }), // ~12s at 15Mbps before a stalled client drops
     );
+  }
+
+  /** Stop every live mux (kills upstream child processes, releases slots). Shutdown. */
+  shutdown(): void {
+    for (const m of [...this.active.values()]) m.stop();
+    this.active.clear();
   }
 
   stats() {
