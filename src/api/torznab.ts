@@ -280,6 +280,17 @@ torznab.get("/torznab/api", async (c) => {
     log = `rss → ${releases.length} recent (refreshed ${stale.length} tracked series)`;
   }
 
+  // One release per episode, even when the same show exists under several
+  // providers: duplicate near-instant .strm grabs are the trigger for the
+  // *arr import/delete loop (Radarr #11435), and dupes add nothing — every
+  // release is the same nominal SDTV stub.
+  const seen = new Set<string>();
+  releases = releases.filter((r) => {
+    const k = r.title.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
   releases = releases.slice(offset, offset + 100);
   console.log(`[torznab] ${log}${offset ? ` offset=${offset}` : ""}`);
   return c.body(rssXml(releases.map((r) => itemXml(r, origin, apikey))), 200, XMLH);

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
@@ -87,6 +87,11 @@ async function tick(): Promise<void> {
     const dir = join(complete, payload.n);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, `${payload.n}.strm`), resolved.url);
+    // Phospharr usually runs as root in Docker while Sonarr runs as its own
+    // PUID; Sonarr must MOVE the file out of here, and rwxr-xr-x root-owned
+    // dirs fail that with UnauthorizedAccessException. World-writable is fine —
+    // this is a transient handoff folder, not a library.
+    try { chmodSync(dir, 0o777); chmodSync(join(dir, `${payload.n}.strm`), 0o666); } catch { /* non-POSIX fs */ }
     rmSync(path, { force: true });
     attempts.delete(path);
     console.log(`[blackhole] ${resolved.showName} S${String(payload.se).padStart(2, "0")}E${String(payload.ep).padStart(2, "0")} → ${join(payload.n, `${payload.n}.strm`)}`);
