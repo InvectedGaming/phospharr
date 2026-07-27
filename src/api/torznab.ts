@@ -110,8 +110,11 @@ interface Release { title: string; guid: string; payload: GrabPayload; pubDate: 
 
 function itemXml(r: Release, origin: string, apikey: string): string {
   const link = `${origin}/torznab/download/${encodePayload(r.payload)}.nzb?apikey=${encodeURIComponent(apikey)}`;
+  // 5030 (TV/SD), not the parent 5000: Sonarr filters items on LEAF categories,
+  // and a parent-only value fails registration with "no results in the
+  // configured categories". SD is semantically right for SDTV releases.
   const attrs = [
-    `    <torznab:attr name="category" value="5000"/>`,
+    `    <torznab:attr name="category" value="5030"/>`,
     `    <torznab:attr name="season" value="${r.payload.se}"/>`,
     `    <torznab:attr name="episode" value="${r.payload.ep}"/>`,
   ];
@@ -122,7 +125,7 @@ function itemXml(r: Release, origin: string, apikey: string): string {
     <link>${xml(link)}</link>
     <pubDate>${r.pubDate.toUTCString()}</pubDate>
     <size>${NOMINAL_SIZE}</size>
-    <category>5000</category>
+    <category>5030</category>
     <enclosure url="${xml(link)}" length="${NOMINAL_SIZE}" type="application/x-nzb"/>
 ${attrs.join("\n")}
   </item>`;
