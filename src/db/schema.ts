@@ -359,6 +359,7 @@ export const vodSeries = sqliteTable(
     posterUrl: text("poster_url"),
     plot: text("plot"),
     episodesCachedAt: integer("episodes_cached_at", { mode: "timestamp" }), // lazy get_series_info cache marker
+    lastQueriedAt: integer("last_queried_at", { mode: "timestamp" }), // last targeted Torznab search — marks shows Sonarr monitors, so RSS keeps them fresh
   },
   (t) => ({
     provSeriesUq: uniqueIndex("vod_series_prov_series_uq").on(t.providerId, t.seriesId),
@@ -378,6 +379,7 @@ export const vodEpisodes = sqliteTable(
     ext: text("ext").notNull().default("mp4"),
     plot: text("plot"),
     durationSec: integer("duration_sec"),
+    firstSeenAt: integer("first_seen_at", { mode: "timestamp" }), // when this episode first appeared in the catalog (survives the refetch wipe) — feeds the Torznab RSS feed
   },
   (t) => ({ seriesIdx: index("vod_episodes_series_idx").on(t.seriesRowId) }),
 );

@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { inArray } from "drizzle-orm";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { asc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { vodMovies } from "../db/schema.ts";
+import { vodEpisodes, vodMovies, vodSeries } from "../db/schema.ts";
+import { ensureEpisodes } from "./vod.ts";
 import { getSetting, cachedSetting, type DownstreamServer } from "../settings.ts";
 
 /**
@@ -10,14 +11,25 @@ import { getSetting, cachedSetting, type DownstreamServer } from "../settings.ts
  * `.strm` files (each holds one absolute playback URL) + a `.nfo` per movie, in
  * the layout Emby/Jellyfin scan:  <libraryPath>/Movies/<Name> (Year)/<Name> (Year).strm
  *
- * Point an Emby "Movies" library at <libraryPath>/Movies and it plays straight
- * through Phospharr (which remuxes on the fly). Reconciles each run: writes
- * new/changed entries and prunes folders for movies that left the catalog — like
- * Radarr managing a library — then we trigger the server's scan (epg/downstream).
+ * With vod.includeSeries, series get the same treatment in a Sonarr-parseable
+ * tree:  <libraryPath>/Series/<Show> (Year)/Season NN/<Show> - SxxEyy - <Title>.strm
+ * so Sonarr can import them as a zero-storage catalog and Emby browses them
+ * like owned content. Every run re-pulls episode lists for mirrored series
+ * (vod.refreshExisting, default ON) so newly-aired episodes show up on their own.
+ *
+ * Point an Emby "Movies" library at <libraryPath>/Movies (and a "TV Shows" one
+ * at <libraryPath>/Series) and it plays straight through Phospharr (which
+ * remuxes on the fly). Reconciles each run: writes new/changed entries and
+ * prunes folders for titles that left the catalog — like Radarr/Sonarr managing
+ * a library — then we trigger the server's scan (epg/downstream). Writes are
+ * strictly delta-only: a file whose content is unchanged is never rewritten, so
+ * its mtime never moves (blind nightly rewrites of an ~80k-file tree trigger
+ * inotify storms in Emby that bloat its SQLite WAL until library queries stall).
  *
  * Opt-in (features.vodLibrary) since it writes files. Needs an absolute base URL
  * Emby can reach (vod.publicUrl, else BASE_URL) — a LAN/Docker address is fine.
- * A category allow-list (vod.libraryCategories) keeps a 50k-title dump in check.
+ * A category allow-list (vod.libraryCategories / vod.seriesCategories) keeps a
+ * 50k-title dump in check.
  */
 
 const xml = (s: string) => s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c] as string));
@@ -30,15 +42,34 @@ function safeName(s: string): string {
 
 /** Provider names frequently already embed "(YYYY)"; split it out so we don't
  *  double the year and the .nfo <title> stays clean for metadata scraping. */
-function titleYear(m: typeof vodMovies.$inferSelect): { title: string; year: number | null } {
+export function titleYear(m: { name: string; year: number | null }): { title: string; year: number | null } {
   const embedded = m.name.match(/\((?:19|20)\d{2}\)\s*$/);
   const title = m.name.replace(/\s*\((?:19|20)\d{2}\)\s*$/, "").trim() || m.name;
   const year = m.year ?? (embedded ? Number(embedded[0].replace(/\D/g, "")) : null);
   return { title, year };
 }
 
-function publicBase(): string {
+export function publicBase(): string {
   return (String(cachedSetting("vod.publicUrl") || "") || process.env.BASE_URL || "").replace(/\/+$/, "");
+}
+
+/** Stable playback URL for an episode. Keyed on series ROW id + S/E — never the
+ *  vod_episodes row id, which is wiped and reissued on every episode refetch. A
+ *  row-id URL inside a .strm goes permanently stale the moment the list
+ *  refreshes — fatal for stubs Sonarr has imported into its own library folder,
+ *  since nothing ever rewrites those. The /vod/play/ep route resolves live. */
+export function episodePlayUrl(base: string, key: string, seriesRowId: number, season: number, episode: number): string {
+  return `${base}/vod/play/ep/${seriesRowId}/${season}/${episode}?key=${encodeURIComponent(key)}`;
+}
+
+const pad2 = (n: number) => String(Math.max(0, n)).padStart(2, "0");
+
+/** Write only when the content actually differs, leaving mtimes of everything
+ *  else untouched (see the inotify-storm rationale above). */
+function writeIfChanged(path: string, content: string): boolean {
+  try { if (readFileSync(path, "utf8") === content) return false; } catch { /* new file */ }
+  writeFileSync(path, content);
+  return true;
 }
 
 function movieNfo(title: string, year: number | null, m: typeof vodMovies.$inferSelect): string {
@@ -50,10 +81,62 @@ function movieNfo(title: string, year: number | null, m: typeof vodMovies.$infer
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n${lines.join("\n")}\n</movie>\n`;
 }
 
+function tvshowNfo(title: string, year: number | null, s: typeof vodSeries.$inferSelect): string {
+  const lines = [`  <title>${xml(title)}</title>`];
+  if (year) lines.push(`  <year>${year}</year>`);
+  if (s.plot) lines.push(`  <plot>${xml(s.plot)}</plot>`);
+  if (s.posterUrl) { lines.push(`  <thumb>${xml(s.posterUrl)}</thumb>`); lines.push(`  <art><poster>${xml(s.posterUrl)}</poster></art>`); }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<tvshow>\n${lines.join("\n")}\n</tvshow>\n`;
+}
+
+function episodeNfo(title: string, season: number, episode: number, plot: string | null): string {
+  const lines = [`  <title>${xml(title)}</title>`, `  <season>${season}</season>`, `  <episode>${episode}</episode>`];
+  if (plot) lines.push(`  <plot>${xml(plot)}</plot>`);
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<episodedetails>\n${lines.join("\n")}\n</episodedetails>\n`;
+}
+
+/** Provider episode titles frequently embed the show name and/or the SxxEyy code
+ *  ("Grey's Anatomy - S15E01 - Title"); using them verbatim in a filename that
+ *  already carries both would duplicate the identifiers ("Show - S15E01 - Show -
+ *  S15E01 - Title.strm"). Strip them so only the bare episode title remains. */
+export function cleanEpisodeTitle(raw: string | null, show: string): string | null {
+  if (!raw) return null;
+  let t = raw.trim();
+  if (t.toLowerCase().startsWith(show.toLowerCase())) t = t.slice(show.length);
+  t = t.replace(/\bS\d{1,2}\s*[.\-–—: ]?\s*E\d{1,3}\b/gi, "").replace(/^[\s\-–—:.]+|[\s\-–—:.]+$/g, "").replace(/\s{2,}/g, " ");
+  return t || null;
+}
+
 /** Dedup key: normalized title + year. VOD entries carry no TMDb/IMDb id, so
  *  matching is by title+year; Emby items also expose provider ids when present. */
 function keyOf(title: string, year: number | null | undefined): string {
   return title.toLowerCase().replace(/[^a-z0-9]/g, "") + "|" + (year ?? "");
+}
+
+/** Episode dedup key: normalized show name (embedded "(YYYY)" stripped — Emby's
+ *  SeriesName and provider names disagree on it) + season + episode. */
+export function epKeyOf(show: string, season: number, episode: number): string {
+  return show.toLowerCase().replace(/\s*\((?:19|20)\d{2}\)\s*$/, "").replace(/[^a-z0-9]/g, "") + `|s${season}e${episode}`;
+}
+
+/** Enabled Emby/Jellyfin downstream servers (skipOwned checks run against these). */
+async function embyServers(): Promise<DownstreamServer[] | null> {
+  let servers: DownstreamServer[] = [];
+  try { servers = (await getSetting("epg.downstream")) ?? []; } catch { return null; }
+  const embys = servers.filter((s) => s.enabled && s.url && s.apiKey && s.type !== "plex");
+  return embys.length ? embys : null;
+}
+
+async function embyItems<T>(s: DownstreamServer, query: string): Promise<T[] | null> {
+  try {
+    const base = s.url.trim().replace(/\/+$/, "");
+    const res = await fetch(`${base}/Items?Recursive=true&EnableImages=false&${query}`, {
+      headers: { "X-Emby-Token": s.apiKey, "X-MediaBrowser-Token": s.apiKey, Accept: "application/json" },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { Items?: T[] }).Items ?? [];
+  } catch { return null; } // skip this server, don't block the rebuild
 }
 
 /** Titles already in the Emby/Jellyfin library as REAL files (not our .strm
@@ -61,43 +144,85 @@ function keyOf(title: string, year: number | null | undefined): string {
  *  this runs every rebuild, prune the .strm later if they add the real file.
  *  Returns null when we can't check (no server / query failed) → skip nothing. */
 async function ownedMovieKeys(): Promise<Set<string> | null> {
-  let servers: DownstreamServer[] = [];
-  try { servers = (await getSetting("epg.downstream")) ?? []; } catch { return null; }
-  const embys = servers.filter((s) => s.enabled && s.url && s.apiKey && s.type !== "plex");
-  if (!embys.length) return null;
+  const embys = await embyServers();
+  if (!embys) return null;
   const owned = new Set<string>();
   let any = false;
   for (const s of embys) {
-    try {
-      const base = s.url.trim().replace(/\/+$/, "");
-      const res = await fetch(`${base}/Items?Recursive=true&IncludeItemTypes=Movie&Fields=Path,ProviderIds,ProductionYear&EnableImages=false`, {
-        headers: { "X-Emby-Token": s.apiKey, "X-MediaBrowser-Token": s.apiKey, Accept: "application/json" },
-        signal: AbortSignal.timeout(60_000),
-      });
-      if (!res.ok) continue;
-      const body = (await res.json()) as { Items?: Array<{ Name?: string; ProductionYear?: number; Path?: string; ProviderIds?: Record<string, string> }> };
-      for (const it of body.Items ?? []) {
-        if (it.Path && /\.strm$/i.test(it.Path)) continue; // our own VOD entry, not a real file the user owns
-        const pid = it.ProviderIds ?? {};
-        if (pid.Tmdb) owned.add("tmdb:" + pid.Tmdb);
-        if (pid.Imdb) owned.add("imdb:" + String(pid.Imdb).toLowerCase());
-        if (it.Name) owned.add(keyOf(it.Name, it.ProductionYear));
-      }
-      any = true;
-    } catch { /* skip this server, don't block the rebuild */ }
+    type Item = { Name?: string; ProductionYear?: number; Path?: string; ProviderIds?: Record<string, string> };
+    const items = await embyItems<Item>(s, "IncludeItemTypes=Movie&Fields=Path,ProviderIds,ProductionYear");
+    if (!items) continue;
+    for (const it of items) {
+      if (it.Path && /\.strm$/i.test(it.Path)) continue; // our own VOD entry, not a real file the user owns
+      const pid = it.ProviderIds ?? {};
+      if (pid.Tmdb) owned.add("tmdb:" + pid.Tmdb);
+      if (pid.Imdb) owned.add("imdb:" + String(pid.Imdb).toLowerCase());
+      if (it.Name) owned.add(keyOf(it.Name, it.ProductionYear));
+    }
+    any = true;
   }
   return any ? owned : null;
 }
 
-export interface VodLibraryResult { movies: number; written: number; pruned: number; skippedOwned: number; skipped?: string }
+/** Same idea per-episode: episodes the user owns as real (non-.strm) files. */
+export async function ownedEpisodeKeys(): Promise<Set<string> | null> {
+  const embys = await embyServers();
+  if (!embys) return null;
+  const owned = new Set<string>();
+  let any = false;
+  for (const s of embys) {
+    type Item = { SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; Path?: string };
+    const items = await embyItems<Item>(s, "IncludeItemTypes=Episode&Fields=Path");
+    if (!items) continue;
+    for (const it of items) {
+      if (it.Path && /\.strm$/i.test(it.Path)) continue; // our own stub, not a real file
+      if (it.SeriesName && it.ParentIndexNumber != null && it.IndexNumber != null)
+        owned.add(epKeyOf(it.SeriesName, it.ParentIndexNumber, it.IndexNumber));
+    }
+    any = true;
+  }
+  return any ? owned : null;
+}
+
+/** Remove files under `dir` that aren't in `wanted` (rel paths), then any
+ *  directories left empty. Returns how many entries were removed. */
+function pruneExtraneous(dir: string, wanted: Map<string, string>): number {
+  let n = 0;
+  const walk = (rel: string): void => {
+    for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      const r = rel ? join(rel, e.name) : e.name;
+      if (e.isDirectory()) {
+        walk(r);
+        if (!readdirSync(join(dir, r)).length) { rmSync(join(dir, r), { recursive: true, force: true }); n++; }
+      } else if (!wanted.has(r)) { rmSync(join(dir, r), { force: true }); n++; }
+    }
+  };
+  walk("");
+  return n;
+}
+
+export interface VodLibraryResult {
+  movies: number;
+  series: number;
+  episodes: number;
+  written: number; // files created or updated (delta writes only)
+  pruned: number; // folders/files removed (left catalog, or now owned for real)
+  skippedOwned: number; // titles/episodes not mirrored because a real file exists
+  skippedUnchanged: number; // files compared and left untouched (mtime preserved)
+  skipped?: string;
+}
 
 export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
-  const out: VodLibraryResult = { movies: 0, written: 0, pruned: 0, skippedOwned: 0 };
+  const out: VodLibraryResult = { movies: 0, series: 0, episodes: 0, written: 0, pruned: 0, skippedOwned: 0, skippedUnchanged: 0 };
   if (!(await getSetting("features.vodLibrary"))) return { ...out, skipped: "disabled (features.vodLibrary off)" };
   const base = publicBase();
   if (!base) return { ...out, skipped: "no public URL — set vod.publicUrl or BASE_URL (Emby needs an absolute, reachable URL)" };
   const key = String(cachedSetting("access.streamKey") || "");
-  const root = join(await getSetting("vod.libraryPath"), "Movies");
+  const libPath = await getSetting("vod.libraryPath");
+  const skipOwned = await getSetting("vod.skipOwned");
+
+  // ── movies ──
+  const root = join(libPath, "Movies");
   mkdirSync(root, { recursive: true });
 
   const cats = (await getSetting("vod.libraryCategories")) ?? [];
@@ -106,7 +231,7 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
     : await db.select().from(vodMovies);
   out.movies = movies.length;
 
-  const owned = (await getSetting("vod.skipOwned")) ? await ownedMovieKeys() : null;
+  const owned = skipOwned ? await ownedMovieKeys() : null;
   const wanted = new Set<string>();
   for (const m of movies) {
     const { title, year } = titleYear(m);
@@ -116,20 +241,82 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
     if (wanted.has(folder)) folder = safeName(`${display} [${m.id}]`); // disambiguate rare collisions
     wanted.add(folder);
     const dir = join(root, folder);
-    const strmPath = join(dir, `${folder}.strm`);
+    mkdirSync(dir, { recursive: true });
     const url = `${base}/vod/play/movie/${m.id}?key=${encodeURIComponent(key)}`;
-    const cur = existsSync(strmPath) ? readFileSync(strmPath, "utf8").trim() : null;
-    if (cur !== url) {
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(strmPath, url);
-      writeFileSync(join(dir, `${folder}.nfo`), movieNfo(title, year, m));
-      out.written++;
-    }
+    for (const changed of [writeIfChanged(join(dir, `${folder}.strm`), url), writeIfChanged(join(dir, `${folder}.nfo`), movieNfo(title, year, m))])
+      changed ? out.written++ : out.skippedUnchanged++;
   }
 
   // prune folders for movies that left the catalog (or the category allow-list)
   for (const e of readdirSync(root, { withFileTypes: true })) {
     if (e.isDirectory() && !wanted.has(e.name)) { rmSync(join(root, e.name), { recursive: true, force: true }); out.pruned++; }
   }
+
+  // ── series (opt-in) ──
+  if (await getSetting("vod.includeSeries")) {
+    const seriesRoot = join(libPath, "Series");
+    mkdirSync(seriesRoot, { recursive: true });
+
+    const scats = (await getSetting("vod.seriesCategories")) ?? [];
+    const shows = scats.length
+      ? await db.select().from(vodSeries).where(inArray(vodSeries.category, scats))
+      : await db.select().from(vodSeries);
+    out.series = shows.length;
+
+    // Refresh-existing (default ON) re-pulls each mirrored show's episode list
+    // every run so newly-aired episodes appear on their own — with it off the
+    // catalog freezes at whatever aired when the folder was first written. The
+    // 0.9× cadence keeps a run scheduled exactly at vod.syncHours from finding
+    // an oh-so-slightly-fresh cache and skipping the fetch.
+    const hours = Math.max(1, Number(await getSetting("vod.syncHours")) || 24);
+    const maxAgeMs = (await getSetting("vod.refreshExisting")) ? hours * 3600_000 * 0.9 : Number.MAX_SAFE_INTEGER;
+    const ownedEps = skipOwned ? await ownedEpisodeKeys() : null;
+
+    const wantedShows = new Set<string>();
+    for (const s of shows) {
+      try { await ensureEpisodes(s.id, maxAgeMs); } catch { /* provider hiccup — mirror the cached episodes */ }
+      const eps = await db.select().from(vodEpisodes).where(eq(vodEpisodes.seriesRowId, s.id))
+        .orderBy(asc(vodEpisodes.season), asc(vodEpisodes.episode));
+      out.episodes += eps.length;
+      if (!eps.length) continue; // nothing to mirror (an existing folder prunes below)
+
+      const { title, year } = titleYear(s);
+      // Sonarr-parseable layout: Season NN/<Show> - SxxEyy - <Title>.strm — the
+      // show/episode identifiers appear exactly once (provider titles that embed
+      // them are cleaned, else you get "Show - S15E01 - Show - S15E01 - Title").
+      const files = new Map<string, string>(); // rel path within the show dir → content
+      for (const e of eps) {
+        if (ownedEps?.has(epKeyOf(title, e.season, e.episode))) { out.skippedOwned++; continue; }
+        const se = `S${pad2(e.season)}E${pad2(e.episode)}`;
+        const epTitle = cleanEpisodeTitle(e.title, title);
+        const seasonDir = `Season ${pad2(e.season)}`;
+        let name = safeName(epTitle ? `${title} - ${se} - ${epTitle}` : `${title} - ${se}`);
+        if (files.has(join(seasonDir, `${name}.strm`))) name = safeName(`${name} [${e.id}]`); // duplicate SxxEyy variants
+        files.set(join(seasonDir, `${name}.strm`), episodePlayUrl(base, key, s.id, e.season, e.episode));
+        files.set(join(seasonDir, `${name}.nfo`), episodeNfo(epTitle ?? se, e.season, e.episode, e.plot));
+      }
+      if (!files.size) continue; // every episode owned for real → drop the whole mirror
+
+      const display = year ? `${title} (${year})` : title;
+      let folder = safeName(display);
+      if (wantedShows.has(folder)) folder = safeName(`${display} [${s.id}]`);
+      wantedShows.add(folder);
+      files.set("tvshow.nfo", tvshowNfo(title, year, s));
+
+      const dir = join(seriesRoot, folder);
+      for (const [rel, content] of files) {
+        const p = join(dir, rel);
+        mkdirSync(dirname(p), { recursive: true });
+        writeIfChanged(p, content) ? out.written++ : out.skippedUnchanged++;
+      }
+      out.pruned += pruneExtraneous(dir, files); // episodes that left / became owned
+    }
+
+    // prune shows that left the catalog (or the allow-list, or are fully owned)
+    for (const e of readdirSync(seriesRoot, { withFileTypes: true })) {
+      if (e.isDirectory() && !wantedShows.has(e.name)) { rmSync(join(seriesRoot, e.name), { recursive: true, force: true }); out.pruned++; }
+    }
+  }
+
   return out;
 }

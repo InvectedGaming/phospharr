@@ -38,9 +38,18 @@ if (!settings["access.streamKey"]) {
   await setSetting("access.streamKey", randomBytes(20).toString("base64url"));
   await getSettings(); // re-prime cache with the new key
 }
+// Same for the Torznab apikey, so enabling the indexer never exposes it keyless.
+if (!settings["vod.indexer.apiKey"]) {
+  await setSetting("vod.indexer.apiKey", randomBytes(20).toString("base64url"));
+  await getSettings();
+}
 startEpgScheduler(); // periodic XMLTV pulls per features.epgAutoRefresh / epg.refreshHours
 startSyncScheduler(); // periodic provider lineup re-sync per features.providerAutoSync / providers.syncHours
 startHealthProbe(); // background stream probes per features.healthProbe
+{
+  const { startBlackholeWatcher } = await import("./ingest/blackhole.ts");
+  startBlackholeWatcher(); // Torznab grab handoff (gated per-tick on vod.indexer.enabled)
+}
 {
   const { startDvr } = await import("./dvr/recorder.ts");
   startDvr(); // recording scheduler tick (rules → schedule → record → prune)

@@ -41,6 +41,15 @@ export interface Settings {
   "vod.libraryCategories": string[]; // only mirror these VOD categories (empty = all)
   "vod.skipOwned": boolean; // don't mirror a VOD movie already in the Emby/Jellyfin library
   "vod.syncHours": number; // scheduled VOD refresh + library rebuild every N hours (prunes owned)
+  "vod.includeSeries": boolean; // also mirror series/episodes (Sonarr-parseable tree under <libraryPath>/Series)
+  "vod.seriesCategories": string[]; // only mirror these series categories (empty = all)
+  "vod.refreshExisting": boolean; // re-pull episode lists for mirrored series each run so new episodes appear
+  "vod.indexer.enabled": boolean; // expose the VOD catalog to Sonarr as a Torznab indexer (/torznab/api)
+  "vod.indexer.apiKey": string; // Torznab apikey (auto-generated on first boot if unset)
+  "vod.indexer.blackholeWatchPath": string; // where Sonarr's Usenet Blackhole client drops grabbed .nzb files
+  "vod.indexer.blackholeCompletePath": string; // where we place the .strm for Sonarr to import (Sonarr's blackhole Watch Folder)
+  "vod.indexer.cacheTtlMinutes": number; // per-show provider lookup cache — repeat Sonarr polls inside this window don't refetch
+  "vod.indexer.categories": string[]; // only serve these series categories through the indexer (empty = all)
   "dvr.storagePath": string;
   "dvr.retentionDays": number;
   "dvr.maxGB": number;
@@ -74,6 +83,15 @@ const DEFAULTS: Settings = {
   "vod.libraryCategories": [],
   "vod.skipOwned": true,
   "vod.syncHours": 24,
+  "vod.includeSeries": false, // opt-in — each mirrored series costs a get_series_info call per refresh
+  "vod.seriesCategories": [],
+  "vod.refreshExisting": true, // default ON — off freezes the catalog and new episodes never appear
+  "vod.indexer.enabled": false, // opt-in — exposes an authenticated Torznab endpoint
+  "vod.indexer.apiKey": "", // auto-generated on first boot if unset
+  "vod.indexer.blackholeWatchPath": `${projectRoot}/blackhole/nzb`,
+  "vod.indexer.blackholeCompletePath": `${projectRoot}/blackhole/complete`,
+  "vod.indexer.cacheTtlMinutes": 15,
+  "vod.indexer.categories": [],
   "dvr.storagePath": `${projectRoot}/dvr`,
   "dvr.retentionDays": 14,
   "dvr.maxGB": 100,
@@ -106,6 +124,13 @@ const ENV_MAP: Partial<Record<keyof Settings, string>> = {
   "features.vodLibrary": "PHOSPHARR_VOD_LIBRARY",
   "vod.libraryPath": "PHOSPHARR_VOD_LIBRARY_PATH",
   "vod.publicUrl": "PHOSPHARR_PUBLIC_URL",
+  "vod.includeSeries": "PHOSPHARR_VOD_SERIES",
+  "vod.refreshExisting": "PHOSPHARR_VOD_REFRESH_EXISTING",
+  "vod.indexer.enabled": "PHOSPHARR_VOD_INDEXER",
+  "vod.indexer.apiKey": "PHOSPHARR_VOD_INDEXER_KEY",
+  "vod.indexer.blackholeWatchPath": "PHOSPHARR_VOD_INDEXER_NZB_PATH",
+  "vod.indexer.blackholeCompletePath": "PHOSPHARR_VOD_INDEXER_COMPLETE_PATH",
+  "vod.indexer.cacheTtlMinutes": "PHOSPHARR_VOD_INDEXER_CACHE_TTL",
   "dvr.storagePath": "PHOSPHARR_DVR_PATH",
   "dvr.retentionDays": "PHOSPHARR_DVR_RETENTION_DAYS",
   "dvr.maxGB": "PHOSPHARR_DVR_MAX_GB",

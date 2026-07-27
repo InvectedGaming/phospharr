@@ -1122,6 +1122,29 @@ app.get("/vod/play/episode/:id", async (c) => {
   if (!s) return c.text("series gone", 404);
   return serveVod(c, "series", s.providerId, e.streamId, e.ext);
 });
+// Stable episode playback: series ROW id + season/episode. Episode row ids are
+// wiped and reissued on every episode refetch, so any URL persisted into a
+// .strm (the mirror tree, and especially stubs Sonarr has imported — nothing
+// ever rewrites those) must use this composite key instead. Self-heals: a miss
+// pulls the episode list fresh before giving up.
+app.get("/vod/play/ep/:sid/:season/:episode", async (c) => {
+  const auth = streamAuth(c);
+  if (!auth.ok) return c.text("unauthorized", auth.status ?? 401);
+  const sid = Number(c.req.param("sid")), season = Number(c.req.param("season")), episode = Number(c.req.param("episode"));
+  if (!Number.isFinite(sid) || !Number.isFinite(season) || !Number.isFinite(episode)) return c.text("bad request", 400);
+  const find = () => db.select().from(vodEpisodes)
+    .where(and(eq(vodEpisodes.seriesRowId, sid), eq(vodEpisodes.season, season), eq(vodEpisodes.episode, episode)))
+    .orderBy(asc(vodEpisodes.id));
+  let [e] = await find();
+  if (!e) {
+    try { await ensureEpisodes(sid, 60_000); } catch { /* provider hiccup */ }
+    [e] = await find();
+  }
+  if (!e) return c.text("not found", 404);
+  const [s] = await db.select().from(vodSeries).where(eq(vodSeries.id, sid));
+  if (!s) return c.text("series gone", 404);
+  return serveVod(c, "series", s.providerId, e.streamId, e.ext);
+});
 
 // ─── Custom live channels (esports, streamers — Twitch/YouTube/Kick/direct) ───
 import { resolverFor, probeSource } from "../proxy/source.ts";
@@ -1445,5 +1468,9 @@ app.delete("/api/shares/:id", (c) => ensureAdmin(c) ?? c.json({ ok: deleteShare(
 app.get("/api/status", (c) =>
   c.json({ pool: pool.snapshot(), totalFree: pool.totalFree(), active: muxer.stats() }),
 );
+
+// ─── Torznab indexer (Sonarr-facing VOD catalog; gated on vod.indexer.enabled) ───
+import { torznab } from "./torznab.ts";
+app.route("/", torznab);
 
 export default app;

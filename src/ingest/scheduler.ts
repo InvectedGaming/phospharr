@@ -72,7 +72,7 @@ async function runVodDue(): Promise<void> {
     if (await getSetting("features.vodLibrary")) {
       const lib = await rebuildVodLibrary();
       if (!lib.skipped) {
-        console.log(`[vod] library: +${lib.written} written, -${lib.pruned} pruned, ${lib.skippedOwned} already owned`);
+        console.log(`[vod] library: ${lib.movies} movies + ${lib.series} series (${lib.episodes} eps) → +${lib.written} written, -${lib.pruned} pruned, ${lib.skippedOwned} owned, ${lib.skippedUnchanged} unchanged`);
         if (lib.written || lib.pruned) await scanDownstreamLibraries();
       }
     }

@@ -127,6 +127,13 @@
       "when": 1784938744469,
       "tag": "0017_slimy_johnny_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1785162420344,
+      "tag": "0018_bouncy_supernaut",
+      "breakpoints": true
     }
   ]
 }

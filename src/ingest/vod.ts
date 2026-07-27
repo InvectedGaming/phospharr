@@ -125,22 +125,33 @@ export async function ensureEpisodes(seriesRowId: number, maxAgeMs = 24 * 3600_0
   const info = await xtream<Info>(p, "get_series_info", `&series_id=${s.seriesId}`);
   if (!info) return;
 
+  // Carry firstSeenAt across the wipe/reinsert so "new since last refresh" stays
+  // answerable (the Torznab RSS feed is built on it). Episodes not seen before
+  // get stamped now.
+  const prevSeen = new Map<string, Date | null>();
+  for (const e of await db.select().from(vodEpisodes).where(eq(vodEpisodes.seriesRowId, s.id)))
+    prevSeen.set(`${e.season}|${e.episode}`, e.firstSeenAt);
+
   await db.delete(vodEpisodes).where(eq(vodEpisodes.seriesRowId, s.id));
   const seasons = info.episodes ?? {};
+  const now = new Date();
   const rows: (typeof vodEpisodes.$inferInsert)[] = [];
   for (const [seasonKey, eps] of Object.entries(seasons)) {
     for (const e of eps ?? []) {
       const streamId = Number(e.id);
       if (!Number.isFinite(streamId)) continue; // skip malformed episode ids (NOT NULL column)
+      const season = Number(seasonKey) || 0;
+      const episode = Number(e.episode_num) || 0;
       rows.push({
         seriesRowId: s.id,
-        season: Number(seasonKey) || 0,
-        episode: Number(e.episode_num) || 0,
+        season,
+        episode,
         title: e.title || null,
         streamId,
         ext: (e.container_extension || "mp4").toLowerCase(),
         plot: e.info?.plot || null,
         durationSec: e.info?.duration_secs ? Number(e.info.duration_secs) : null,
+        firstSeenAt: prevSeen.has(`${season}|${episode}`) ? prevSeen.get(`${season}|${episode}`) : now,
       });
     }
   }
