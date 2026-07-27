@@ -132,7 +132,6 @@ export async function ensureEpisodes(seriesRowId: number, maxAgeMs = 24 * 3600_0
   for (const e of await db.select().from(vodEpisodes).where(eq(vodEpisodes.seriesRowId, s.id)))
     prevSeen.set(`${e.season}|${e.episode}`, e.firstSeenAt);
 
-  await db.delete(vodEpisodes).where(eq(vodEpisodes.seriesRowId, s.id));
   const seasons = info.episodes ?? {};
   const now = new Date();
   const rows: (typeof vodEpisodes.$inferInsert)[] = [];
@@ -155,6 +154,20 @@ export async function ensureEpisodes(seriesRowId: number, maxAgeMs = 24 * 3600_0
       });
     }
   }
+
+  // A response with a body but ZERO parseable episodes for a series that had
+  // some is far more likely a provider hiccup (rate limiting under the
+  // indexer/watcher call pattern) than a real catalog removal — and wiping here
+  // breaks every .strm and in-flight Sonarr grab pointing at the series. Keep
+  // the cached list, DON'T bump episodesCachedAt, so the next call retries.
+  if (!rows.length && prevSeen.size) {
+    console.warn(`[vod] get_series_info for "${s.name}" (#${s.id}) returned no episodes (had ${prevSeen.size}) — keeping cached list`);
+    return;
+  }
+
+  // Wipe only now that replacement rows are in hand (a delete-then-fail window
+  // would leave the series empty for every reader until the next good fetch).
+  await db.delete(vodEpisodes).where(eq(vodEpisodes.seriesRowId, s.id));
   for (let i = 0; i < rows.length; i += 500) await db.insert(vodEpisodes).values(rows.slice(i, i + 500));
   await db
     .update(vodSeries)

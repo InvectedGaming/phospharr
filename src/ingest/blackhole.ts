@@ -31,7 +31,7 @@ const loggedForeign = new Set<string>(); // don't spam the log about files we ig
 
 async function resolveEpisode(p: GrabPayload): Promise<{ url: string; showName: string } | null> {
   const [s] = await db.select().from(vodSeries).where(eq(vodSeries.id, p.s));
-  if (!s) return null;
+  if (!s) { console.error(`[blackhole] series row #${p.s} no longer exists`); return null; }
   const find = () => db.select().from(vodEpisodes)
     .where(and(eq(vodEpisodes.seriesRowId, p.s), eq(vodEpisodes.season, p.se), eq(vodEpisodes.episode, p.ep)))
     .orderBy(vodEpisodes.id);
@@ -40,9 +40,17 @@ async function resolveEpisode(p: GrabPayload): Promise<{ url: string; showName: 
     try { await ensureEpisodes(p.s, 60_000); } catch { /* provider hiccup — retried next tick */ }
     [e] = await find();
   }
-  if (!e) return null;
+  if (!e) {
+    // Say exactly what IS cached, so a season-numbering mismatch (payload says
+    // s6, provider list has year-seasons) is distinguishable from an emptied or
+    // never-fetched list at a glance.
+    const all = await db.select().from(vodEpisodes).where(eq(vodEpisodes.seriesRowId, p.s));
+    const seasons = [...new Set(all.map((x) => x.season))].sort((a, b) => a - b);
+    console.error(`[blackhole] "${s.name}" (#${p.s}): s${p.se}e${p.ep} not in cached list — ${all.length} eps cached${seasons.length ? `, seasons ${seasons.join(",")}` : ""}`);
+    return null;
+  }
   const base = publicBase();
-  if (!base) return null; // same requirement as the mirror: Emby/Sonarr need an absolute URL
+  if (!base) { console.error("[blackhole] no public URL — set vod.publicUrl (or BASE_URL) so .strm files carry an absolute address"); return null; }
   const key = String(cachedSetting("access.streamKey") || "");
   return { url: episodePlayUrl(base, key, p.s, p.se, p.ep), showName: s.name };
 }
