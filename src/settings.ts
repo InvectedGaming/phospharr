@@ -63,6 +63,7 @@ export interface Settings {
   "access.allowExternal": boolean; // allow tuner/M3U/EPG/stream exports off the local network (with key)
   "access.trustProxy": boolean; // resolve client IP from X-Forwarded-For (set true behind a reverse proxy)
   "content.hideAdult": boolean; // auto-hide adult/XXX channels (on by default)
+  "content.hideNoStream": boolean; // auto-hide channels with no attached stream — event channels get theirs back at air time (on by default)
   "content.hiddenCategories": string[]; // whole categories the admin chose to hide
   "content.hiddenMarkets": string[]; // local markets (cities) the admin chose to hide
   "content.dedupeLocals": boolean; // collapse duplicate local stations (same callsign)
@@ -105,6 +106,7 @@ const DEFAULTS: Settings = {
   "access.allowExternal": false, // LAN-only by default
   "access.trustProxy": false,
   "content.hideAdult": true, // hide adult/XXX channels by default
+  "content.hideNoStream": true, // a channel with zero streams can't play — dead guide entries otherwise
   "content.hiddenCategories": [],
   "content.hiddenMarkets": [],
   "content.dedupeLocals": true, // collapse duplicate local stations by default
@@ -141,6 +143,7 @@ const ENV_MAP: Partial<Record<keyof Settings, string>> = {
   "access.allowExternal": "PHOSPHARR_ALLOW_EXTERNAL",
   "access.trustProxy": "PHOSPHARR_TRUST_PROXY",
   "content.hideAdult": "PHOSPHARR_HIDE_ADULT",
+  "content.hideNoStream": "PHOSPHARR_HIDE_NO_STREAM",
   "content.dedupeLocals": "PHOSPHARR_DEDUPE_LOCALS",
 };
 

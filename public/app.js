@@ -1854,7 +1854,7 @@ function saveSetting(key, value) {
     .then((s) => {
       if (s) { state.settings = s.settings; state.envLocked = s.envLocked || []; render(); }
       // These change the lineup — refresh it.
-      if (key === "content.hideAdult" || key === "content.dedupeLocals") loadView();
+      if (key === "content.hideAdult" || key === "content.dedupeLocals" || key === "content.hideNoStream") loadView();
     })
     .catch(() => {});
 }
@@ -2036,6 +2036,7 @@ function settingsScreen() {
         settingsSection("CONTENT",
           settingRow({ title: "Hide adult content", desc: "Auto-hide adult / XXX channels (matched by their category) from the guide, tuner, and exports. On by default. Toggling re-applies instantly.", key: "content.hideAdult", type: "toggle" }),
           settingRow({ title: "De-duplicate local stations", desc: "Collapse local channels that appear more than once (same broadcast callsign), keeping the best-named copy — fixes repeated NBC/ABC/CBS/FOX affiliates. On by default.", key: "content.dedupeLocals", type: "toggle" }),
+          settingRow({ title: "Hide channels with no stream", desc: "Auto-hide channels that have no playable source attached (common for PPV / event channels between events). They reappear automatically when the provider attaches a stream — usually around air time. On by default.", key: "content.hideNoStream", type: "toggle" }),
           h("div", { style: "padding:11px 16px;font-size:12px;color:#7e858c;border-top:1px solid rgba(255,255,255,0.045)" }, "Manage categories per source in ", h("span", { style: "color:#9bd0ff;cursor:pointer", onClick: () => setScreen("sources") }, "Manage → Sources"), ".")),
         settingsSection("FEATURES",
           settingRow({ title: "HDHomeRun tuner", desc: "Expose Phospharr as a tuner for Plex / Emby / Jellyfin.", key: "features.hdhr", type: "toggle" }),

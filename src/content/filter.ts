@@ -6,16 +6,20 @@ import { isAdult } from "./adult.ts";
 
 /**
  * Auto-hide reconciliation. Brings every channel's hidden state in line with the
- * admin's content settings — adult-content hiding and whole-category hiding — in a
- * SINGLE pass so the two can't fight each other.
+ * admin's content settings — adult-content hiding, whole-category hiding, local
+ * dedupe, and streamless channels — in a SINGLE pass so the rules can't fight
+ * each other.
  *
- * It only ever touches channels it auto-hid before (hiddenReason 'adult' or
- * 'cat:<name>') or that are currently visible. Channels hidden by the user or a
+ * It only ever touches channels it auto-hid before (an isAutoReason
+ * hiddenReason) or that are currently visible. Channels hidden by the user or a
  * rule (any other hiddenReason) are left alone. Fully reversible: drop a category
- * from the list or turn off adult-hiding and the matching channels reappear.
+ * from the list, turn off a toggle — or, for 'no-stream', have the provider
+ * attach a stream again — and the matching channels reappear on the next pass.
+ * Since sync runs this after every ingest, event channels (PPV/MiLB/…) surface
+ * around air time when their stream attaches and vanish when it's dropped.
  */
 
-const isAutoReason = (r: string | null): boolean => r === "adult" || r === "dup" || (typeof r === "string" && (r.startsWith("cat:") || r.startsWith("market:")));
+const isAutoReason = (r: string | null): boolean => r === "adult" || r === "dup" || r === "no-stream" || (typeof r === "string" && (r.startsWith("cat:") || r.startsWith("market:")));
 
 type LocalRow = { id: number; name: string; category: string | null };
 // A US broadcast callsign (KxxX / WxxX) uniquely identifies a station, so two
@@ -76,8 +80,16 @@ export async function reconcileAutoHides(): Promise<number> {
   const hiddenCats = new Set((await getSetting("content.hiddenCategories")) ?? []);
   const hiddenMarkets = new Set((await getSetting("content.hiddenMarkets")) ?? []);
   const dedupe = await getSetting("content.dedupeLocals");
+  const hideNoStream = await getSetting("content.hideNoStream");
   const rows = await db.select().from(channels);
   const dupIds = dedupe ? computeLocalDuplicates(rows) : new Set<number>();
+  // A channel with zero attached streams can't play — publishing it just puts
+  // dead entries in the guide/M3U. Event channels lose and regain their stream
+  // around air time, which is why this lives in the reconcile pass (dynamic)
+  // rather than being a one-time sweep.
+  const streamed = hideNoStream
+    ? new Set((sqlite.query("SELECT DISTINCT channel_id FROM streams").all() as { channel_id: number }[]).map((r) => r.channel_id))
+    : null;
 
   let changed = 0;
   for (const ch of rows) {
@@ -86,7 +98,8 @@ export async function reconcileAutoHides(): Promise<number> {
     const isLocal = categoryGroup(ch.category) === "Local";
     const marketHidden = isLocal && hiddenMarkets.size > 0 && hiddenMarkets.has(localCity(ch.name));
     const isDup = dupIds.has(ch.id);
-    const reason = adult ? "adult" : catHidden ? `cat:${ch.category}` : marketHidden ? `market:${localCity(ch.name)}` : isDup ? "dup" : null;
+    const noStream = streamed != null && !streamed.has(ch.id);
+    const reason = adult ? "adult" : catHidden ? `cat:${ch.category}` : marketHidden ? `market:${localCity(ch.name)}` : isDup ? "dup" : noStream ? "no-stream" : null;
     const auto = isAutoReason(ch.hiddenReason);
 
     if (reason) {

@@ -63,7 +63,7 @@ export const channels = sqliteTable(
     customNow: text("custom_now"), // editable "what's on now" for live/custom channels (no real EPG)
     isHidden: integer("is_hidden", { mode: "boolean" }).notNull().default(false),
     isFavorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
-    hiddenReason: text("hidden_reason"), // 'dead' | 'sub-sd' | 'duplicate' | 'rule:<id>' | null
+    hiddenReason: text("hidden_reason"), // 'adult' | 'dup' | 'no-stream' | 'cat:<name>' | 'market:<city>' | 'rule:<id>' | null
   },
   (t) => ({
     canonicalIdx: index("channels_canonical_idx").on(t.canonicalId),
