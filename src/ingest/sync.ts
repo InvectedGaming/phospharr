@@ -5,6 +5,7 @@ import { fetchM3U } from "./m3u.ts";
 import { fetchXtream, fetchXtreamCategories } from "./xtream.ts";
 import { egress, providerEgress } from "../net/egress.ts";
 import { matchCanonical, qualityScore } from "../canonical/matcher.ts";
+import { muxer } from "../proxy/muxer.ts";
 import { pool } from "../scheduler/pool.ts";
 import { reconcileAutoHides } from "../content/filter.ts";
 import { classify } from "../content/taxonomy.ts";
@@ -183,12 +184,19 @@ export async function syncProvider(providerId: number, opts: { categories?: stri
   // before this point.
   let streamsPruned = 0;
   if (scoped) {
+    // Never prune under a live viewer: mid-watch failover re-queries
+    // rankedStreams() from the DB, so deleting a watched channel's rows here
+    // (say, on a transient provider glitch) would turn the next source blip
+    // into "no alternates — dropping viewers" instead of a retry. Rows for an
+    // actively-watched ended event just wait for the next scoped pass.
+    const watched = new Set(muxer.stats().map((m) => m.channelId));
     const rows = await db
-      .select({ id: streams.id, url: streams.url })
+      .select({ id: streams.id, url: streams.url, channelId: streams.channelId })
       .from(streams)
       .innerJoin(channels, eq(streams.channelId, channels.id))
       .where(and(eq(streams.providerId, p.id), inArray(channels.category, opts.categories!)));
     for (const s of rows) {
+      if (watched.has(s.channelId)) continue;
       if (!seenUrls.has(s.url)) { await db.delete(streams).where(eq(streams.id, s.id)); streamsPruned++; }
     }
   }
