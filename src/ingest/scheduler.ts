@@ -52,6 +52,41 @@ async function runDue(): Promise<void> {
   }
 }
 
+// ── Tuner-group fast sync: scoped provider pulls (just the group's categories)
+// on each group's own syncMinutes cadence, so event/PPV channels attach and
+// detach streams near-live while the full lineup stays on its slow clock.
+// Xtream only — a scoped pull is one API call per category; M3U would pay the
+// full playlist download every tick, which defeats the point. ──
+let groupRunning = false;
+const lastGroupSync = new Map<string, number>();
+
+async function runGroupsDue(): Promise<void> {
+  if (groupRunning) return;
+  groupRunning = true;
+  try {
+    const groups = (await getSetting("tuner.groups")) ?? [];
+    for (const g of groups) {
+      const mins = Number(g.syncMinutes) || 0;
+      if (mins <= 0 || !g.categories?.length) continue;
+      if (Date.now() - (lastGroupSync.get(g.name) ?? 0) < Math.max(5, mins) * 60_000) continue; // 5-min floor — be kind to providers
+      lastGroupSync.set(g.name, Date.now());
+      const provs = await db.select().from(providers).where(and(eq(providers.enabled, true), eq(providers.type, "xtream")));
+      for (const p of provs) {
+        try {
+          const r = await syncProvider(p.id, { categories: g.categories });
+          if (r.entries || r.streamsPruned) console.log(`[sync] group "${g.name}" ${p.name}: ${r.entries} entries → +${r.streamsUpserted} streams, -${r.streamsPruned} pruned`);
+        } catch (e) {
+          console.error(`[sync] group "${g.name}" ${p.name} failed:`, e instanceof Error ? e.message : e);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[sync] group scheduler error:", e instanceof Error ? e.message : e);
+  } finally {
+    groupRunning = false;
+  }
+}
+
 let vodRunning = false;
 let lastVod = 0;
 
@@ -112,5 +147,9 @@ export function startSyncScheduler(): void {
     try { await runVodDue(); } catch { /* tick() will retry */ }
   }, 15_000);
   if (typeof boot.unref === "function") boot.unref();
+  // Group fast-sync gets its own 60s check so a 15-minute cadence actually
+  // means ~15 minutes (the main 10-min poll would quantize it to 10/20).
+  const groups = setInterval(() => { runGroupsDue().catch(() => { /* logged inside */ }); }, 60_000);
+  if (typeof groups.unref === "function") groups.unref();
   arm();
 }

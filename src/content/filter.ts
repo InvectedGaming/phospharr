@@ -75,6 +75,16 @@ function computeLocalDuplicates(rows: LocalRow[]): Set<number> {
   return dup;
 }
 
+/** Case-insensitive category predicate for the tuner-group split exports:
+ *  include-mode for a group's own playlist/EPG, exclude-mode for the main
+ *  export (so the split stays disjoint — a channel never appears in both). */
+export function makeCategoryFilter(include?: string[], exclude?: string[]): (category: string | null | undefined) => boolean {
+  const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+  const inc = include?.length ? new Set(include.map(norm)) : null;
+  const exc = new Set((exclude ?? []).map(norm));
+  return (category) => (inc ? inc.has(norm(category)) : !exc.has(norm(category)));
+}
+
 export async function reconcileAutoHides(): Promise<number> {
   const hideAdult = await getSetting("content.hideAdult");
   const hiddenCats = new Set((await getSetting("content.hiddenCategories")) ?? []);

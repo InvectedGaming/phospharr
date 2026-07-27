@@ -1,8 +1,8 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { providers, channels, streams, type Provider } from "../db/schema.ts";
 import { fetchM3U } from "./m3u.ts";
-import { fetchXtream } from "./xtream.ts";
+import { fetchXtream, fetchXtreamCategories } from "./xtream.ts";
 import { egress, providerEgress } from "../net/egress.ts";
 import { matchCanonical, qualityScore } from "../canonical/matcher.ts";
 import { pool } from "../scheduler/pool.ts";
@@ -17,16 +17,24 @@ import type { RawEntry } from "./types.ts";
  * spine gets built — N provider entries become logical channels with N sources.
  */
 
-async function fetchEntries(p: Provider): Promise<RawEntry[]> {
+async function fetchEntries(p: Provider, categories?: string[]): Promise<RawEntry[]> {
   // Resolve a `vpn:<id>` pin to the tunnel's HTTP bridge — the raw pin string is
   // not a proxy URL fetch can use. Fail closed while the pinned VPN is down.
   const eg = providerEgress(p.id);
   if (eg.blocked) throw new Error(`egress blocked: ${eg.reason}`);
   const opts = egress(eg.proxy); // VPN passthrough per-source
-  if (p.type === "m3u") return fetchM3U(p.url, opts);
+  if (p.type === "m3u") {
+    const all = await fetchM3U(p.url, opts);
+    if (!categories) return all;
+    // M3U has no scoped endpoint — full fetch, then filter to the wanted groups.
+    const want = new Set(categories.map((c) => c.trim().toLowerCase()));
+    return all.filter((e) => e.groupTitle != null && want.has(e.groupTitle.trim().toLowerCase()));
+  }
   if (p.type === "xtream") {
     if (!p.username || !p.password) throw new Error(`Xtream provider ${p.id} missing credentials`);
-    return fetchXtream(p.url, p.username, p.password, opts);
+    return categories
+      ? fetchXtreamCategories(p.url, p.username, p.password, categories, opts)
+      : fetchXtream(p.url, p.username, p.password, opts);
   }
   throw new Error(`Unknown provider type ${p.type}`);
 }
@@ -49,6 +57,7 @@ export interface SyncResult {
   entries: number;
   channelsTouched: number;
   streamsUpserted: number;
+  streamsPruned: number;
 }
 
 /** One stream URL per host: the original plus one per mirror host (same path,
@@ -70,11 +79,20 @@ function hostVariants(url: string, mirrors: string[] | null | undefined): string
   return [...new Set(out)];
 }
 
-export async function syncProvider(providerId: number): Promise<SyncResult> {
+/** Full provider re-ingest, or — with opts.categories — a SCOPED sync of just
+ *  those provider categories (the fast path for event/PPV tuner groups: a few
+ *  hundred entries every few minutes instead of the whole lineup). A scoped
+ *  sync additionally PRUNES this provider's streams in those categories that
+ *  the pull no longer returned, so an event channel's stream detaching at the
+ *  provider actually detaches here — that's what lets the no-stream auto-hide
+ *  rule bury it until the next event. (The full sync intentionally never
+ *  prunes; changing that needs its own safeguards.) */
+export async function syncProvider(providerId: number, opts: { categories?: string[] } = {}): Promise<SyncResult> {
   const [p] = await db.select().from(providers).where(eq(providers.id, providerId));
   if (!p) throw new Error(`Provider ${providerId} not found`);
+  const scoped = !!opts.categories?.length;
 
-  const entries = await fetchEntries(p);
+  const entries = await fetchEntries(p, opts.categories);
   const known = await loadKnown();
 
   // Map canonicalId -> channelId, hydrated lazily.
@@ -87,7 +105,9 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
   }
 
   let streamsUpserted = 0;
+  let createdChannels = 0;
   const touched = new Set<number>();
+  const seenUrls = new Set<string>();
 
   for (const entry of entries) {
     const match = matchCanonical({ rawName: entry.rawName, tvgId: entry.tvgId }, known);
@@ -95,6 +115,7 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
     // Upsert the canonical channel.
     let channelId = channelIdByCanonical.get(match.canonicalId);
     if (!channelId) {
+      createdChannels++;
       const tax = classify(entry.groupTitle, match.display); // structured kind/genre from the raw group
       const [ins] = await db
         .insert(channels)
@@ -131,6 +152,7 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
     // selector auto-picks the best host and the muxer fails over between them.
     const score = qualityScore(match.resolution, "unknown");
     for (const url of hostVariants(entry.url, p.mirrorHosts)) {
+      seenUrls.add(url);
       const existing = await db
         .select({ id: streams.id })
         .from(streams)
@@ -155,16 +177,40 @@ export async function syncProvider(providerId: number): Promise<SyncResult> {
     }
   }
 
-  await db.update(providers).set({ lastSyncedAt: new Date() }).where(eq(providers.id, p.id));
-  pool.setBudget(p.id, p.maxConnections);
-  await assignChannelNumbers();
-  await reconcileAutoHides(); // re-hide newly-synced adult / hidden-category channels
+  // Scoped prune: this provider's streams on channels in the scoped categories
+  // that the (successful) pull no longer returned. An empty category is a valid
+  // answer here — "no events right now" — because a failed fetch throws long
+  // before this point.
+  let streamsPruned = 0;
+  if (scoped) {
+    const rows = await db
+      .select({ id: streams.id, url: streams.url })
+      .from(streams)
+      .innerJoin(channels, eq(streams.channelId, channels.id))
+      .where(and(eq(streams.providerId, p.id), inArray(channels.category, opts.categories!)));
+    for (const s of rows) {
+      if (!seenUrls.has(s.url)) { await db.delete(streams).where(eq(streams.id, s.id)); streamsPruned++; }
+    }
+  }
+
+  if (!scoped) {
+    // A scoped sync must not look like a full one: lastSyncedAt drives the full
+    // re-ingest scheduler, and renumbering the whole lineup every few minutes
+    // would churn channel numbers under Emby.
+    await db.update(providers).set({ lastSyncedAt: new Date() }).where(eq(providers.id, p.id));
+    pool.setBudget(p.id, p.maxConnections);
+    await assignChannelNumbers();
+  } else if (createdChannels > 0) {
+    await assignChannelNumbers(); // new event channels still need lineup numbers
+  }
+  await reconcileAutoHides(); // re-hide newly-synced adult / hidden-category / streamless channels
 
   return {
     providerId,
     entries: entries.length,
     channelsTouched: touched.size,
     streamsUpserted,
+    streamsPruned,
   };
 }
 

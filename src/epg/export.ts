@@ -1,6 +1,7 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { db, sqlite } from "../db/index.ts";
 import { channels } from "../db/schema.ts";
+import { makeCategoryFilter } from "../content/filter.ts";
 
 /**
  * XMLTV export for external consumers (Emby, Jellyfin, TiviMate, …). Channel
@@ -40,20 +41,25 @@ const progStmt = sqlite.prepare(
   "SELECT canonical_id, title, subtitle, description, start_time, end_time, category, season, episode, icon_url FROM programs WHERE end_time > ? AND start_time < ? ORDER BY canonical_id, start_time",
 );
 
-export async function exportXmltv(logoBase?: string): Promise<string> {
+export async function exportXmltv(logoBase?: string, catFilter?: { include?: string[]; exclude?: string[] }): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
+  const pass = makeCategoryFilter(catFilter?.include, catFilter?.exclude);
   const chans = db
-    .select({ id: channels.id, name: channels.name, canonicalId: channels.canonicalId, logoUrl: channels.logoUrl, genre: channels.genre, kind: channels.kind, customNow: channels.customNow })
+    .select({ id: channels.id, name: channels.name, canonicalId: channels.canonicalId, logoUrl: channels.logoUrl, genre: channels.genre, kind: channels.kind, customNow: channels.customNow, category: channels.category })
     .from(channels)
     .where(and(eq(channels.isHidden, false), isNotNull(channels.canonicalId)))
-    .all();
+    .all()
+    .filter((ch) => pass(ch.category));
 
   const seen = new Set<string>();
   const parts: string[] = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Phospharr">'];
   // Channel 1, the always-listed mosaic composite — no DB row; gets filler
   // blocks below so tuner consumers show a titled guide instead of a blank.
-  seen.add("phospharr.mosaic");
-  parts.push('<channel id="phospharr.mosaic"><display-name>Mosaic</display-name></channel>');
+  // It belongs to the main lineup only, mirroring playlistM3U's split.
+  if (!catFilter?.include?.length) {
+    seen.add("phospharr.mosaic");
+    parts.push('<channel id="phospharr.mosaic"><display-name>Mosaic</display-name></channel>');
+  }
   const genreByCanonical = new Map<string, string | null>();
   for (const ch of chans) {
     if (!ch.canonicalId || seen.has(ch.canonicalId)) continue;

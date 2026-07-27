@@ -2,6 +2,7 @@ import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { channels, streams } from "../db/schema.ts";
 import { pool } from "../scheduler/pool.ts";
+import { makeCategoryFilter } from "../content/filter.ts";
 import { VERSION } from "../version.ts";
 
 // Channel 1: the live mosaic composite. ALWAYS listed — tuner consumers (Emby,
@@ -82,15 +83,18 @@ export async function lineup(baseUrl: string) {
  * M3U tuner, etc.). tvg-id is the channel's canonicalId so it binds to the XMLTV
  * export's <channel id>. Stream URLs sit under the same /t/<key> base.
  */
-export async function playlistM3U(baseUrl: string): Promise<string> {
-  const rows = await db
+export async function playlistM3U(baseUrl: string, catFilter?: { include?: string[]; exclude?: string[] }): Promise<string> {
+  const pass = makeCategoryFilter(catFilter?.include, catFilter?.exclude);
+  const rows = (await db
     .select()
     .from(channels)
     .where(and(eq(channels.isHidden, false), isNotNull(channels.number), hasUsableSource))
-    .orderBy(channels.number);
+    .orderBy(channels.number)).filter((ch) => pass(ch.category));
   const out = ["#EXTM3U"];
-  out.push(`#EXTINF:-1 tvg-id="phospharr.mosaic" tvg-chno="${MOSAIC_NUMBER}" tvg-name="Mosaic" group-title="Phospharr",Mosaic`);
-  out.push(`${baseUrl}/mosaic.ts`);
+  if (!catFilter?.include?.length) { // the mosaic belongs to the main lineup, not a category split
+    out.push(`#EXTINF:-1 tvg-id="phospharr.mosaic" tvg-chno="${MOSAIC_NUMBER}" tvg-name="Mosaic" group-title="Phospharr",Mosaic`);
+    out.push(`${baseUrl}/mosaic.ts`);
+  }
   for (const ch of rows) {
     const tvgId = ch.canonicalId ?? ch.epgChannelId ?? String(ch.id);
     // Clean taxonomy group (Emby/TiviMate group channels by this) — falls back

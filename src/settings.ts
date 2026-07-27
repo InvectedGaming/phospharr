@@ -26,6 +26,15 @@ export interface DownstreamServer {
   enabled: boolean;
 }
 
+/** A named split of provider categories served as its own playlist + EPG
+ *  (`/t/<key>/g/<slug>/…`) and excluded from the main export — so event/PPV
+ *  churn can refresh fast (syncMinutes) without re-pulling the whole lineup. */
+export interface TunerGroup {
+  name: string; // display name; slugified (lowercase, dashes) in the URL
+  categories: string[]; // provider category names, matched case-insensitively
+  syncMinutes?: number; // scoped fast-sync cadence (xtream providers); omit/0 = no fast sync
+}
+
 export interface Settings {
   "features.hdhr": boolean; // HDHomeRun emulation (Plex/Emby/Jellyfin tuner)
   "features.transcode": boolean; // browser audio transcode (AC-3 → AAC)
@@ -62,6 +71,7 @@ export interface Settings {
   "access.streamKey": string; // secret gating /stream, /watch, and HDHR (devices use ?key=)
   "access.allowExternal": boolean; // allow tuner/M3U/EPG/stream exports off the local network (with key)
   "access.trustProxy": boolean; // resolve client IP from X-Forwarded-For (set true behind a reverse proxy)
+  "tuner.groups": TunerGroup[]; // split categories into their own playlist+EPG (/t/<key>/g/<slug>/…) with an optional fast sync cadence; the main playlist excludes them
   "content.hideAdult": boolean; // auto-hide adult/XXX channels (on by default)
   "content.hideNoStream": boolean; // auto-hide channels with no attached stream — event channels get theirs back at air time (on by default)
   "content.hiddenCategories": string[]; // whole categories the admin chose to hide
@@ -105,6 +115,7 @@ const DEFAULTS: Settings = {
   "access.streamKey": "", // auto-generated on first boot if unset
   "access.allowExternal": false, // LAN-only by default
   "access.trustProxy": false,
+  "tuner.groups": [], // e.g. [{ name: "Events", categories: ["PPV FLOSPORTS", "USA MLB"], syncMinutes: 15 }]
   "content.hideAdult": true, // hide adult/XXX channels by default
   "content.hideNoStream": true, // a channel with zero streams can't play — dead guide entries otherwise
   "content.hiddenCategories": [],

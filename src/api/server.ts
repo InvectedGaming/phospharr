@@ -554,19 +554,41 @@ app.get("/t/:key/mosaic.ts", (c) => {
   if (!body) return c.text("mosaic has no channels selected", 503);
   return new Response(body, { headers: STREAM_HEADERS });
 });
+// ── Tuner-group split (tuner.groups): each group is its own playlist + EPG —
+// register it as a SECOND M3U tuner in Emby/Jellyfin with its own XMLTV — and
+// the MAIN export excludes every grouped category, so the split is disjoint (a
+// channel never shows up under both tuners). canonicalId stays the tvg-id
+// everywhere, so favorites/recordings keyed on channel identity survive a
+// channel moving between the main lineup and a group. ──
+const groupSlug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+const tunerGroups = async () => ((await getSetting("tuner.groups")) ?? []).filter((g) => g?.name && g.categories?.length);
+const groupedCategories = async () => (await tunerGroups()).flatMap((g) => g.categories);
+const M3U_HEADERS = { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" };
+const XMLTV_HEADERS = { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" };
+
 // M3U playlist (Jellyfin M3U tuner, TiviMate, …) — stream URLs carry the key path.
 app.get("/t/:key/playlist.m3u", async (c) => {
   const d = tunerDenied(c); if (d) return d;
-  return new Response(await hdhr.playlistM3U(`${baseUrl(c)}/t/${c.req.param("key")}`), {
-    headers: { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" },
-  });
+  return new Response(await hdhr.playlistM3U(`${baseUrl(c)}/t/${c.req.param("key")}`, { exclude: await groupedCategories() }), { headers: M3U_HEADERS });
 });
 // XMLTV guide export for the same consumers (channel icons point at our logo cache).
 app.get("/t/:key/epg.xml", async (c) => {
   const d = tunerDenied(c); if (d) return d;
-  return new Response(await exportXmltv(`${baseUrl(c)}/t/${c.req.param("key")}`), {
-    headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" },
-  });
+  return new Response(await exportXmltv(`${baseUrl(c)}/t/${c.req.param("key")}`, { exclude: await groupedCategories() }), { headers: XMLTV_HEADERS });
+});
+// Per-group exports. Stream/logo URLs still route via the plain /t/<key> paths —
+// only the lineup is scoped, playback endpoints are shared.
+app.get("/t/:key/g/:group/playlist.m3u", async (c) => {
+  const d = tunerDenied(c); if (d) return d;
+  const g = (await tunerGroups()).find((x) => groupSlug(x.name) === c.req.param("group"));
+  if (!g) return c.text("unknown tuner group", 404);
+  return new Response(await hdhr.playlistM3U(`${baseUrl(c)}/t/${c.req.param("key")}`, { include: g.categories }), { headers: M3U_HEADERS });
+});
+app.get("/t/:key/g/:group/epg.xml", async (c) => {
+  const d = tunerDenied(c); if (d) return d;
+  const g = (await tunerGroups()).find((x) => groupSlug(x.name) === c.req.param("group"));
+  if (!g) return c.text("unknown tuner group", 404);
+  return new Response(await exportXmltv(`${baseUrl(c)}/t/${c.req.param("key")}`, { include: g.categories }), { headers: XMLTV_HEADERS });
 });
 // Cached channel logos — fetched from the provider once, then served locally.
 app.get("/t/:key/logo/:channelId", async (c) => {
