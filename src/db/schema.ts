@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, uniqueIndex, primaryKey } from "drizzle-orm/sqlite-core";
 
 /**
  * Phospharr schema — the canonical channel layer is the spine.
@@ -310,6 +310,25 @@ export const userFavorites = sqliteTable(
   (t) => ({ pk: uniqueIndex("user_favorites_uq").on(t.userId, t.channelId) }),
 );
 
+// ─── DOWNSTREAM FAVORITES: Emby/Jellyfin per-user favorite channels, read
+// back by src/sync/favorites.ts to weight the prewarm ring. Replaced
+// wholesale per server on each successful poll (see that file's header for
+// why a poll that errors out must NOT touch these rows, and why a poll that
+// succeeds with zero favorites for everyone legitimately does).
+export const downstreamFavorites = sqliteTable(
+  "downstream_favorites",
+  {
+    serverId: text("server_id").notNull(),
+    userId: text("user_id").notNull(),
+    channelId: integer("channel_id").notNull().references(() => channels.id, { onDelete: "cascade" }),
+    seenAt: integer("seen_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.serverId, t.userId, t.channelId] }),
+    channelIdx: index("downstream_favorites_channel_idx").on(t.channelId),
+  }),
+);
+
 // ─── REMINDERS: "tell me when this starts" ───
 export const reminders = sqliteTable(
   "reminders",
@@ -398,6 +417,35 @@ export const vodProgress = sqliteTable(
   },
   (t) => ({ uq: uniqueIndex("vod_progress_uq").on(t.userId, t.kind, t.refId), userIdx: index("vod_progress_user_idx").on(t.userId) }),
 );
+
+// ─── DOWNSTREAM SYNC STATE: one row per Emby/Jellyfin server the convergence
+// ladder (src/sync/converge.ts) manages. Declared here so its migration is
+// generated with the rest of the schema; read/written there through raw
+// prepared statements (same split as view_events ↔ src/analytics.ts).
+// `pending_readd` is the crash-safety record: JSON of the tuner hosts captured
+// *before* they are deleted. Written before the first delete and cleared only
+// once every host is confirmed back, so a process that dies mid-repair leaves
+// a trail the next run uses to re-add whatever Emby is missing. ───
+export const syncState = sqliteTable("sync_state", {
+  serverId: text("server_id").primaryKey(),
+  fingerprint: text("fingerprint"),
+  refreshedAt: integer("refreshed_at"), // when we last asked Emby to reload its guide; null once verified converged
+  readdAt: integer("readd_at"), // last tuner re-add — rate-limits the destructive rung
+  lastAction: text("last_action"),
+  lastActionAt: integer("last_action_at"),
+  lastError: text("last_error"),
+  pendingReadd: text("pending_readd"),
+  // Consecutive tuner rebuilds that did NOT end in a verified lineup. The
+  // circuit breaker in src/sync/converge.ts stops escalating once this reaches
+  // its cap, so a rebuild that can never work cannot tear the household's tuner
+  // down every hour forever. Cleared by a verify pass or a manual reset.
+  readdFailures: integer("readd_failures").notNull().default(0),
+  // JSON {scope: consecutive failing verifies}, e.g. {"group:live-events": 1}.
+  // A scope must fail twice IN A ROW before it may escalate, so ordinary event
+  // churn on a small, fast-rotating playlist cannot drive hourly teardowns.
+  // Cleared per scope the moment that scope verifies.
+  scopeFailures: text("scope_failures"),
+});
 
 export type VodMovie = typeof vodMovies.$inferSelect;
 export type VodSeries = typeof vodSeries.$inferSelect;

@@ -134,6 +134,34 @@
       "when": 1785162420344,
       "tag": "0018_bouncy_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1786070548146,
+      "tag": "0019_tricky_invisible_woman",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1786072262492,
+      "tag": "0020_mixed_komodo",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1786074619029,
+      "tag": "0021_famous_black_crow",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1786076160794,
+      "tag": "0022_mighty_juggernaut",
+      "breakpoints": true
     }
   ]
 }

@@ -84,21 +84,22 @@ count, last error. Backed by the same last-result pattern as
   continue; two consecutive healthy rounds auto-restore. Verdict + history
   visible in the provider UI.
 
-## Component 3 — Household cutover (dispatcharr retirement)
+## Component 3 — Cutover from a previous IPTV backend
 
-1. **Parallel tuner phase:** add Phospharr's HDHR as a second tuner in Emby
-   alongside dispatcharr's, same category color / filler behavior. Soak days;
-   verify channels, guide, recordings, failover under family use.
-2. **Live-TV flip:** remove the dispatcharr tuner host; sync driver converges;
-   favorites read-back re-maps family favorites to the new channel set.
-3. **VOD migration:** Emby VOD libraries repoint from
-   `media/iptv-vod` (dispatcharr/vod2mlib, 65K strm with `gluetun-jp:9191`
-   URLs) to Phospharr's existing `.strm` mirror + Torznab path. Known risk:
-   Emby matches items by path — `.strm` path changes lose watch state on those
-   items; acceptable for VOD (call out to family). Old tree kept until soak
-   ends.
-4. **Retire:** dispatcharr auto-sync off → container stopped (config parked,
-   not deleted) after a clean week.
+Migrating an existing Emby/Jellyfin/Plex install off some other IPTV backend
+and onto Phospharr. See `docs/CUTOVER.md` for the operator-facing runbook.
+
+1. **Parallel tuner phase:** add Phospharr as a second tuner alongside the
+   incumbent, matching its category/filler behaviour. Soak; verify channels,
+   guide, recordings, and failover under real use.
+2. **Live-TV flip:** remove the incumbent tuner host; the sync driver
+   converges; favorites read-back re-maps favorites to the new channel set.
+3. **VOD migration:** repoint the media server's VOD libraries from the
+   incumbent's `.strm` tree to Phospharr's mirror + Torznab path. Known risk:
+   the media server matches items by path, so changing `.strm` paths loses
+   watch state on those items. Keep the old tree until the soak ends.
+4. **Retire:** turn off the incumbent's generation job, stop it, and park its
+   config (don't delete) until a clean week has passed.
 
 ## Error handling
 

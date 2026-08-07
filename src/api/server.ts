@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { and, asc, eq, gt, lt, lte, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { providers, channels, streams, rules, programs, vpns, dvrRules, recordings, userFavorites, reminders, vodMovies, vodSeries, vodEpisodes, vodProgress } from "../db/schema.ts";
+import { providers, channels, streams, rules, programs, vpns, dvrRules, recordings, userFavorites, reminders, vodMovies, vodSeries, vodEpisodes, vodProgress, downstreamFavorites } from "../db/schema.ts";
 import { syncVod, ensureEpisodes, ensureMovieInfo, vodUpstreamUrl } from "../ingest/vod.ts";
 import { dvrOverview, scheduleRecording, cancelRecording, deleteRule } from "../dvr/recorder.ts";
 import { startVpn, stopVpn, vpnStatus } from "../net/tunnel.ts";
@@ -14,6 +14,8 @@ import { vpnProxyUrl } from "../net/tunnel.ts";
 import { nordCountries, nordRecommend, isNordConfig, setNordServer, setLocationComment, parseNordInfo } from "../net/nordvpn.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
 import { refreshDownstreamGuides, refreshOne, downstreamResults, scanDownstreamLibraries } from "../epg/downstream.ts";
+import { convergeAll, syncStates, resetAttention } from "../sync/converge.ts";
+import { VOD_MIRROR_ID } from "../sync/reconciler.ts";
 import { rebuildVodLibrary } from "../ingest/vodlibrary.ts";
 import { applyRules } from "../rules/engine.ts";
 import { reconcileAutoHides, listCategories, listProviderCategories } from "../content/filter.ts";
@@ -29,7 +31,9 @@ import * as hdhr from "../tuner/hdhr.ts";
 import { clientIp, isLocalIp, externalAllowed } from "../net/access.ts";
 import { exportXmltv } from "../epg/export.ts";
 import { buildView } from "./view.ts";
-import { getGuideSnapshot } from "../epg/snapshot.ts";
+import { getGuideSnapshot, snapshotAgeMs } from "../epg/snapshot.ts";
+import { healthzChecks } from "./healthz.ts";
+import { loopStates } from "../health/watchdog.ts";
 import { VERSION } from "../version.ts";
 import * as prewarm from "../proxy/prewarm.ts";
 import { getLogo } from "../tuner/logocache.ts";
@@ -260,6 +264,23 @@ app.use("/api/*", async (c, next) => {
 });
 
 app.get("/api/health", (c) => c.json({ name: "Phospharr", version: VERSION, status: "ok" }));
+
+// Real liveness/readiness probe for the container HEALTHCHECK + autoheal —
+// exercises DB writes, EPG snapshot freshness, and loop heartbeats. Leave
+// /api/health above in place; other things may still call it.
+//
+// Deliberately unauthenticated (registered above the /api/* session gate:
+// the container HEALTHCHECK curls it long before any session exists) but it
+// performs a DB write every call and its response leaks internals (loop
+// names, EPG snapshot age) — so it's gated by the same LAN policy as the
+// tuner/stream export routes (see tunerDenied above) instead of being left
+// open to whoever can reach the container. Off-network is refused BEFORE
+// healthzChecks() runs, so a denied request never touches the DB.
+app.get("/healthz", async (c) => {
+  if (!isLocalIp(clientIp(c)) && !externalAllowed()) return c.text("off-network access is disabled (Settings → Network Access)", 403);
+  const r = await healthzChecks({ snapshotAgeMs, loops: loopStates, maxSnapshotAgeMs: 3 * 3600_000 });
+  return c.json(r, r.ok ? 200 : 503);
+});
 
 // ─── Analytics ───
 app.get("/api/analytics", (c) => ensureAdmin(c) ?? c.json(getAnalytics()));
@@ -539,7 +560,7 @@ app.get("/t/:key/lineup_status.json", (c) => tunerDenied(c) ?? c.json(hdhr.lineu
 app.get("/t/:key/lineup.json", async (c) => {
   const d = tunerDenied(c); if (d) return d;
   if (!(await getSetting("features.hdhr"))) return c.notFound();
-  return c.json(await hdhr.lineup(`${baseUrl(c)}/t/${c.req.param("key")}`));
+  return c.json(hdhr.lineupRows(`${baseUrl(c)}/t/${c.req.param("key")}`));
 });
 app.get("/t/:key/stream/:channelId", async (c) => {
   const d = tunerDenied(c); if (d) return d;
@@ -560,9 +581,11 @@ app.get("/t/:key/mosaic.ts", (c) => {
 // channel never shows up under both tuners). canonicalId stays the tvg-id
 // everywhere, so favorites/recordings keyed on channel identity survive a
 // channel moving between the main lineup and a group. ──
-const groupSlug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-const tunerGroups = async () => ((await getSetting("tuner.groups")) ?? []).filter((g) => g?.name && g.categories?.length);
-const groupedCategories = async () => (await tunerGroups()).flatMap((g) => g.categories);
+// Slug/group resolution lives in src/tuner/hdhr.ts alongside the playlist
+// builder: the downstream-sync verifier (src/sync/converge.ts) has to work out
+// which of these playlists each Emby tuner host subscribed to, and it must get
+// the same answer these routes serve.
+const { groupSlug, tunerGroups, groupedCategories } = hdhr;
 const M3U_HEADERS = { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" };
 const XMLTV_HEADERS = { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" };
 
@@ -854,7 +877,12 @@ app.post("/api/providers/:id/sync", async (c) => {
   const result = await syncProvider(id);
   // Radarr/Sonarr-style: once the lineup sync lands, nudge downstream media
   // servers so the new/removed channels + guide show up now (fire-and-forget).
-  void refreshDownstreamGuides().catch(() => {});
+  // Then let the convergence ladder follow up: if Emby's cached lineup doesn't
+  // actually move, it escalates on a later pass (src/sync/converge.ts).
+  void refreshDownstreamGuides()
+    .catch(() => {})
+    .then(() => convergeAll())
+    .catch((e) => console.error("[sync] converge", e));
   return c.json(result);
 });
 
@@ -1381,6 +1409,66 @@ app.post("/api/epg/downstream/:id/test", async (c) => {
   const server = list.find((s) => s.id === c.req.param("id"));
   if (!server) return c.json({ error: "not found" }, 404);
   return c.json(await refreshOne(server));
+});
+
+// ─── Self-healing sync status (Task 11): surfaces Task 6's convergence ladder
+// + Task 9's reconciler to the operator. INNER JOIN against `epg.downstream`
+// (not a raw dump of `sync_state`) so a stale row from a removed server never
+// renders, and — same mechanism — the reconciler's synthetic "vod-mirror"
+// entry (VOD_MIRROR_ID, a global check, not a real Emby server) can never
+// appear here either, since it is never a configured downstream server.
+// Cheap by construction: syncStates()/loopStates() are local reads (sync_state
+// table + in-memory heartbeat registry) and the favorites count is one
+// indexed GROUP BY — nothing here calls Emby or does real reconcile work, so
+// the Manage card can poll this every 60s with no cost to Emby or the DB.
+app.get("/api/sync/status", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const configured = (await getSetting("epg.downstream")) ?? [];
+  const states = new Map(syncStates().map((s) => [s.serverId, s]));
+  const favRows = db
+    .select({ serverId: downstreamFavorites.serverId, n: sql<number>`count(distinct ${downstreamFavorites.channelId})` })
+    .from(downstreamFavorites)
+    .groupBy(downstreamFavorites.serverId)
+    .all();
+  const favorites = new Map(favRows.map((r) => [r.serverId, Number(r.n)]));
+  const servers = configured.map((s) => {
+    const st = states.get(s.id) ?? {
+      serverId: s.id, state: "unknown" as const, fingerprint: "", lastReaddAt: null,
+      lastAction: "", lastActionAt: 0, lastError: null, readdFailures: 0,
+      needsAttention: false, pendingReadd: false, scopeFailures: {} as Record<string, number>,
+    };
+    return { ...st, name: s.name || s.url, favorites: favorites.get(s.id) ?? 0 };
+  });
+  // The reconciler beats its watchdog heartbeat at the START of every 5-minute
+  // tick (src/sync/reconciler.ts's tick()), before the pass runs — "last run"
+  // here means "last tick started", not "last tick finished". Reusing the
+  // watchdog registry avoids adding a second, redundant timestamp store.
+  const reconciler = { lastRunAt: loopStates().find((l) => l.name === "reconciler")?.lastBeat ?? null };
+  return c.json({ servers, reconciler });
+});
+
+// Operator "I've fixed it, try again": re-arms converge.ts's rung 4 (the
+// destructive tuner delete+re-add) for one server after its 3-strike breaker
+// tripped. This is the ONLY way to clear it besides editing the DB by hand.
+//
+// Destructive-adjacent, so it's guarded three ways: (1) admin-gated like every
+// other mutation in this file; (2) 404 unless `id` is a currently configured
+// downstream server — never a free-form string that could wedge a bogus
+// sync_state row, and this alone already excludes VOD_MIRROR_ID, which is
+// never a configured server; (3) 400 unless the breaker is ACTUALLY tripped
+// right now (`needsAttention`), so a stray click — or two — can't silently
+// re-arm escalation on a server that isn't in trouble. The UI additionally
+// disables the button unless tripped and confirms before calling this,
+// showing the operator the lastError that tripped it (see public/app.js).
+app.post("/api/sync/:id/reset", async (c) => {
+  const deny = ensureAdmin(c); if (deny) return deny;
+  const id = c.req.param("id");
+  const configured = (await getSetting("epg.downstream")) ?? [];
+  if (!configured.some((s) => s.id === id)) return c.json({ error: "not found" }, 404);
+  const st = syncStates().find((s) => s.serverId === id);
+  if (!st?.needsAttention) return c.json({ error: "this server's breaker is not tripped — nothing to reset" }, 400);
+  resetAttention(id);
+  return c.json({ ok: true });
 });
 
 // ─── Rules ───

@@ -3,6 +3,7 @@ import { db } from "../db/index.ts";
 import { channels, streams } from "../db/schema.ts";
 import { pool } from "../scheduler/pool.ts";
 import { makeCategoryFilter } from "../content/filter.ts";
+import { getSetting, type TunerGroup } from "../settings.ts";
 import { VERSION } from "../version.ts";
 
 // Channel 1: the live mosaic composite. ALWAYS listed — tuner consumers (Emby,
@@ -61,14 +62,30 @@ export function lineupStatus() {
 // shows such channels (with a dead badge) so they can be watched for recovery.
 const hasUsableSource = sql`exists (select 1 from ${streams} where ${streams.channelId} = ${channels.id} and ${ne(streams.health, "dead")})`;
 
-export async function lineup(baseUrl: string) {
-  const rows = await db
+// The channel rows both the tuner lineup and the sync fingerprint iterate —
+// same filters, same order, single source of truth so the two projections
+// below can never drift apart on *which* channels they cover.
+function visibleChannelRows() {
+  return db
     .select()
     .from(channels)
     .where(and(eq(channels.isHidden, false), isNotNull(channels.number), hasUsableSource))
-    .orderBy(channels.number);
+    .orderBy(channels.number)
+    .all();
+}
 
-  const list = rows.map((ch) => ({
+export type LineupRow = { GuideNumber: string; GuideName: string; URL: string; HD: number };
+
+/**
+ * Row builder for the HDHR lineup — pure extraction of the former lineup()
+ * body: same fields, same order, same shape. This is the exact JSON served at
+ * /lineup.json (src/api/server.ts) — a live tuner (Emby/Plex) parses it, so do
+ * not add fields here. baseUrl is per-request (see server.ts's baseUrl(c));
+ * there is no request-less default because nothing needs one — the fingerprint
+ * projection (fingerprintRows(), below) doesn't hash URLs at all.
+ */
+export function lineupRows(baseUrl: string): LineupRow[] {
+  const list: LineupRow[] = visibleChannelRows().map((ch) => ({
     GuideNumber: String(ch.number),
     GuideName: ch.name,
     URL: `${baseUrl}/stream/${ch.id}`,
@@ -78,18 +95,86 @@ export async function lineup(baseUrl: string) {
   return list;
 }
 
+// The spec's drift-detection tuple: (canonicalId, guideNumber, name, logoUrl,
+// category) — deliberately NOT the URL (host-dependent, not meaningful
+// identity) and NOT a `hidden` flag (hiding a channel already changes the row
+// set via visibleChannelRows()'s isHidden filter, no separate field needed).
+// canonicalId falls back to the numeric id for legacy/custom channels that
+// predate canonicalId assignment, so every row still has a stable identity.
+export type FingerprintRow = { canonicalId: string; guideNumber: string; name: string; logoUrl: string; category: string };
+
+export function fingerprintRows(): FingerprintRow[] {
+  return visibleChannelRows().map((ch) => ({
+    canonicalId: ch.canonicalId ?? String(ch.id),
+    guideNumber: String(ch.number),
+    name: ch.name,
+    logoUrl: ch.logoUrl ?? "",
+    category: ch.category ?? "",
+  }));
+}
+
 /**
  * M3U playlist for players/consumers that ingest M3U+XMLTV (TiviMate, Jellyfin's
  * M3U tuner, etc.). tvg-id is the channel's canonicalId so it binds to the XMLTV
  * export's <channel id>. Stream URLs sit under the same /t/<key> base.
  */
-export async function playlistM3U(baseUrl: string, catFilter?: { include?: string[]; exclude?: string[] }): Promise<string> {
+export type CategoryFilter = { include?: string[]; exclude?: string[] };
+
+/**
+ * The channel rows ONE playlist emits — the main export (`exclude` = every
+ * grouped category) or a single tuner group's (`include` = its categories).
+ *
+ * Shared with `playlistNames()` below so the downstream-sync verifier can ask
+ * "which channels does the playlist Emby actually subscribed to contain?" and
+ * get the same answer the HTTP route would serve. Comparing Emby's channel list
+ * against `lineupRows()` instead would compare two different populations —
+ * grouped categories live on a second tuner host — and read as permanent drift.
+ */
+function playlistChannelRows(catFilter?: CategoryFilter) {
   const pass = makeCategoryFilter(catFilter?.include, catFilter?.exclude);
-  const rows = (await db
-    .select()
-    .from(channels)
-    .where(and(eq(channels.isHidden, false), isNotNull(channels.number), hasUsableSource))
-    .orderBy(channels.number)).filter((ch) => pass(ch.category));
+  return visibleChannelRows().filter((ch) => pass(ch.category));
+}
+
+/** The channel NAMES one playlist emits, mosaic included exactly as the M3U
+ *  includes it (main export only, never a category split). */
+export function playlistNames(catFilter?: CategoryFilter): string[] {
+  return playlistNamesFor([catFilter ?? {}])[0]!;
+}
+
+/**
+ * The same, for several playlists at once, off a SINGLE `visibleChannelRows()`
+ * read. The downstream verifier asks for one scope per registered Emby tuner
+ * host and runs on every EPG tick; each `visibleChannelRows()` is a full
+ * `channels` scan plus a correlated `exists` subquery over `streams`, so doing
+ * it per scope doubled (or worse) the cost of every verify for nothing.
+ */
+export function playlistNamesFor(filters: CategoryFilter[]): string[][] {
+  if (!filters.length) return [];
+  const rows = visibleChannelRows();
+  return filters.map((f) => {
+    const pass = makeCategoryFilter(f.include, f.exclude);
+    const names = rows.filter((ch) => pass(ch.category)).map((ch) => ch.name);
+    if (!f.include?.length) names.push("Mosaic");
+    return names;
+  });
+}
+
+/** URL slug for a tuner group — the `<slug>` in `/t/<key>/g/<slug>/…`. */
+export const groupSlug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+/** Configured tuner groups, minus incomplete ones (no name or no categories),
+ *  which serve no playlist and therefore aren't registrable in Emby. */
+export async function tunerGroups(): Promise<TunerGroup[]> {
+  return ((await getSetting("tuner.groups")) ?? []).filter((g) => g?.name && g.categories?.length);
+}
+
+/** Every category served by a group — i.e. everything the MAIN export excludes. */
+export async function groupedCategories(): Promise<string[]> {
+  return (await tunerGroups()).flatMap((g) => g.categories);
+}
+
+export async function playlistM3U(baseUrl: string, catFilter?: CategoryFilter): Promise<string> {
+  const rows = playlistChannelRows(catFilter);
   const out = ["#EXTM3U"];
   if (!catFilter?.include?.length) { // the mosaic belongs to the main lineup, not a category split
     out.push(`#EXTINF:-1 tvg-id="phospharr.mosaic" tvg-chno="${MOSAIC_NUMBER}" tvg-name="Mosaic" group-title="Phospharr",Mosaic`);

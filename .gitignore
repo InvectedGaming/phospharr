@@ -4,6 +4,7 @@ node_modules/
 # secrets & local state — NEVER commit these
 .env
 .env.local
+docs/CUTOVER.local.md
 *.db
 *.db-shm
 *.db-wal

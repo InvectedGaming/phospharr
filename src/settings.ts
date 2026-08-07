@@ -71,12 +71,14 @@ export interface Settings {
   "access.streamKey": string; // secret gating /stream, /watch, and HDHR (devices use ?key=)
   "access.allowExternal": boolean; // allow tuner/M3U/EPG/stream exports off the local network (with key)
   "access.trustProxy": boolean; // resolve client IP from X-Forwarded-For (set true behind a reverse proxy)
+  "tuner.publicUrl": string; // absolute base URL a downstream tuner (Emby) uses to reach US — must match what Emby stored, else the sync layer won't recognize its own tuner hosts (falls back to vod.publicUrl, then BASE_URL)
   "tuner.groups": TunerGroup[]; // split categories into their own playlist+EPG (/t/<key>/g/<slug>/…) with an optional fast sync cadence; the main playlist excludes them
   "content.hideAdult": boolean; // auto-hide adult/XXX channels (on by default)
   "content.hideNoStream": boolean; // auto-hide channels with no attached stream — event channels get theirs back at air time (on by default)
   "content.hiddenCategories": string[]; // whole categories the admin chose to hide
   "content.hiddenMarkets": string[]; // local markets (cities) the admin chose to hide
   "content.dedupeLocals": boolean; // collapse duplicate local stations (same callsign)
+  "alerts.webhookUrl": string; // POST target for self-healing alerts ({kind,message,at} JSON); empty = alerts disabled
 }
 
 const DEFAULTS: Settings = {
@@ -115,12 +117,14 @@ const DEFAULTS: Settings = {
   "access.streamKey": "", // auto-generated on first boot if unset
   "access.allowExternal": false, // LAN-only by default
   "access.trustProxy": false,
+  "tuner.publicUrl": "", // empty = fall back to vod.publicUrl / BASE_URL
   "tuner.groups": [], // e.g. [{ name: "Events", categories: ["PPV FLOSPORTS", "USA MLB"], syncMinutes: 15 }]
   "content.hideAdult": true, // hide adult/XXX channels by default
   "content.hideNoStream": true, // a channel with zero streams can't play — dead guide entries otherwise
   "content.hiddenCategories": [],
   "content.hiddenMarkets": [],
   "content.dedupeLocals": true, // collapse duplicate local stations by default
+  "alerts.webhookUrl": "", // opt-in — no alerts fire until an operator sets this
 };
 
 // Env overrides (ops/Docker). Present env value wins over DB + default.
@@ -150,12 +154,14 @@ const ENV_MAP: Partial<Record<keyof Settings, string>> = {
   "timeshift.windowMinutes": "PHOSPHARR_TIMESHIFT_MINUTES",
   "epg.refreshHours": "PHOSPHARR_EPG_REFRESH_HOURS",
   "stream.keepWarmSeconds": "PHOSPHARR_STREAM_KEEPWARM",
+  "tuner.publicUrl": "PHOSPHARR_TUNER_URL",
   "access.streamKey": "PHOSPHARR_STREAM_KEY",
   "access.allowExternal": "PHOSPHARR_ALLOW_EXTERNAL",
   "access.trustProxy": "PHOSPHARR_TRUST_PROXY",
   "content.hideAdult": "PHOSPHARR_HIDE_ADULT",
   "content.hideNoStream": "PHOSPHARR_HIDE_NO_STREAM",
   "content.dedupeLocals": "PHOSPHARR_DEDUPE_LOCALS",
+  "alerts.webhookUrl": "PHOSPHARR_ALERTS_WEBHOOK_URL",
 };
 
 function coerce(key: keyof Settings, raw: string): boolean | number | string {
@@ -212,6 +218,17 @@ export async function setSetting<K extends keyof Settings>(key: K, value: Settin
 
 export async function deleteSetting(key: keyof Settings): Promise<void> {
   await db.delete(settingsTable).where(eq(settingsTable.key, key));
+  cache = null;
+}
+
+/**
+ * Drop the in-memory settings cache without touching the table.
+ *
+ * For code that writes the `settings` table directly — chiefly tests restoring
+ * a key verbatim. `setSetting` deliberately refuses to write env-locked keys, so
+ * it cannot be used to put one back; a raw write plus this call can.
+ */
+export function _invalidateSettingsCache(): void {
   cache = null;
 }
 

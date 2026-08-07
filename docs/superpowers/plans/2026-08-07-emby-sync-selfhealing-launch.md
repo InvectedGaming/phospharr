@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Phospharr converges Emby's lineup/guide automatically, heals its own failures at app/integration/provider level, and replaces dispatcharr for the household.
+**Goal:** Phospharr converges Emby's lineup/guide automatically, heals its own failures at app/integration/provider level, and can fully replace a previous IPTV backend.
 
 **Architecture:** A new `src/sync/` module owns the downstream (Emby) relationship: lineup fingerprint → convergence ladder (refresh → verify → automated tuner re-add) + favorites read-back. Self-healing is layered: loop watchdog + real `/healthz` (app), a reconciler loop with webhook alerts (integration), and provider-level health verdicts feeding the scheduler (provider). Spec: `docs/superpowers/specs/2026-08-07-emby-sync-selfhealing-launch-design.md`.
 
@@ -330,7 +330,7 @@ type Row = { GuideNumber: string; GuideName: string; URL: string; logo?: string;
 
 export function computeFingerprint(rows: Row[]): string {
   const canonical = rows
-    .map((r) => [r.GuideNumber, r.GuideName, r.URL, r.logo ?? "", r.category ?? ""].join(" "))
+    .map((r) => [r.GuideNumber, r.GuideName, r.URL, r.logo ?? "", r.category ?? ""].join("\u0000"))
     .sort()
     .join("\n");
   return createHash("sha256").update(canonical).digest("hex");
@@ -503,7 +503,25 @@ State persists in a new table (raw SQL migration in `drizzle/`, matching existin
 1. fingerprint unchanged since last converged → `none`.
 2. changed → `refreshGuide(s)`, record `refreshed_at`, state `converging` → `refreshed`.
 3. called again with state `converging` and `now - refreshed_at > 10 min`: run `verify` (compare `listChannels` count and 5 sampled (Number, Name) pairs against `lineupRows()`); pass → `converged`. Fail →
-4. re-add guard: `readd_at` within 1 h → `skipped:"rate-limited"`; `hasLiveSession(s)` → `skipped:"live session"`; else find tuner in `listTunerHosts` with `Url === tunerUrl` (none → `skipped:"tuner not found"` + error surfaced), `deleteTunerHost`, `addTunerHost({ Url: tunerUrl, Type: "hdhomerun" })`, `refreshGuide`, record `readd_at` → `readded`.
+4. re-add guard: `readd_at` within 1 h → `skipped:"rate-limited"`; `hasLiveSession(s)` → `skipped:"live session"`; else re-add **every** Phospharr-owned tuner host: for each, capture its full object from `listTunerHosts`, `deleteTunerHost(id)`, then `addTunerHost(<captured object minus Id>)`; then `refreshGuide`, record `readd_at` → `readded`. No Phospharr-owned host found → `skipped:"tuner not found"` + error surfaced.
+
+> **GROUND TRUTH — measured against the live Emby on 2026-08-07. This overrides any conflicting assumption elsewhere in this plan, including the test fixture below.**
+> - There are **two** Phospharr tuner hosts, not one: the main lineup and a per-tuner-group one
+>   (`…/t/<tunerKey>/playlist.m3u` and `…/t/<tunerKey>/g/live-events/playlist.m3u`).
+> - Their `Type` is **`"m3u"`**, NOT `"hdhomerun"`. Never hardcode a type — reuse the captured host's own.
+> - The URL is a full playlist URL embedding a secret tuner key; it is not an HDHR base URL.
+> - Each host carries settings a `{Url, Type}`-only re-add would silently destroy: `FriendlyName`,
+>   `ImportGuideData`, `PreferEpgChannelImages`, `PreferEpgChannelNumbers`, `AllowMappingByNumber`,
+>   `AllowHWTranscoding`, `ImportFavoritesOnly`, `ProviderOptions`, `TunerCount`, `SetupUrl`, `DataVersion`.
+>   **Round-trip the whole captured object (minus `Id`)** — losing these scrambles guide images and channel numbering.
+> - Identify Phospharr-owned hosts by URL **prefix** (our base + `/t/<tunerKey>`), never exact equality, so
+>   per-group variants all match and a foreign tuner is never touched.
+> - `listChannels` returns `{Items, TotalRecordCount}`; the live server currently reports 3219 channels, so
+>   `verify`'s spot-check must not assume a small lineup.
+>
+> Consequently `addTunerHost`'s parameter type in `src/sync/embyClient.ts` must widen from
+> `{ Url: string; Type: string }` to accept a full captured host record (keep `Url`/`Type` required).
+> That widening is part of this task.
 
 - [ ] **Step 1: Write the failing test** — drive the ladder with a scripted fake client:
 
@@ -568,7 +586,9 @@ describe("convergence ladder", () => {
 });
 ```
 
-- [ ] **Step 2: Verify fail, implement** `src/sync/converge.ts` per the ladder above. State rows via `sqlite` prepared statements (same pattern as other modules); `_resetSyncState()` truncates the table + in-memory cache. `convergeAll()` loads `epg.downstream` servers (`getSetting`), filters `enabled && type !== "plex"` (Plex keeps guide-refresh only), computes `currentFingerprint()`, calls `convergeServer` with production deps (`tunerUrl` derived from the same self-URL setting HDHR announces — reuse the existing `BASE_URL`/request-host logic in `src/tuner/hdhr.ts`, exported as `export function tunerBaseUrl(): string`).
+- [ ] **Step 2: Verify fail, implement** `src/sync/converge.ts` per the ladder above. State rows via `sqlite` prepared statements (same pattern as other modules); `_resetSyncState()` truncates the table + in-memory cache. `convergeAll()` loads `epg.downstream` servers (`getSetting`), filters `enabled && type !== "plex"` (Plex keeps guide-refresh only), computes `currentFingerprint()`, calls `convergeServer` with production deps.
+
+  `tunerBaseUrl()`: Task 4 deleted the old `defaultBaseUrl()` (it was `process.env.BASE_URL`-only and returned `""` on a typical LAN install — an empty base would re-add the tuner pointing nowhere). Build it properly here, following the request-less resolver pattern already in `src/ingest/vodlibrary.ts` (`publicBase()`: dedicated setting first, then `BASE_URL`). It must produce the same origin Emby already has stored (see ground truth), and matching is by prefix, so returning the origin (`http://host:7777`) is sufficient — do not attempt to reconstruct the tuner key; discover owned hosts by prefix-matching the origin plus `/t/`.
 
 - [ ] **Step 3: Migration** — add `drizzle/` SQL file for `sync_state` following the newest existing migration's file-naming; run `bun run db:migrate`.
 
@@ -664,7 +684,7 @@ git commit -m "Sync: Emby favorites read-back feeds the prewarm ring"
 - Produces: `sendAlert(kind: string, message: string, deps?: { fetchFn?: typeof fetch; now?: () => number }): Promise<boolean>` — false when suppressed (same kind+message within 1 h) or webhook unset; POSTs `{ kind, message, at }` JSON. `_resetAlerts()`.
 
 - [ ] **Step 1: Failing test** — inject fetchFn capturing calls + a controllable clock: first send → posts; duplicate within 1 h → suppressed; after 61 min → posts again; different message → posts.
-- [ ] **Step 2: Implement** (module-level `Map<string, number>` keyed `kind message`; read `alerts.webhookUrl` via `getSetting`; injectable clock/fetch defaulted).
+- [ ] **Step 2: Implement** (module-level `Map<string, number>` keyed `kind\u0000message`; read `alerts.webhookUrl` via `getSetting`; injectable clock/fetch defaulted).
 - [ ] **Step 3: Tests green, typecheck, commit**
 
 ```bash
@@ -745,16 +765,32 @@ git commit -m "UI: downstream sync status card (fingerprint state, actions, favo
 **Files:**
 - Create: `docs/CUTOVER.md`
 
-- [ ] **Step 1: Write `docs/CUTOVER.md`** with the four phases from the spec, each with exact commands/UI paths:
-  1. **Parallel:** Emby → Live TV → Tuner Devices → add HDHomeRun with Phospharr's `tunerBaseUrl()` (shown in the sync card); XMLTV source add (Phospharr `/epg/xmltv` export URL); soak ≥3 days; watch sync card + `/healthz`.
-  2. **Flip:** remove dispatcharr tuner (`http://gluetun-jp:9191/hdhr`) + its XMLTV source in Emby; sync driver converges; verify family favorites re-mapped (sync card favorites count).
-  3. **VOD:** enable Phospharr VOD mirror libraries in Emby (paths from the existing `.strm` mirror), remove `media/iptv-vod` libraries; note watch-state loss on VOD items; keep old tree until soak ends.
-  4. **Retire:** dispatcharr `auto_channel_sync` off, `docker stop dispatcharr-vpn` (config parked); remove after a clean week.
+> **Survey the target install before writing this document.** On the install this
+> plan was executed against, the live-TV half of the cutover had *already* been
+> done — the media server's tuner hosts and XMLTV providers all pointed at
+> Phospharr, and the incumbent backend still owned only part of the VOD tree.
+> Write the runbook against what is actually configured, not against the
+> assumed starting state; a runbook that walks the operator through a migration
+> that already happened is worse than no runbook.
+>
+> Points worth checking on any install: how many tuner hosts exist and their
+> `Type` (m3u vs hdhomerun — never assume), which XMLTV providers are
+> registered, which VOD libraries point where, whether Phospharr's own mirror
+> is populated for both movies and series, and whether `tuner.publicUrl` is set
+> explicitly or only resolving through the `vod.publicUrl` fallback.
+
+- [ ] **Step 1: Write `docs/CUTOVER.md`**, generic and public-safe (no host IPs, absolute host paths, private container names, or private library/group names — those belong in a gitignored `docs/CUTOVER.local.md` companion). Required sections, with exact commands/UI paths:
+  0. **Current state** — how the operator determines what is already migrated before touching anything.
+  1. **Pre-flight** — configure `epg.downstream` first (the sync and self-healing subsystem is inert without it); set `tuner.publicUrl` explicitly (relying on the `vod.publicUrl` fallback means editing the VOD URL silently breaks tuner repair); set `alerts.webhookUrl`; confirm the sync card and `/healthz`.
+  2. **VOD migration** — repoint the media server's VOD libraries at Phospharr's mirror. **Name the watch-state risk explicitly:** the media server matches items by path, so changing `.strm` paths loses watched flags. Keep the old tree until the soak ends; include the rollback.
+  3. **Retire the incumbent** — turn off its generation job, stop it, park the config; warn that a shared VPN container may not be removable if other services ride its namespace, and that its hostname may be baked into existing `.strm` URLs that must be gone first.
+  4. **Post-deploy watch list** — the first real `docker inspect --format '{{json .State.Health}}'` after the new HEALTHCHECK lands; the first automated tuner rebuild in the sync card; and the known-unknown that provider verdicts have never been exercised under real host load.
+  5. **Known rough edges** — carry the deferred-minor list from this branch's ledger, keeping items that apply to any installation, including: never run the test suite inside the container (several test files mutate real settings rows and restore only in `afterAll`).
 - [ ] **Step 2: Commit**
 
 ```bash
 git add docs/CUTOVER.md
-git commit -m "Docs: household cutover runbook (parallel tuner → flip → VOD → retire dispatcharr)"
+git commit -m "Docs: cutover runbook (pre-flight, VOD migration, retiring the incumbent)"
 ```
 
 (The actual cutover is operated on the server with the user, not by this plan's executor.)

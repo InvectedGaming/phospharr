@@ -1,4 +1,5 @@
 import { getSetting, type DownstreamServer } from "../settings.ts";
+import { refreshGuide } from "../sync/embyClient.ts";
 
 /**
  * Downstream guide sync. Phospharr is a tuner for Emby / Jellyfin / Plex, but
@@ -35,24 +36,11 @@ async function jfetch(url: string, init: RequestInit): Promise<Response> {
   return fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
 }
 
-/** Emby & Jellyfin share the same API: list scheduled tasks, run "RefreshGuide". */
+/** Emby & Jellyfin share the same API: find the "RefreshGuide" scheduled task, start it.
+ *  Delegates to `src/sync/embyClient.ts` (the typed client the sync layer builds on);
+ *  kept here as a thin wrapper so `refreshOne`'s message shape is unchanged. */
 async function refreshEmby(s: DownstreamServer): Promise<string> {
-  const base = trimUrl(s.url);
-  const headers = {
-    "X-Emby-Token": s.apiKey,
-    "X-MediaBrowser-Token": s.apiKey,
-    Authorization: `MediaBrowser Token="${s.apiKey}"`,
-    Accept: "application/json",
-  };
-  const listRes = await jfetch(`${base}/ScheduledTasks?isHidden=false`, { headers });
-  if (listRes.status === 401 || listRes.status === 403) throw new Error("unauthorized — check the API key");
-  if (!listRes.ok) throw new Error(`ScheduledTasks HTTP ${listRes.status}`);
-  const tasks = (await listRes.json()) as { Id: string; Key?: string; Name?: string }[];
-  const guide = tasks.find((t) => t.Key === "RefreshGuide")
-    ?? tasks.find((t) => /guide/i.test(t.Name ?? ""));
-  if (!guide) throw new Error("no guide-refresh task (is Live TV set up on this server?)");
-  const runRes = await jfetch(`${base}/ScheduledTasks/Running/${guide.Id}`, { method: "POST", headers });
-  if (!runRes.ok && runRes.status !== 204) throw new Error(`start task HTTP ${runRes.status}`);
+  await refreshGuide(s);
   return "guide refresh started";
 }
 
