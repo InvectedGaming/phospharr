@@ -57,12 +57,19 @@ export async function vodPassthrough(o: PassthroughOpts): Promise<PassthroughRes
   // slot acquire). Starting an upstream request for them wastes a connection.
   if (o.signal.aborted) { release(); return { kind: "gone" }; }
 
+  // Measured: a bare HEAD comes back `Content-Length: 0` with NO Content-Range,
+  // so there is nothing to recover the real size from and a player is told the
+  // file is empty. Probing with a one-byte ranged GET instead forces the CDN to
+  // state the total in Content-Range — it costs one byte and is the only way to
+  // answer a HEAD honestly.
+  const headProbe = o.method === "HEAD" && !o.rangeHeader;
+
   const fetchFn = o.fetchFn ?? fetch;
   let up: Response;
   try {
     up = await fetchFn(o.url, {
-      method: o.method === "HEAD" ? "HEAD" : "GET",
-      headers: o.rangeHeader ? { Range: o.rangeHeader } : undefined,
+      method: o.method === "HEAD" && !headProbe ? "HEAD" : "GET",
+      headers: o.rangeHeader ? { Range: o.rangeHeader } : headProbe ? { Range: "bytes=0-0" } : undefined,
       redirect: "follow", // the provider 302s to its CDN; the CDN serves the ranges
       signal: o.signal,
       ...(o.proxy ? { proxy: o.proxy } : {}),
@@ -102,6 +109,16 @@ export async function vodPassthrough(o: PassthroughOpts): Promise<PassthroughRes
   if (!o.rangeHeader && (!h.get("content-length") || h.get("content-length") === "0")) {
     if (total) h.set("Content-Length", total);
     else h.delete("Content-Length"); // absent beats a lie
+  }
+
+  if (headProbe) {
+    // Report the probe as what the client actually asked about — the whole file —
+    // not the single byte we fetched to measure it.
+    dropBody(); release();
+    h.delete("Content-Range");
+    if (total) h.set("Content-Length", total);
+    else h.delete("Content-Length");
+    return { kind: "served", response: new Response(null, { status: 200, headers: h }) };
   }
 
   if (!up.body || o.method === "HEAD") { dropBody(); release(); return { kind: "served", response: new Response(null, { status: up.status, headers: h }) }; }

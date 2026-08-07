@@ -165,14 +165,42 @@ describe("vodPassthrough — headers clients actually parse", () => {
     expect(sent).toBe("bytes=5-9");
   });
 
-  test("HEAD releases immediately and returns no body", async () => {
+  test("answers a bare HEAD with the real size via a one-byte probe", async () => {
+    // Measured on the live provider: a real HEAD returns `Content-Length: 0` and
+    // no Content-Range at all, so relaying it tells the player the file is empty.
+    // A one-byte ranged GET is the only way to learn the total.
+    let sentMethod: string | undefined, sentRange: string | undefined;
+    const r = await vodPassthrough({
+      url: "http://x/v.mp4", method: "HEAD", signal: new AbortController().signal, release: () => {},
+      fetchFn: async (_u, init) => {
+        sentMethod = init?.method; sentRange = new Headers(init?.headers).get("range") ?? undefined;
+        return new Response(new ReadableStream({ start: (c) => c.close() }), {
+          status: 206, headers: { "content-length": "1", "content-range": "bytes 0-0/2200098681" },
+        });
+      },
+    });
+    expect(sentMethod).toBe("GET");        // a HEAD upstream would reveal nothing
+    expect(sentRange).toBe("bytes=0-0");   // and one byte is all it costs
+    if (r.kind !== "served") throw new Error("expected served");
+    expect(r.response.status).toBe(200);                                 // not the probe's 206
+    expect(r.response.headers.get("content-length")).toBe("2200098681"); // the file, not the byte
+    expect(r.response.headers.get("content-range")).toBeNull();          // they asked about the whole file
+    expect(r.response.body).toBeNull();
+  });
+
+  test("a HEAD carrying a client Range stays a real HEAD, and pins no slot", async () => {
     const { release, c } = counter();
     const u = upstream({ headers: { "content-range": "bytes 0-9/10" } });
+    let sentMethod: string | undefined;
     const r = await vodPassthrough({
-      url: "http://x/v.mp4", method: "HEAD", signal: new AbortController().signal, release, fetchFn: async () => u.res,
+      url: "http://x/v.mp4", method: "HEAD", rangeHeader: "bytes=0-9",
+      signal: new AbortController().signal, release,
+      fetchFn: async (_u, init) => { sentMethod = init?.method; return u.res; },
     });
+    expect(sentMethod).toBe("HEAD"); // no probe needed — they told us the range
     if (r.kind !== "served") throw new Error("expected served");
     expect(r.response.body).toBeNull();
-    expect(c.n).toBe(1); // a HEAD must not pin a provider slot
+    expect(u.cancelled.yes).toBe(true); // and the upstream body is not left hanging
+    expect(c.n).toBe(1);                // a HEAD must not pin a provider slot
   });
 });
