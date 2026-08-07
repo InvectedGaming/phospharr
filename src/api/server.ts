@@ -1116,6 +1116,56 @@ app.post("/api/vod/library/rebuild", async (c) => {
 // ?t=<seconds> seeks (ffmpeg -ss before the input = fast keyframe seek). The
 // provider connection counts against the slot pool for the whole playback.
 const VOD_FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
+/**
+ * VOD byte passthrough — what makes a mirrored episode SEEKABLE.
+ *
+ * The remux path below pipes the upstream through ffmpeg into an unbounded
+ * MPEG-TS stream: no Content-Length, no byte ranges, so a media server gets no
+ * scrubber, no rewind and no resume position. The upstream is a plain MP4 whose
+ * CDN answers `206 Partial Content` with a real `Content-Range` — measured on
+ * the live provider — so all of that capability was being thrown away in the
+ * remux. Relaying the bytes (and the Range header) instead gives Emby/Jellyfin
+ * native seek, pause, rewind and continue-watching, and costs no ffmpeg process
+ * per stream. When a client can't handle the container, the media server
+ * transcodes it itself — which is what it is good at.
+ *
+ * The provider slot is still held for the life of the response, and the request
+ * still goes through the provider's egress (fail-closed VPN) exactly as before.
+ */
+async function serveVodPassthrough(c: Context<Env>, eg: { proxy?: string }, url: string, release: () => void) {
+  const range = c.req.header("range");
+  let up: Response;
+  try {
+    up = await fetch(url, {
+      method: c.req.method === "HEAD" ? "HEAD" : "GET",
+      headers: range ? { Range: range } : undefined,
+      redirect: "follow", // the provider 302s to its CDN; the CDN is what serves ranges
+      signal: c.req.raw.signal,
+      ...(eg.proxy ? { proxy: eg.proxy } : {}),
+    });
+  } catch {
+    release();
+    return null; // caller falls back to the remux path
+  }
+  if (!up.ok && up.status !== 206) { release(); return null; }
+
+  // Relay exactly what the CDN said about size/ranges — that is the whole point.
+  const h = new Headers({ "Cache-Control": "no-store" });
+  for (const k of ["content-type", "content-length", "content-range", "accept-ranges"]) {
+    const v = up.headers.get(k);
+    if (v) h.set(k, v);
+  }
+  if (!h.has("accept-ranges")) h.set("Accept-Ranges", "bytes"); // CDN honours ranges even when it forgets to advertise
+  if (!up.body || c.req.method === "HEAD") { release(); return new Response(null, { status: up.status, headers: h }); }
+
+  // Hold the slot until the body genuinely finishes, and let go the moment the
+  // viewer walks away — a seeking client opens a NEW ranged request per scrub,
+  // so a slot leaked per seek would exhaust the provider's connections fast.
+  const body = up.body.pipeThrough(new TransformStream({ flush: release }));
+  c.req.raw.signal.addEventListener("abort", release, { once: true });
+  return new Response(body, { status: up.status, headers: h });
+}
+
 async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: number, streamId: number, ext: string) {
   const [prov] = await db.select().from(providers).where(eq(providers.id, providerId));
   if (!prov) return c.text("provider gone", 404);
@@ -1132,6 +1182,22 @@ async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: n
       ? ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M", "-pix_fmt", "yuv420p"]
       : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p"];
   const url = vodUpstreamUrl(prov, kind, streamId, ext);
+  let released = false;
+  const release = () => { if (!released) { released = true; pool.release(prov.id); } };
+
+  // Default to the seekable byte passthrough. Remux only where it earns its
+  // keep: `tc=1` (client can't decode the codec), `t=` (Phospharr's own player
+  // asks ffmpeg to start mid-file, since it can't send a byte offset it doesn't
+  // know), or an explicit `remux=1` escape hatch. A passthrough that can't
+  // reach the CDN returns null and falls through to remux rather than failing.
+  const forceRemux = tc || t > 0 || c.req.query("remux") === "1";
+  if (!forceRemux) {
+    const passthrough = await serveVodPassthrough(c, eg as { proxy?: string }, url, release);
+    if (passthrough) return passthrough;
+    if (!pool.acquire(prov.id)) return c.text("all tuners busy", 503); // re-take: the failed attempt released it
+    released = false;
+  }
+
   const args = [
     "-hide_banner", "-loglevel", "error",
     ...("proxy" in eg && eg.proxy ? ["-http_proxy", eg.proxy] : []),
@@ -1143,8 +1209,6 @@ async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: n
     ...venc, "-c:a", "aac", "-ac", "2", "-b:a", "160k",
     "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
   ];
-  let released = false;
-  const release = () => { if (!released) { released = true; pool.release(prov.id); } };
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn([VOD_FFMPEG, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
