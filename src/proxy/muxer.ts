@@ -4,6 +4,7 @@ import { cachedSetting } from "../settings.ts";
 import { openSource } from "./source.ts";
 import { TsPreroll } from "../proxy/tspreroll.ts";
 import { JitterBuffer } from "./jitter.ts";
+import { reconnectPlan, RECONNECT_MAX } from "./reconnect.ts";
 import type { Stream } from "../db/schema.ts";
 
 /**
@@ -44,6 +45,8 @@ class ChannelMux {
   private started = false;
   private stopping = false;
   private failed = new Set<number>(); // stream ids that already failed this session
+  private reconnects = 0;        // consecutive same-source reconnects
+  private sourceStartedAt = 0;   // when the current upstream attempt opened
   private lastByteAt = Date.now();
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private onTeardown: () => void;
@@ -119,10 +122,15 @@ class ChannelMux {
       await Bun.sleep(200);
       const next = await this.nextSource();
       if (!next) {
+        // No alternate to move to. Before dropping anyone, try this same source
+        // again: the close is usually transient, and with a jitter cushion still
+        // draining, a reconnect inside a second or two is invisible to viewers.
+        if (await this.reconnectSame()) continue;
         console.log(`[muxer] channel ${this.channelId}: source ${this.stream.id} died, no alternates — dropping ${this.subs.size} viewer(s)`);
         this.teardown(true);
         return;
       }
+      this.reconnects = 0; // a real failover — the new source gets a fresh budget
       console.log(`[muxer] channel ${this.channelId}: failover ${this.stream.id} → ${next.id}`);
       const old = this.stream;
       this.stream = next;
@@ -133,6 +141,34 @@ class ChannelMux {
       markLive(next.id);
       this.onRekey(old.id, next.id);
     }
+  }
+
+  /**
+   * Re-open the CURRENT source after it dropped. Returns false when the budget
+   * is spent or the provider slot can't be re-taken, in which case the caller
+   * drops the viewers.
+   *
+   * Deliberately does NOT reset the jitter buffer: the cushion is still draining
+   * to viewers and is exactly what hides the reconnect. Resetting it here would
+   * throw away the buffered stream and produce the visible gap this avoids.
+   */
+  private async reconnectSame(): Promise<boolean> {
+    const plan = reconnectPlan({
+      attempts: this.reconnects,
+      sourceUptimeMs: this.sourceStartedAt ? Date.now() - this.sourceStartedAt : 0,
+    });
+    if (!plan.retry) return false;
+    this.reconnects = plan.attempt;
+    await Bun.sleep(plan.backoffMs);
+    if (this.stopping || this.subs.size === 0) return false;
+    if (!pool.acquire(this.stream.providerId)) return false; // nextSource() released it
+    this.started = true;
+    this.failed.delete(this.stream.id); // it is being retried, not written off
+    this.abort = new AbortController();
+    markLive(this.stream.id);
+    this.lastByteAt = Date.now(); // fresh watchdog window for the new attempt
+    console.log(`[muxer] channel ${this.channelId}: source ${this.stream.id} dropped — reconnecting (${this.reconnects}/${RECONNECT_MAX})`);
+    return true;
   }
 
   /** Keyframe-align, then fan out to every attached viewer. */
@@ -170,6 +206,7 @@ class ChannelMux {
     // openSource yields a live MPEG-TS reader whatever the source is: a provider
     // stream (raw TS over the VPN egress) or a user-added live URL resolved via
     // streamlink/ffmpeg. The resolver's child processes die when abort fires.
+    this.sourceStartedAt = Date.now();
     const src = await openSource(this.stream, this.abort.signal);
     const reader = src.reader;
     this.abort.signal.addEventListener("abort", () => src.close(), { once: true });
@@ -184,9 +221,10 @@ class ChannelMux {
       if (this.jitter) this.jitter.push(value);
       else this.fanout(value);
     }
-    // Upstream ended: hand the viewer the tail we are still holding instead of
-    // cutting mid-cushion.
-    this.jitter?.flush();
+    // NOT flushed here: pump() also returns when the source merely dropped the
+    // connection, and reconnect-in-place below depends on the cushion still
+    // holding — that is what makes a reconnect invisible. The tail is flushed at
+    // teardown, when the channel is genuinely finished.
     // Upstream EOF: fall back to run(), which fails over or tears down.
   }
 
@@ -230,6 +268,9 @@ class ChannelMux {
     if (!force && this.subs.size > 0) return; // someone re-attached during grace
     this.stopping = true; // tells the failover supervisor this death is intentional
     if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
+    // Flush BEFORE stopping: viewers get the tail still held in the cushion
+    // instead of losing it, and only then is the pacer shut down.
+    this.jitter?.flush();
     this.jitter?.stop();
     this.jitter = null;
     try {
