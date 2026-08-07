@@ -70,6 +70,49 @@ describe("lineupRows (regression guard for the /lineup.json extraction)", () => 
   });
 });
 
+/**
+ * The fingerprint must track the LINEUP DEFINITION, not transient source
+ * health. On the live install the source-filtered set churned twice in seven
+ * minutes as the health probe flipped streams dead/alive, which reset the
+ * convergence ladder's verify window every time — verify never ran and the
+ * server sat permanently "converging" while pushing a guide refresh downstream
+ * every ~5 minutes. Re-adding a `health <> 'dead'` filter to fingerprintRows()
+ * reintroduces exactly that, so these guard it.
+ */
+describe("fingerprint ignores transient stream health", () => {
+  test("a channel whose only source goes dead stays in the fingerprint, but leaves the served lineup", () => {
+    cleanup(); // idempotent from a prior aborted run
+    seed();
+
+    const before = currentFingerprint();
+    expect(fingerprintRows().some((r) => r.guideNumber === "990210")).toBe(true);
+    expect(lineupRows("http://x/auto").some((r) => r.GuideNumber === "990210")).toBe(true);
+
+    // The probe marks the channel's only source dead — a routine, reversible event.
+    sqlite.exec(`UPDATE streams SET health = 'dead' WHERE id = ${S1}`);
+
+    // Served lineup correctly drops it (players would just spin on a dead source)…
+    expect(lineupRows("http://x/auto").some((r) => r.GuideNumber === "990210")).toBe(false);
+    // …but the lineup DEFINITION is unchanged, so the fingerprint must not move.
+    expect(fingerprintRows().some((r) => r.guideNumber === "990210")).toBe(true);
+    expect(currentFingerprint()).toBe(before);
+
+    // And it recovers without ever having disturbed convergence.
+    sqlite.exec(`UPDATE streams SET health = 'live' WHERE id = ${S1}`);
+    expect(currentFingerprint()).toBe(before);
+  });
+
+  test("a real lineup change still moves the fingerprint", () => {
+    cleanup();
+    seed();
+    const before = currentFingerprint();
+    sqlite.exec(`UPDATE channels SET name = 'FP Test Channel RENAMED' WHERE id = ${C1}`);
+    expect(currentFingerprint()).not.toBe(before);
+    sqlite.exec(`UPDATE channels SET is_hidden = 1 WHERE id = ${C1}`);
+    expect(fingerprintRows().some((r) => r.guideNumber === "990210")).toBe(false);
+  });
+});
+
 describe("fingerprintRows / currentFingerprint drift detection (regression guard)", () => {
   test("fingerprintRows carries canonicalId/guideNumber/name/logoUrl/category for a real channel", () => {
     cleanup();

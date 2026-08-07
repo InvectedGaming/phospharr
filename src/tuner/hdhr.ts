@@ -103,14 +103,42 @@ export function lineupRows(baseUrl: string): LineupRow[] {
 // predate canonicalId assignment, so every row still has a stable identity.
 export type FingerprintRow = { canonicalId: string; guideNumber: string; name: string; logoUrl: string; category: string };
 
+/**
+ * The rows the sync fingerprint hashes — the LINEUP DEFINITION.
+ *
+ * Deliberately does NOT filter on `hasUsableSource`, and that is the point.
+ * The health probe continuously re-tests thousands of streams, so a channel
+ * whose only source is momentarily marked dead leaves the served set and
+ * returns minutes later. Measured on the live install: the source-filtered set
+ * churned twice in seven minutes (one channel out, another in), which reset the
+ * ladder's 10-minute verify window every time — `verify` NEVER ran, the server
+ * sat permanently "converging", and it pushed a full guide refresh downstream
+ * every ~5 minutes for nothing. The same window measured against the projection
+ * below: zero changes.
+ *
+ * The split is intentional:
+ *   fingerprint  = "did the lineup DEFINITION change?" — adds, removes, hides,
+ *                  renumbers, renames, logos, categories. Cheap and stable, and
+ *                  exactly the drift the spec names.
+ *   verifyLineup = "does the downstream server match what we actually SERVE?" —
+ *                  that one uses the source-filtered playlist rows and already
+ *                  carries a tolerance sized for this churn.
+ * Transient source health belongs in the second, never the first.
+ */
 export function fingerprintRows(): FingerprintRow[] {
-  return visibleChannelRows().map((ch) => ({
-    canonicalId: ch.canonicalId ?? String(ch.id),
-    guideNumber: String(ch.number),
-    name: ch.name,
-    logoUrl: ch.logoUrl ?? "",
-    category: ch.category ?? "",
-  }));
+  return db
+    .select()
+    .from(channels)
+    .where(and(eq(channels.isHidden, false), isNotNull(channels.number)))
+    .orderBy(channels.number)
+    .all()
+    .map((ch) => ({
+      canonicalId: ch.canonicalId ?? String(ch.id),
+      guideNumber: String(ch.number),
+      name: ch.name,
+      logoUrl: ch.logoUrl ?? "",
+      category: ch.category ?? "",
+    }));
 }
 
 /**
