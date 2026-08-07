@@ -23,3 +23,6 @@ bin/
 # build output / logs
 dist/
 *.log
+
+# git worktrees for isolated feature work
+.worktrees/
