@@ -5,6 +5,7 @@ import { openSource } from "./source.ts";
 import { TsPreroll } from "../proxy/tspreroll.ts";
 import { JitterBuffer } from "./jitter.ts";
 import { reconnectPlan, RECONNECT_MAX } from "./reconnect.ts";
+import { OverlapGate } from "./overlap.ts";
 import type { Stream } from "../db/schema.ts";
 
 /**
@@ -60,6 +61,9 @@ class ChannelMux {
   // future and then jump backwards.
   private pre = new TsPreroll();
   private jitter: JitterBuffer | null = null;
+  // Drops the recent history a provider replays on a fresh connection, which
+  // would otherwise reach an already-watching viewer as a jump backwards.
+  private overlap = new OverlapGate();
 
   constructor(stream: Stream, onTeardown: () => void, onRekey: (o: number, n: number) => void) {
     this.stream = stream;
@@ -137,6 +141,7 @@ class ChannelMux {
       this.abort = new AbortController();
       this.pre = new TsPreroll(); // fresh keyframe alignment for the new source
       this.jitter?.reset(); // don't splice the new source onto the old one's backlog
+      this.overlap.reset(); // a different source has its own clock — nothing to compare
       this.lastByteAt = Date.now(); // fresh watchdog window for the new source
       markLive(next.id);
       this.onRekey(old.id, next.id);
@@ -167,6 +172,7 @@ class ChannelMux {
     this.abort = new AbortController();
     markLive(this.stream.id);
     this.lastByteAt = Date.now(); // fresh watchdog window for the new attempt
+    this.overlap.arm(); // the provider will replay recent history — skip past it
     console.log(`[muxer] channel ${this.channelId}: source ${this.stream.id} dropped — reconnecting (${this.reconnects}/${RECONNECT_MAX})`);
     return true;
   }
@@ -218,8 +224,13 @@ class ChannelMux {
       // genuinely dead upstream is still detected in 12s rather than 12s plus
       // however much cushion happens to be held.
       this.lastByteAt = Date.now();
-      if (this.jitter) this.jitter.push(value);
-      else this.fanout(value);
+      // Filtered on INGEST, before the jitter buffer: the buffer legitimately
+      // holds content not yet sent, so comparing against what viewers have seen
+      // would re-admit the very overlap being removed.
+      const fresh = this.overlap.filter(value);
+      if (!fresh.length) continue; // still replaying footage we already have
+      if (this.jitter) this.jitter.push(fresh);
+      else this.fanout(fresh);
     }
     // NOT flushed here: pump() also returns when the source merely dropped the
     // connection, and reconnect-in-place below depends on the cushion still
