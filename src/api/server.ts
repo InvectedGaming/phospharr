@@ -33,6 +33,7 @@ import { exportXmltv } from "../epg/export.ts";
 import { buildView } from "./view.ts";
 import { getGuideSnapshot, snapshotAgeMs } from "../epg/snapshot.ts";
 import { healthzChecks } from "./healthz.ts";
+import { vodPassthrough } from "./vodrange.ts";
 import { loopStates } from "../health/watchdog.ts";
 import { VERSION } from "../version.ts";
 import * as prewarm from "../proxy/prewarm.ts";
@@ -1132,6 +1133,29 @@ async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: n
       ? ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M", "-pix_fmt", "yuv420p"]
       : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p"];
   const url = vodUpstreamUrl(prov, kind, streamId, ext);
+  let released = false;
+  const release = () => { if (!released) { released = true; pool.release(prov.id); } };
+
+  // Prefer the seekable byte passthrough — it is what gives clients a scrubber,
+  // rewind and continue-watching, and it costs no ffmpeg per stream. Remux only
+  // where it earns its keep: `tc=1` (client can't decode the codec), `t=` (our
+  // own player starting mid-file, which needs a time offset ffmpeg can seek to
+  // rather than a byte offset it does not know), or an explicit `remux=1`.
+  if (!(tc || t > 0 || c.req.query("remux") === "1")) {
+    const r = await vodPassthrough({
+      url, method: c.req.method, rangeHeader: c.req.header("range"),
+      signal: c.req.raw.signal, proxy: ("proxy" in eg ? eg.proxy : undefined), release,
+    });
+    if (r.kind === "served") return r.response;
+    // Viewer left: do NOT remux for them — that starts an encode and re-takes a
+    // provider slot for a connection that no longer exists.
+    if (r.kind === "gone") return new Response(null, { status: 499 });
+    // Upstream unusable: fall through to remux. The passthrough already released.
+    if (!pool.acquire(prov.id)) return c.text("all tuners busy", 503);
+    released = false;
+  }
+  if (c.req.raw.signal.aborted) { release(); return new Response(null, { status: 499 }); }
+
   const args = [
     "-hide_banner", "-loglevel", "error",
     ...("proxy" in eg && eg.proxy ? ["-http_proxy", eg.proxy] : []),
@@ -1143,8 +1167,6 @@ async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: n
     ...venc, "-c:a", "aac", "-ac", "2", "-b:a", "160k",
     "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
   ];
-  let released = false;
-  const release = () => { if (!released) { released = true; pool.release(prov.id); } };
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn([VOD_FFMPEG, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
