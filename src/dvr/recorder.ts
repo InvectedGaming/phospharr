@@ -30,10 +30,6 @@ export const DVR_DIR = (() => {
 type Active = { rec: Recording; abort: AbortController; bytes: number };
 const active = new Map<number, Active>();
 
-export function activeCount(): number {
-  return active.size;
-}
-
 /** Schedule a one-off recording (the guide's Record button). */
 export async function scheduleRecording(opts: {
   channelId: number; canonicalId?: string | null; title: string; subtitle?: string | null;

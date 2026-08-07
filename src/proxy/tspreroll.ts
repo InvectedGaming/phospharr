@@ -1,3 +1,4 @@
+import { SYNC, PKT, concat, findAlignment, isKeyframe, patPmtPid, pmtVideoPids } from "./ts.ts";
 /**
  * Rolling keyframe preroll for the muxer.
  *
@@ -12,27 +13,10 @@
  * fan out live; preroll() returns the decodable-start bytes for a new viewer.
  */
 
-const SYNC = 0x47;
-const PKT = 188;
 const MAX_GOP_BYTES = 24 * 1024 * 1024; // bound the buffer (a long GOP / no-keyframe stream)
-const VIDEO_STREAM_TYPES = new Set([0x01, 0x02, 0x1b, 0x24, 0x06, 0x10, 0x21]); // MPEG1/2, H.264, HEVC, …
 
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a); out.set(b, a.length);
-  return out;
-}
-function findAlignment(b: Uint8Array): number {
-  for (let i = 0; i + 2 * PKT < b.length; i++) if (b[i] === SYNC && b[i + PKT] === SYNC && b[i + 2 * PKT] === SYNC) return i;
-  return -1;
-}
-function psiOffset(p: Uint8Array): number {
-  const afc = (p[3] >> 4) & 0x3;
-  let off = 4;
-  if (afc & 0x2) off += 1 + p[4];
-  if (off >= PKT) return -1;
-  return off + 1 + p[off];
-}
+
+
 
 export class TsPreroll {
   private leftover: Uint8Array = new Uint8Array(0);
@@ -47,35 +31,6 @@ export class TsPreroll {
   private raw = false; // not 188-aligned MPEG-TS → pass everything through untouched
   private seen = 0;
 
-  private parsePat(p: Uint8Array): void {
-    const o = psiOffset(p); if (o < 0) return;
-    for (let i = o + 8; i + 4 <= PKT; i += 4) {
-      const prog = (p[i] << 8) | p[i + 1];
-      const pid = ((p[i + 2] & 0x1f) << 8) | p[i + 3];
-      if (prog !== 0 && pid !== 0x1fff) { this.pmtPid = pid; return; }
-    }
-  }
-  private parsePmt(p: Uint8Array): void {
-    const o = psiOffset(p); if (o < 0) return;
-    const programInfoLen = ((p[o + 10] & 0x0f) << 8) | p[o + 11];
-    let i = o + 12 + programInfoLen;
-    const sectionLen = ((p[o + 1] & 0x0f) << 8) | p[o + 2];
-    const end = Math.min(PKT, o + 3 + sectionLen - 4);
-    while (i + 5 <= end) {
-      const streamType = p[i];
-      const pid = ((p[i + 1] & 0x1f) << 8) | p[i + 2];
-      const esInfoLen = ((p[i + 3] & 0x0f) << 8) | p[i + 4];
-      if (VIDEO_STREAM_TYPES.has(streamType)) this.videoPids.add(pid);
-      i += 5 + esInfoLen;
-    }
-  }
-  private isKeyframe(p: Uint8Array, pid: number): boolean {
-    if (!this.videoPids.has(pid)) return false;
-    if (!(p[1] & 0x40)) return false;       // PUSI
-    const afc = (p[3] >> 4) & 0x3;
-    if (!(afc & 0x2) || p[4] === 0) return false; // adaptation field present + non-empty
-    return (p[5] & 0x40) !== 0;             // random_access_indicator
-  }
 
   /** Feed a raw upstream chunk. Returns the bytes to fan out live (or null if
    *  still buffering for alignment). Falls back to raw passthrough for non-TS. */
@@ -103,9 +58,9 @@ export class TsPreroll {
       const p = region.subarray(i, i + PKT);
       if (p[0] !== SYNC) { this.aligned = false; break; } // lost sync → realign next push
       const pid = ((p[1] & 0x1f) << 8) | p[2];
-      if (pid === 0) { this.patPkt = p.slice(); this.parsePat(p); }
-      else if (pid === this.pmtPid) { this.pmtPkt = p.slice(); this.parsePmt(p); }
-      if (this.isKeyframe(p, pid)) { this.gop = []; this.gopBytes = 0; this.sawKey = true; }
+      if (pid === 0) { this.patPkt = p.slice(); const m = patPmtPid(p); if (m >= 0) this.pmtPid = m; }
+      else if (pid === this.pmtPid) { this.pmtPkt = p.slice(); pmtVideoPids(p, this.videoPids); }
+      if (isKeyframe(p, pid, this.videoPids)) { this.gop = []; this.gopBytes = 0; this.sawKey = true; }
       if (this.sawKey && this.gopBytes < MAX_GOP_BYTES) { this.gop.push(p.slice()); this.gopBytes += PKT; }
     }
     return region;

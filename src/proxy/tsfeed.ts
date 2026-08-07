@@ -1,3 +1,4 @@
+import { SYNC, PKT, concat, findAlignment, isKeyframe, patPmtPid, pmtVideoPids } from "./ts.ts";
 /**
  * Keyframe-aligned MPEG-TS feed for the mosaic compositor.
  *
@@ -14,11 +15,8 @@
  * the raw stream so we never hang worse than before.
  */
 
-const SYNC = 0x47;
-const PKT = 188;
 const PRIME_TIMEOUT_MS = 6000; // give up waiting for a flagged keyframe → pass raw
 
-const VIDEO_STREAM_TYPES = new Set([0x01, 0x02, 0x1b, 0x24, 0x06, 0x10, 0x21]); // MPEG1/2, H.264, HEVC, etc.
 
 /**
  * A mosaic tile feed that NEVER ends on its own.
@@ -86,59 +84,8 @@ export function keyframeAlignedStream(src: ReadableStream<Uint8Array>): Readable
   const held: Uint8Array[] = [];   // packets seen before priming (for raw fallback)
   let heldBytes = 0;
 
-  function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-    const out = new Uint8Array(a.length + b.length);
-    out.set(a); out.set(b, a.length);
-    return out;
-  }
 
-  // Find an offset where 0x47 repeats every 188 bytes (true packet alignment).
-  function findAlignment(b: Uint8Array): number {
-    for (let i = 0; i + 2 * PKT < b.length; i++) {
-      if (b[i] === SYNC && b[i + PKT] === SYNC && b[i + 2 * PKT] === SYNC) return i;
-    }
-    return -1;
-  }
 
-  // PSI payload start: skip TS header (+ adaptation field) then the pointer_field.
-  function psiOffset(p: Uint8Array): number {
-    const afc = (p[3] >> 4) & 0x3;
-    let off = 4;
-    if (afc & 0x2) off += 1 + p[4]; // adaptation field
-    if (off >= PKT) return -1;
-    return off + 1 + p[off]; // pointer_field
-  }
-  function parsePat(p: Uint8Array) {
-    const o = psiOffset(p); if (o < 0) return;
-    // table_id(o), section_length, tsid, ver, sec, last → first program entry at o+8
-    for (let i = o + 8; i + 4 <= PKT; i += 4) {
-      const prog = (p[i] << 8) | p[i + 1];
-      const pid = ((p[i + 2] & 0x1f) << 8) | p[i + 3];
-      if (prog !== 0 && pid !== 0x1fff) { pmtPid = pid; return; } // first real program's PMT
-    }
-  }
-  function parsePmt(p: Uint8Array) {
-    const o = psiOffset(p); if (o < 0) return;
-    const programInfoLen = ((p[o + 10] & 0x0f) << 8) | p[o + 11];
-    let i = o + 12 + programInfoLen;
-    const sectionLen = ((p[o + 1] & 0x0f) << 8) | p[o + 2];
-    const end = Math.min(PKT, o + 3 + sectionLen - 4); // minus CRC
-    while (i + 5 <= end) {
-      const streamType = p[i];
-      const pid = ((p[i + 1] & 0x1f) << 8) | p[i + 2];
-      const esInfoLen = ((p[i + 3] & 0x0f) << 8) | p[i + 4];
-      if (VIDEO_STREAM_TYPES.has(streamType)) videoPids.add(pid);
-      i += 5 + esInfoLen;
-    }
-  }
-  function isKeyframe(p: Uint8Array, pid: number): boolean {
-    if (!videoPids.has(pid)) return false;
-    if (!(p[1] & 0x40)) return false;        // needs PUSI (start of a PES)
-    const afc = (p[3] >> 4) & 0x3;
-    if (!(afc & 0x2)) return false;          // needs an adaptation field
-    if (p[4] === 0) return false;            // empty adaptation field
-    return (p[5] & 0x40) !== 0;              // random_access_indicator
-  }
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -164,13 +111,13 @@ export function keyframeAlignedStream(src: ReadableStream<Uint8Array>): Readable
           consumed += PKT;
           if (p[0] !== SYNC) { aligned = false; break; } // lost sync → realign next round
           const pid = ((p[1] & 0x1f) << 8) | p[2];
-          if (pid === 0) { patPkt = p.slice(); parsePat(p); }
-          else if (pid === pmtPid) { pmtPkt = p.slice(); parsePmt(p); }
+          if (pid === 0) { patPkt = p.slice(); const m = patPmtPid(p); if (m >= 0) pmtPid = m; }
+          else if (pid === pmtPid) { pmtPkt = p.slice(); pmtVideoPids(p, videoPids); }
 
           if (primed) { controller.enqueue(p.slice()); emitted = true; continue; }
 
           // Pre-prime: wait for PAT + PMT + a flagged keyframe, then emit the start.
-          if (patPkt && pmtPkt && isKeyframe(p, pid)) {
+          if (patPkt && pmtPkt && isKeyframe(p, pid, videoPids)) {
             controller.enqueue(patPkt); controller.enqueue(pmtPkt); controller.enqueue(p.slice());
             primed = true; emitted = true; held.length = 0; heldBytes = 0;
             continue;

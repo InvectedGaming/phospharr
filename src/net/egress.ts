@@ -40,14 +40,6 @@ export function providerEgress(providerId: number | null | undefined): Egress {
   return { proxy: raw }; // a plain proxy URL the user supplied
 }
 
-/** Back-compat: just the proxy URL for a provider, or undefined for direct.
- *  (Returns undefined when blocked too — callers needing fail-closed semantics
- *  should use providerEgress and check `.blocked`.) */
-export function providerProxy(providerId: number | null | undefined): string | undefined {
-  const eg = providerEgress(providerId);
-  return "proxy" in eg ? eg.proxy : undefined;
-}
-
 /** fetch() options carrying the proxy when one applies (spread into the init). */
 export function egress(proxy: string | undefined): { proxy?: string } {
   return proxy ? { proxy } : {};

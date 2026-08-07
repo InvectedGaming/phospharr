@@ -195,15 +195,3 @@ export function vodUpstreamUrl(p: Provider, kind: "movie" | "series", streamId: 
   const base = p.url.replace(/\/$/, "");
   return `${base}/${kind === "movie" ? "movie" : "series"}/${encodeURIComponent(p.username ?? "")}/${encodeURIComponent(p.password ?? "")}/${streamId}.${ext}`;
 }
-
-/** Boot: if a provider has VOD support and we've never synced, pull the catalog. */
-export function vodBootKick(): void {
-  setTimeout(async () => {
-    try {
-      const count = (sqlite.prepare("SELECT COUNT(*) n FROM vod_movies").get() as { n: number }).n;
-      if (count > 0) return;
-      const provs = await db.select().from(providers).where(eq(providers.enabled, true));
-      for (const p of provs) if (p.type === "xtream") await syncVod(p.id).catch((e) => console.error("[vod] boot sync:", e instanceof Error ? e.message : e));
-    } catch { /* fresh install without tables yet */ }
-  }, 25_000);
-}
