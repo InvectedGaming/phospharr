@@ -194,20 +194,40 @@ export async function ownedEpisodeKeys(): Promise<Set<string> | null> {
   return any ? owned : null;
 }
 
+/**
+ * Hand the event loop back for one tick.
+ *
+ * This mirror walks tens of thousands of titles with synchronous fs calls, and
+ * the runtime is single-threaded: an uninterrupted pass starves everything else
+ * in the process. Measured at 53.5k movies it blocked for ~2.5 minutes, during
+ * which live TV sources went silent and failed over, `/healthz` exceeded its
+ * 10s timeout, and the container was restarted as unhealthy — which triggered
+ * the boot-time mirror again, so the restarts fed themselves.
+ *
+ * A microtask is not enough (`Promise.resolve()` drains before I/O runs); this
+ * must be a macrotask so pending socket reads and the health endpoint actually
+ * get serviced.
+ */
+const breathe = () => new Promise<void>((r) => setTimeout(r, 0));
+/** Yield every N items — often enough that nothing starves, rarely enough that
+ *  the scheduling overhead stays in the noise. */
+const BREATHE_EVERY = 200;
+
 /** Remove files under `dir` that aren't in `wanted` (rel paths), then any
  *  directories left empty. Returns how many entries were removed. */
-function pruneExtraneous(dir: string, wanted: Map<string, string>): number {
-  let n = 0;
-  const walk = (rel: string): void => {
+async function pruneExtraneous(dir: string, wanted: Map<string, string>): Promise<number> {
+  let n = 0, seen = 0;
+  const walk = async (rel: string): Promise<void> => {
     for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      if (++seen % BREATHE_EVERY === 0) await breathe();
       const r = rel ? join(rel, e.name) : e.name;
       if (e.isDirectory()) {
-        walk(r);
+        await walk(r);
         if (!readdirSync(join(dir, r)).length) { rmSync(join(dir, r), { recursive: true, force: true }); n++; }
       } else if (!wanted.has(r)) { rmSync(join(dir, r), { force: true }); n++; }
     }
   };
-  walk("");
+  await walk("");
   return n;
 }
 
@@ -243,7 +263,9 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
 
   const owned = skipOwned ? await ownedMovieKeys() : null;
   const wanted = new Set<string>();
+  let seen = 0;
   for (const m of movies) {
+    if (++seen % BREATHE_EVERY === 0) await breathe(); // see `breathe` — this loop must not starve live TV
     const { title, year } = titleYear(m);
     if (owned && owned.has(keyOf(title, year))) { out.skippedOwned++; continue; } // already in the real library → don't mirror
     const display = year ? `${title} (${year})` : title;
@@ -258,7 +280,9 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
   }
 
   // prune folders for movies that left the catalog (or the category allow-list)
+  seen = 0;
   for (const e of readdirSync(root, { withFileTypes: true })) {
+    if (++seen % BREATHE_EVERY === 0) await breathe();
     if (e.isDirectory() && !wanted.has(e.name)) { rmSync(join(root, e.name), { recursive: true, force: true }); out.pruned++; }
   }
 
@@ -332,16 +356,20 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
       files.set("tvshow.nfo", tvshowNfo(title, year, s));
 
       const dir = join(seriesRoot, folder);
+      let wrote = 0;
       for (const [rel, content] of files) {
+        if (++wrote % BREATHE_EVERY === 0) await breathe();
         const p = join(dir, rel);
         mkdirSync(dirname(p), { recursive: true });
         writeIfChanged(p, content) ? out.written++ : out.skippedUnchanged++;
       }
-      out.pruned += pruneExtraneous(dir, files); // episodes that left / became owned
+      out.pruned += await pruneExtraneous(dir, files); // episodes that left / became owned
     }
 
     // prune shows that left the catalog (or the allow-list, or are fully owned)
+    let scanned = 0;
     for (const e of readdirSync(seriesRoot, { withFileTypes: true })) {
+      if (++scanned % BREATHE_EVERY === 0) await breathe();
       if (e.isDirectory() && !wantedShows.has(e.name)) { rmSync(join(seriesRoot, e.name), { recursive: true, force: true }); out.pruned++; }
     }
   }
