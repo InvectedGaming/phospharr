@@ -166,6 +166,8 @@ const state = {
   downstream: null, // { servers, results } from /api/epg/downstream (guide-sync targets)
   downstreamDraft: null, // editable copy; API keys never round-trip to the client
   downstreamBusy: {}, // per-server-id: test/refresh in flight
+  syncStatus: null, // { servers, reconciler } from /api/sync/status (self-healing card)
+  syncResetBusy: {}, // per-server-id: reset-breaker request in flight
   analytics: null, // from /api/analytics
   dvr: null, // from /api/dvr (recordings + rules + storage)
   recent: null, // recently-watched channel ids from /api/recent (Home screen)
@@ -1980,6 +1982,67 @@ function downstreamSection() {
       h("button", { onClick: saveDownstream, style: "height:36px;padding:0 18px;border-radius:9px;border:none;background:" + AC + ";color:#06121c;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit" }, "Save")));
 }
 
+// ---- Downstream sync status (self-healing card): is Emby's lineup actually
+// converged, and if not, what do I do? Polled every 60s while Settings is
+// open (see the global interval near loadView's), never on-demand-per-render —
+// GET /api/sync/status is cheap (local DB reads only) but there's no reason to
+// hit it more than once a minute.
+function loadSyncStatus() {
+  fetch("/api/sync/status").then((r) => (r.ok ? r.json() : null)).then((d) => {
+    if (d) { state.syncStatus = d; render(); }
+  }).catch(() => {});
+}
+const SYNC_STATE_STYLE = {
+  converged: { label: "Converged", color: "#7fdca0", bg: "rgba(127,220,160,0.12)", border: "rgba(127,220,160,0.35)" },
+  converging: { label: "Converging", color: "#9bd0ff", bg: "rgba(84,182,255,0.12)", border: "rgba(84,182,255,0.35)" },
+  drifted: { label: "Drifted", color: "#f4b740", bg: "rgba(244,183,64,0.12)", border: "rgba(244,183,64,0.35)" },
+  unknown: { label: "Unknown", color: "#9aa0a6", bg: "rgba(255,255,255,0.06)", border: "rgba(255,255,255,0.14)" },
+};
+function syncStateChip(state_) {
+  const st = SYNC_STATE_STYLE[state_] || SYNC_STATE_STYLE.unknown;
+  return h("span", { style: "font-size:11px;font-weight:700;letter-spacing:.03em;padding:3px 9px;border-radius:6px;color:" + st.color + ";background:" + st.bg + ";border:1px solid " + st.border }, st.label);
+}
+async function resetSyncAttention(id, lastError) {
+  const why = lastError ? "\n\nWhy it tripped: " + lastError : "";
+  if (!confirm("Clear this server's sync breaker and let it try automated repair again?\n\nThis re-arms deleting and re-adding its tuner host(s) in Emby the next time drift is confirmed." + why)) return;
+  state.syncResetBusy = { ...state.syncResetBusy, [id]: true }; render();
+  await fetch("/api/sync/" + encodeURIComponent(id) + "/reset", { method: "POST" }).catch(() => null);
+  state.syncResetBusy = { ...state.syncResetBusy, [id]: false };
+  loadSyncStatus();
+}
+function syncStatusSection() {
+  if (state.syncStatus == null) { loadSyncStatus(); return centered("…"); }
+  const servers = state.syncStatus.servers || [];
+  if (!servers.length) return h("div", { style: "padding:16px;font-size:12.5px;color:#7e858c" }, "No downstream servers configured above yet.");
+  const reconLast = state.syncStatus.reconciler && state.syncStatus.reconciler.lastRunAt;
+  return h("div", { style: "padding:16px;display:flex;flex-direction:column;gap:12px" },
+    h("div", { style: "font-size:12.5px;color:#7e858c;line-height:1.5" },
+      "Whether Phospharr's lineup is actually converged on each server's Emby/Jellyfin — repaired automatically (guide refresh → verify → tuner rebuild) by the self-healing loop. " +
+      (reconLast ? "Last check " + fmtAgo(reconLast) + "." : "Self-healing loop hasn't run yet.")),
+    ...servers.map((s) => {
+      const id = s.serverId;
+      const busy = state.syncResetBusy[id];
+      return h("div", { style: "border:1px solid rgba(255,255,255,0.08);border-radius:11px;padding:12px;display:flex;flex-direction:column;gap:7px;background:rgba(255,255,255,0.015)" },
+        h("div", { style: "display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap" },
+          h("div", { style: "display:flex;align-items:center;gap:9px;min-width:0" },
+            h("span", { style: "font-size:13.5px;font-weight:600;color:#e6e9ec;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, s.name),
+            syncStateChip(s.state),
+            s.pendingReadd ? h("span", { style: "font-size:11px;font-weight:700;color:#ff8077;background:rgba(255,93,82,0.1);border:1px solid rgba(255,93,82,0.3);border-radius:6px;padding:3px 9px" }, "Tuner re-add owed") : null),
+          h("div", { style: "font-size:12px;color:#7e858c;white-space:nowrap" }, s.favorites + " favorite" + (s.favorites === 1 ? "" : "s"))),
+        h("div", { style: "font-size:12px;color:#9aa0a6" },
+          s.lastAction ? (s.lastAction + (s.lastActionAt ? " · " + fmtAgo(s.lastActionAt) : "")) : "never converged"),
+        s.lastError ? h("div", { style: "font-size:12px;color:#ff8077;line-height:1.4" }, s.lastError) : null,
+        h("div", { style: "display:flex;align-items:center;gap:8px;margin-top:2px" },
+          h("button", {
+            onClick: () => resetSyncAttention(id, s.lastError),
+            disabled: !s.needsAttention || busy,
+            title: s.needsAttention ? "Clear the breaker and re-arm automated repair" : "Only needed when the breaker has tripped",
+            style: "height:30px;padding:0 12px;border-radius:7px;border:1px solid " + (s.needsAttention ? "rgba(255,93,82,0.35)" : "rgba(255,255,255,0.1)") + ";background:" + (s.needsAttention ? "rgba(255,93,82,0.08)" : "transparent") + ";color:" + (s.needsAttention ? "#ff8077" : "#5c6166") + ";font-size:12px;font-weight:600;cursor:" + (s.needsAttention && !busy ? "pointer" : "default") + ";font-family:inherit;opacity:" + (busy ? "0.6" : "1"),
+          }, busy ? "Resetting…" : "Reset breaker"),
+          s.needsAttention ? h("span", { style: "font-size:11px;color:#7e858c" }, s.readdFailures + " consecutive rebuild(s) didn't fix it") : null));
+    }));
+}
+
 async function regenerateStreamKey() {
   if (!confirm("Generate a new stream key?\n\nExisting tuner setups (Plex/Jellyfin) and any ?key= links will STOP working until you update them with the new key.")) return;
   const key = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "").slice(0, 27);
@@ -2080,7 +2143,8 @@ function settingsScreen() {
           s["vod.indexer.enabled"] ? settingRow({ title: "Blackhole completed folder", desc: "Sonarr's Usenet Blackhole “Watch Folder” — where the .strm appears for Sonarr to import.", key: "vod.indexer.blackholeCompletePath", type: "text" }) : null,
           s["vod.indexer.enabled"] ? settingRow({ title: "Indexer cache TTL", desc: "Per-show provider lookup cache. Sonarr re-polling inside this window is served from cache.", key: "vod.indexer.cacheTtlMinutes", type: "number", suffix: "min" }) : null,
           h("div", { style: "padding:11px 16px;font-size:12px;color:#7e858c;border-top:1px solid rgba(255,255,255,0.045)" }, "With 50k+ movies, set the vod.libraryCategories setting to mirror only the categories you want (keeps the whole catalog — incl. adult — out of Emby). Series obey vod.seriesCategories the same way — worth setting, since each mirrored series costs one provider API call per refresh. Rebuilds after each VOD sync.")) : null,
-        settingsSection("GUIDE SYNC — refresh downstream media servers", downstreamSection()))));
+        settingsSection("GUIDE SYNC — refresh downstream media servers", downstreamSection()),
+        settingsSection("DOWNSTREAM SYNC — self-healing status", syncStatusSection()))));
 }
 
 // ===== ADD SOURCE (provider) modal =====
@@ -3067,7 +3131,7 @@ function setScreen(screen) {
   if (screen === "sources") loadSources();
   if (screen === "live") loadCustom();
   if (screen === "rules") loadRules();
-  if (screen === "settings") loadVpns(); // VPN tunnels section
+  if (screen === "settings") { loadVpns(); loadSyncStatus(); } // VPN tunnels + downstream sync status sections
 }
 // ===== users (admin) =====
 async function loadUsers() {
@@ -4959,6 +5023,10 @@ function toggleDetailMute() {
 render(); // shows the "…" splash until checkAuth resolves
 checkAuth(); // → login/setup screen, or loadView() if already signed in
 setInterval(() => { if (state.auth.user) loadView(); }, 60000); // keep clock/guide fresh
+// Downstream sync card only needs fresh data while it's actually on screen —
+// same "poll while the panel is open" contract as the line above, scoped to
+// the Settings screen so it never fires for the household's own viewers.
+setInterval(() => { if (state.screen === "settings" && state.auth.user && state.auth.user.role === "admin") loadSyncStatus(); }, 60000);
 
 // Re-render when the viewport width changes (crossing the mobile breakpoint
 // swaps the side rail for the drawer and resizes the guide column).

@@ -27,6 +27,8 @@ services:
     restart: unless-stopped
     ports:
       - "${PHOSPHARR_PORT:-7777}:7777"
+    labels:
+      - autoheal=true
     volumes:
       - phospharr-data:/data            # SQLite DB + DVR recordings persist here
     environment:

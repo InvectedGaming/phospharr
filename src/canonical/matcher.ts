@@ -62,7 +62,7 @@ const FUZZY_THRESHOLD = 0.86;
  * additionally requires identical digit-groups. HD/quality variants (same number)
  * still merge correctly, since their digit-groups match.
  */
-function digitRuns(s: string): string {
+export function digitRuns(s: string): string {
   return (s.match(/\d+/g) ?? []).join(",");
 }
 

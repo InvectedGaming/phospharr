@@ -5,7 +5,9 @@ import { syncProvider } from "./sync.ts";
 import { syncVod } from "./vod.ts";
 import { rebuildVodLibrary } from "./vodlibrary.ts";
 import { refreshDownstreamGuides, scanDownstreamLibraries } from "../epg/downstream.ts";
+import { convergeAll } from "../sync/converge.ts";
 import { getSetting } from "../settings.ts";
+import { registerLoop } from "../health/watchdog.ts";
 
 /**
  * Scheduled provider auto-sync. Re-ingests each enabled provider's channel
@@ -18,8 +20,12 @@ import { getSetting } from "../settings.ts";
  * re-ingest providers that are still fresh, and each syncs on its own clock.
  */
 
+const TICK_MS = 10 * 60 * 1000;
+
 let timer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
+let beat: () => void = () => {};
+let watchdogRegistered = false;
 
 async function runDue(): Promise<void> {
   if (running) return; // never overlap a long sync with the next tick
@@ -44,7 +50,12 @@ async function runDue(): Promise<void> {
     }
     // Radarr/Sonarr-style: after the lineup refreshes, nudge downstream media
     // servers once so Emby/Jellyfin/Plex pick up the new channels + guide.
-    if (synced > 0) await refreshDownstreamGuides().catch(() => {});
+    if (synced > 0) {
+      await refreshDownstreamGuides().catch(() => {});
+      // The lineup itself just changed — exactly when Emby's cached copy
+      // drifts. Hand off to the convergence ladder (src/sync/converge.ts).
+      await convergeAll().catch((e) => console.error("[sync] converge", e));
+    }
   } catch (e) {
     console.error("[sync] scheduler run error:", e instanceof Error ? e.message : e);
   } finally {
@@ -119,15 +130,22 @@ async function runVodDue(): Promise<void> {
   }
 }
 
+/** Stop the recurring tick chain (used by the watchdog to restart a wedged loop). */
+function stop(): void {
+  if (timer) clearTimeout(timer);
+  timer = null;
+}
+
 /** Re-arm: poll every 10 min and sync providers that are due, so a changed
  *  interval or a freshly enabled toggle takes effect promptly. */
 function arm(): void {
   if (timer) clearTimeout(timer);
-  timer = setTimeout(tick, 10 * 60 * 1000);
+  timer = setTimeout(tick, TICK_MS);
   if (typeof timer.unref === "function") timer.unref(); // don't keep the process alive on its own
 }
 
 async function tick(): Promise<void> {
+  beat();
   try {
     if (await getSetting("features.providerAutoSync")) await runDue();
     await runVodDue(); // gated internally on cadence + xtream providers / features.vodLibrary
@@ -142,14 +160,19 @@ async function tick(): Promise<void> {
  *  (once the pool/EPG have primed), then polls every 10 min. Idempotent. */
 export function startSyncScheduler(): void {
   if (timer) return;
-  const boot = setTimeout(async () => {
-    try { if (await getSetting("features.providerAutoSync")) await runDue(); } catch { /* tick() will retry */ }
-    try { await runVodDue(); } catch { /* tick() will retry */ }
-  }, 15_000);
-  if (typeof boot.unref === "function") boot.unref();
-  // Group fast-sync gets its own 60s check so a 15-minute cadence actually
-  // means ~15 minutes (the main 10-min poll would quantize it to 10/20).
-  const groups = setInterval(() => { runGroupsDue().catch(() => { /* logged inside */ }); }, 60_000);
-  if (typeof groups.unref === "function") groups.unref();
+  if (!watchdogRegistered) {
+    watchdogRegistered = true; // register once so the watchdog's strike count survives our own restarts,
+    // and so a watchdog-triggered restart re-arms the tick chain without stacking a second boot check / groups interval.
+    ({ beat } = registerLoop("sync-scheduler", TICK_MS, () => { stop(); startSyncScheduler(); }));
+    const boot = setTimeout(async () => {
+      try { if (await getSetting("features.providerAutoSync")) await runDue(); } catch { /* tick() will retry */ }
+      try { await runVodDue(); } catch { /* tick() will retry */ }
+    }, 15_000);
+    if (typeof boot.unref === "function") boot.unref();
+    // Group fast-sync gets its own 60s check so a 15-minute cadence actually
+    // means ~15 minutes (the main 10-min poll would quantize it to 10/20).
+    const groups = setInterval(() => { runGroupsDue().catch(() => { /* logged inside */ }); }, 60_000);
+    if (typeof groups.unref === "function") groups.unref();
+  }
   arm();
 }

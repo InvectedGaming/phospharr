@@ -1,0 +1,1 @@
+ALTER TABLE `sync_state` ADD `readd_failures` integer DEFAULT 0 NOT NULL;

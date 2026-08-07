@@ -34,6 +34,13 @@ export function invalidateGuideSnapshot() {
   snap = null;
 }
 
+// How long ago the currently-served snapshot was built, for /healthz. Reuses
+// the `builtAt` already stamped on `snap` by build() rather than tracking a
+// second timestamp. null = no snapshot has been built yet (e.g. fresh boot).
+export function snapshotAgeMs(): number | null {
+  return snap === null ? null : Date.now() - snap.builtAt;
+}
+
 export async function getGuideSnapshot(): Promise<Snapshot> {
   if (snap && Date.now() - snap.builtAt < TTL_MS) return snap;
   if (building) return building;

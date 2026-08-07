@@ -5,6 +5,9 @@ import { providerEgress } from "../net/egress.ts";
 import { pool } from "../scheduler/pool.ts";
 import { getSetting } from "../settings.ts";
 import { qualityScore } from "../canonical/matcher.ts";
+import { registerLoop } from "./watchdog.ts";
+import { sendAlert } from "../alerts.ts";
+import { updateVerdicts, type VerdictChange } from "./verdict.ts";
 
 /**
  * Health probe loop: pull a short slice of each stream (through its provider's
@@ -111,7 +114,17 @@ async function dueStreams(limit: number): Promise<Due[]> {
     .limit(limit);
 }
 
-async function probeOne(s: Due): Promise<void> {
+/** One probe's outcome, folded into the enclosing provider's health verdict
+ *  (see verdict.ts). "healthy" here means "we got real bytes back", NOT
+ *  "the picture is perfect" — a stream classified `degraded` (bytes flowed,
+ *  ffprobe just couldn't find decodable video) still counts as healthy for
+ *  PROVIDER purposes, because it proves the provider was reachable. Only
+ *  `dead` (too few bytes / fetch failure) counts against it — that keeps a
+ *  provider's verdict about connectivity, not about a handful of genuinely
+ *  broken individual channels dragging down an otherwise fine source. */
+type ProbeVerdictRow = { providerId: number; healthy: boolean };
+
+async function probeOne(s: Due): Promise<ProbeVerdictRow | void> {
   const eg = providerEgress(s.providerId);
   if (eg.blocked) return; // VPN down: no verdict — never probe direct, never guess
   // Politeness: leave viewers headroom, and skip (not fail) when the pool is busy.
@@ -132,46 +145,135 @@ async function probeOne(s: Due): Promise<void> {
         qualityScore: qualityScore(o.resolution ?? undefined, o.health),
       })
       .where(eq(streams.id, s.id));
+    return { providerId: s.providerId, healthy: o.health !== "dead" };
   } finally {
     pool.release(s.providerId);
   }
 }
 
 let started = false;
+let beat: () => void = () => {};
+let watchdogRegistered = false;
 
-/** Start the background probe loop (idempotent). Honors features.healthProbe live. */
+// Epoch guard: a restart has no way to cancel a wedged `await` in the old
+// loop instance, so instead every loop iteration is stamped with the
+// generation active when it started. If a stuck iteration ever resumes, it
+// checks its stamp against the current generation at every await boundary
+// and retires instead of racing the fresh loop a restart already spun up —
+// this file is a "polite tenant" of the provider slot pool, so two loops
+// probing concurrently is exactly what must never happen. Exported for tests.
+let generation = 0;
+export function _bumpGeneration(): number { return ++generation; }
+export function _isStaleGeneration(gen: number): boolean { return gen !== generation; }
+
+// Collaborators the loop body needs, factored out so tests can drive
+// `_probeIteration` with stubs instead of a real DB/ffprobe/settings row —
+// production always calls it with the real implementations (the default).
+type ProbeCollaborators = {
+  getSetting: (key: "features.healthProbe") => Promise<boolean>;
+  dueStreams: (limit: number) => Promise<Due[]>;
+  probeOne: (s: Due) => Promise<ProbeVerdictRow | void>;
+  sendAlert: (kind: string, message: string) => Promise<boolean>;
+};
+const realCollaborators: ProbeCollaborators = { getSetting, dueStreams, probeOne, sendAlert };
+
+type IterationResult = "retire" | "idle" | "probed";
+
+// How often accumulated (providerId, healthy) outcomes are flushed into
+// updateVerdicts — i.e. what counts as one verdict "round". Reuses the same
+// cadence as the existing periodic probe-count log below (state.lastLog) so
+// there's a single timer to reason about instead of two independent ones.
+// A quiet catalog (few due streams) may take longer than this to accumulate
+// MIN_PROBED samples for a given provider — that's fine: updateVerdicts
+// leaves an under-sampled provider's verdict untouched, so a slow trickle
+// just means "no verdict change yet", never a wrong one.
+const VERDICT_ROUND_MS = 10 * 60_000;
+
+/** Flush accumulated probe outcomes into a verdict round when due, log the
+ *  probe throughput the way this loop always has, and alert on any verdict
+ *  transition. Called from both the "found due streams" and "nothing due"
+ *  paths so a quiet catalog still gets its verdicts flushed on schedule
+ *  instead of waiting indefinitely for the next probe to trigger it. */
+function flushVerdictsIfDue(
+  state: { probed: number; lastLog: number; roundOutcomes?: ProbeVerdictRow[] },
+  deps: ProbeCollaborators,
+): void {
+  if (Date.now() - state.lastLog <= VERDICT_ROUND_MS) return;
+  console.log(`[health] probed ${state.probed} streams in the last ${Math.round((Date.now() - state.lastLog) / 60000)}min`);
+  const changes: VerdictChange[] = updateVerdicts(state.roundOutcomes ?? []);
+  state.roundOutcomes = [];
+  state.probed = 0;
+  state.lastLog = Date.now();
+  for (const c of changes) {
+    // kind carries the provider id (never the message — see alerts.ts's dedup
+    // contract) and the message text is fixed per target verdict (no "from"
+    // state, no counts), so a flapping provider collapses onto at most the 3
+    // possible (kind, message) pairs — sendAlert's own 1h dedup window then
+    // caps each of those to one delivery, bounding worst-case alert volume
+    // for a flapping provider instead of paging on every single transition.
+    void deps.sendAlert(`provider:${c.providerId}`, `provider health is now ${c.to}`);
+  }
+}
+
+/** One iteration of the probe loop's body. Exported (with injectable
+ *  collaborators) so the generation guard's placement — the exact thing a
+ *  future refactor could accidentally drop — is exercised by a real test
+ *  instead of only by a standalone unit test of `_isStaleGeneration` itself.
+ *  Mirrors the try-block that used to live inline in `startHealthProbe`'s
+ *  loop, checks included, unchanged. */
+export async function _probeIteration(
+  myGen: number,
+  state: { probed: number; lastLog: number; roundOutcomes?: ProbeVerdictRow[] },
+  deps: ProbeCollaborators = realCollaborators,
+): Promise<IterationResult> {
+  if (_isStaleGeneration(myGen)) return "retire"; // a restart replaced us — retire, don't double-probe
+  beat();
+  try {
+    if (!(await deps.getSetting("features.healthProbe"))) return "idle";
+    if (_isStaleGeneration(myGen)) return "retire";
+    const batch = await deps.dueStreams(CONCURRENCY);
+    if (_isStaleGeneration(myGen)) return "retire";
+    if (batch.length === 0) {
+      flushVerdictsIfDue(state, deps); // quiet catalog still gets its round flushed on schedule
+      return "idle";
+    }
+    const results = await Promise.all(
+      batch.map((s) => deps.probeOne(s).catch(() => undefined)), // one bad probe never stops the loop, and an error (vs. a measured "dead") carries no verdict signal
+    );
+    if (_isStaleGeneration(myGen)) return "retire"; // don't log, re-arm, or verdict-count on behalf of a superseded round
+    state.probed += batch.length;
+    for (const r of results) if (r) (state.roundOutcomes ??= []).push(r);
+    flushVerdictsIfDue(state, deps);
+    return "probed";
+  } catch (e) {
+    // Loop must survive anything (DB hiccup, ffprobe missing) — retry later.
+    console.error("[health] probe loop error:", e instanceof Error ? e.message : e);
+    return "idle";
+  }
+}
+
+/** Start the background probe loop (idempotent). Honors features.healthProbe live.
+ *  Also the watchdog's restart target: since this loop has no timer to clear
+ *  (it's a plain while(true) + Bun.sleep), a restart just flips `started`
+ *  back off and re-enters — a fresh loop takes over, and the old one retires
+ *  itself via the generation guard above rather than running alongside it. */
 export function startHealthProbe(): void {
   if (started) return;
   started = true;
+  const myGen = _bumpGeneration();
+  if (!watchdogRegistered) {
+    watchdogRegistered = true; // register once so the watchdog's strike count survives our own restarts
+    ({ beat } = registerLoop("health-probe", IDLE_MS, () => { started = false; startHealthProbe(); }));
+  }
   void (async () => {
     // Let boot finish (tunnels dialing, pool priming) before taking any slots.
     await Bun.sleep(20_000);
-    let probed = 0;
-    let lastLog = Date.now();
+    if (_isStaleGeneration(myGen)) return; // superseded before the boot delay even finished
+    const state = { probed: 0, lastLog: Date.now() };
     while (true) {
-      try {
-        if (!(await getSetting("features.healthProbe"))) {
-          await Bun.sleep(IDLE_MS);
-          continue;
-        }
-        const batch = await dueStreams(CONCURRENCY);
-        if (batch.length === 0) {
-          await Bun.sleep(IDLE_MS);
-          continue;
-        }
-        await Promise.all(batch.map((s) => probeOne(s).catch(() => { /* one bad probe never stops the loop */ })));
-        probed += batch.length;
-        if (Date.now() - lastLog > 10 * 60_000) {
-          console.log(`[health] probed ${probed} streams in the last ${Math.round((Date.now() - lastLog) / 60000)}min`);
-          probed = 0;
-          lastLog = Date.now();
-        }
-        await Bun.sleep(TICK_MS);
-      } catch (e) {
-        // Loop must survive anything (DB hiccup, ffprobe missing) — retry later.
-        console.error("[health] probe loop error:", e instanceof Error ? e.message : e);
-        await Bun.sleep(IDLE_MS);
-      }
+      const result = await _probeIteration(myGen, state);
+      if (result === "retire") return;
+      await Bun.sleep(result === "probed" ? TICK_MS : IDLE_MS);
     }
   })();
 }

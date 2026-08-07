@@ -3,6 +3,7 @@ import { db } from "../db/index.ts";
 import { channels, viewEvents } from "../db/schema.ts";
 import { pool } from "../scheduler/pool.ts";
 import { muxer } from "./muxer.ts";
+import { favoriteWeight } from "../sync/favorites.ts";
 
 /**
  * Predictive prewarm ring — what makes channel surf feel like a real TV.
@@ -72,22 +73,34 @@ async function warm(channelId: number): Promise<void> {
   holds.set(channelId, hold);
 }
 
-/** The channels worth warming around a just-tuned channel. */
+const FAVORITE_BOOST = 2; // one household favorite ≈ two habitual same-hour views
+
+/** The channels worth warming around a just-tuned channel, ranked by a score:
+ *  ring proximity + analytics habit are the base signal (what's PLAUSIBLY
+ *  about to be tuned), and household favorites (src/sync/favorites.ts) boost
+ *  whichever of those candidates the household actually cares about — so
+ *  MAX_WARM's limited slots go to the nearer/habitual channel most likely to
+ *  also be wanted, not just the nearer/habitual channel. Favorites don't
+ *  introduce brand-new candidates on their own; they break ties within the
+ *  set the ring/habit heuristics already produced. */
 async function targets(channelId: number): Promise<number[]> {
   const [me] = await db
     .select({ number: channels.number })
     .from(channels)
     .where(eq(channels.id, channelId));
-  const out: number[] = [];
+
+  const scores = new Map<number, number>();
+  const bump = (id: number, by: number) => scores.set(id, (scores.get(id) ?? 0) + by);
+
   if (me?.number != null) {
-    // number-adjacent visible channels (the surf ring)
+    // number-adjacent visible channels (the surf ring), closest weighted highest
     const ring = await db
       .select({ id: channels.id, number: channels.number })
       .from(channels)
       .where(and(eq(channels.isHidden, false), isNotNull(channels.number), ne(channels.id, channelId)))
       .orderBy(sql`ABS(${channels.number} - ${me.number})`)
       .limit(2);
-    out.push(...ring.map((r) => r.id));
+    ring.forEach((r, i) => bump(r.id, ring.length - i));
   }
   // the lineup's habit: most-watched channel for this hour of day, last 14 days
   try {
@@ -106,9 +119,15 @@ async function targets(channelId: number): Promise<number[]> {
       .groupBy(viewEvents.channelId)
       .orderBy(sql`SUM(${viewEvents.durationSec}) DESC`)
       .limit(1);
-    for (const r of rows) if (r.channelId !== channelId) out.push(r.channelId);
+    for (const r of rows) if (r.channelId !== channelId) bump(r.channelId, 1);
   } catch { /* analytics empty — ring only */ }
-  return [...new Set(out)];
+
+  for (const id of scores.keys()) {
+    const w = favoriteWeight(id);
+    if (w > 0) bump(id, FAVORITE_BOOST * w);
+  }
+
+  return [...scores.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
 }
 
 /** Called on every REAL tune (not previews). Fire-and-forget, surf-debounced:
