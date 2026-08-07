@@ -102,10 +102,16 @@ export async function sendAlert(
     const last = lastSent.get(key);
     if (last != null && t - last <= WINDOW_MS) return false;
 
+    // Payload is a deliberate SUPERSET. `kind`/`message`/`at` are our own
+    // contract; `title`/`body`/`type` are what Apprise — by far the most common
+    // self-hosted notifier — requires, and it rejects anything without `body`
+    // with a 400 ("Payload lacks minimum requirements"). Sending both means the
+    // webhook works against Apprise out of the box without a translating proxy,
+    // and any other consumer can keep reading the fields it already knows.
     const res = await fetchFn(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, message, at: t }),
+      body: JSON.stringify({ kind, message, at: t, title: `Phospharr: ${kind}`, body: message, type: "warning" }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) return false; // not recorded — retried on the next call

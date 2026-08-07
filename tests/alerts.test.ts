@@ -92,6 +92,14 @@ describe("sendAlert", () => {
     expect(await sendAlert("sync-drift", "group scope unregistered", deps)).toBe(true); // different alert
     expect(calls.length).toBe(3);
     expect(calls[2]).toMatchObject({ kind: "sync-drift", message: "group scope unregistered", at: t });
+    // The payload is a superset: Apprise rejects anything without `body` with a
+    // 400, so `title`/`body`/`type` ride alongside our own kind/message/at.
+    // Regression guard — dropping these silently breaks every Apprise install.
+    expect(calls[2]).toMatchObject({
+      title: "Phospharr: sync-drift",
+      body: "group scope unregistered",
+      type: "warning",
+    });
   });
 
   test("webhook unset never calls fetch and records nothing", async () => {
