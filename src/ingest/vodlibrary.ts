@@ -137,16 +137,33 @@ async function embyServers(): Promise<DownstreamServer[] | null> {
   return embys.length ? embys : null;
 }
 
-async function embyItems<T>(s: DownstreamServer, query: string): Promise<T[] | null> {
-  try {
-    const base = s.url.trim().replace(/\/+$/, "");
-    const res = await fetch(`${base}/Items?Recursive=true&EnableImages=false&${query}`, {
-      headers: { "X-Emby-Token": s.apiKey, "X-MediaBrowser-Token": s.apiKey, Accept: "application/json" },
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!res.ok) return null;
-    return ((await res.json()) as { Items?: T[] }).Items ?? [];
-  } catch { return null; } // skip this server, don't block the rebuild
+/** Items per request. Unpaged, this query returns the ENTIRE library — including
+ *  the tens of thousands of .strm entries this mirror itself wrote, every one of
+ *  which is then discarded by the caller. Parsing that in one `res.json()` is a
+ *  single uninterruptible block measured in seconds, long enough to silence live
+ *  TV sources and time out the health check. Paging bounds each parse. */
+const EMBY_PAGE = 2000;
+
+/** Fetch every matching item, a page at a time, handing each to `onItem`.
+ *  Returns false when the server couldn't be queried (caller skips it).
+ *  Deliberately streams into a callback rather than returning one big array:
+ *  the whole point is never to hold or parse the full library at once. */
+async function embyItemsEach<T>(s: DownstreamServer, query: string, onItem: (it: T) => void): Promise<boolean> {
+  const base = s.url.trim().replace(/\/+$/, "");
+  for (let start = 0; ; start += EMBY_PAGE) {
+    let items: T[];
+    try {
+      const res = await fetch(`${base}/Items?Recursive=true&EnableImages=false&StartIndex=${start}&Limit=${EMBY_PAGE}&${query}`, {
+        headers: { "X-Emby-Token": s.apiKey, "X-MediaBrowser-Token": s.apiKey, Accept: "application/json" },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) return start > 0; // a mid-way failure keeps what we already have
+      items = ((await res.json()) as { Items?: T[] }).Items ?? [];
+    } catch { return start > 0; } // skip this server, don't block the rebuild
+    for (const it of items) onItem(it);
+    await breathe();
+    if (items.length < EMBY_PAGE) return true;
+  }
 }
 
 /** Titles already in the Emby/Jellyfin library as REAL files (not our .strm
@@ -160,15 +177,14 @@ async function ownedMovieKeys(): Promise<Set<string> | null> {
   let any = false;
   for (const s of embys) {
     type Item = { Name?: string; ProductionYear?: number; Path?: string; ProviderIds?: Record<string, string> };
-    const items = await embyItems<Item>(s, "IncludeItemTypes=Movie&Fields=Path,ProviderIds,ProductionYear");
-    if (!items) continue;
-    for (const it of items) {
-      if (it.Path && /\.strm$/i.test(it.Path)) continue; // our own VOD entry, not a real file the user owns
+    const ok = await embyItemsEach<Item>(s, "IncludeItemTypes=Movie&Fields=Path,ProviderIds,ProductionYear", (it) => {
+      if (it.Path && /\.strm$/i.test(it.Path)) return; // our own VOD entry, not a real file the user owns
       const pid = it.ProviderIds ?? {};
       if (pid.Tmdb) owned.add("tmdb:" + pid.Tmdb);
       if (pid.Imdb) owned.add("imdb:" + String(pid.Imdb).toLowerCase());
       if (it.Name) owned.add(keyOf(it.Name, it.ProductionYear));
-    }
+    });
+    if (!ok) continue;
     any = true;
   }
   return any ? owned : null;
@@ -182,13 +198,12 @@ export async function ownedEpisodeKeys(): Promise<Set<string> | null> {
   let any = false;
   for (const s of embys) {
     type Item = { SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; Path?: string };
-    const items = await embyItems<Item>(s, "IncludeItemTypes=Episode&Fields=Path");
-    if (!items) continue;
-    for (const it of items) {
-      if (it.Path && /\.strm$/i.test(it.Path)) continue; // our own stub, not a real file
+    const ok = await embyItemsEach<Item>(s, "IncludeItemTypes=Episode&Fields=Path", (it) => {
+      if (it.Path && /\.strm$/i.test(it.Path)) return; // our own stub, not a real file
       if (it.SeriesName && it.ParentIndexNumber != null && it.IndexNumber != null)
         owned.add(epKeyOf(it.SeriesName, it.ParentIndexNumber, it.IndexNumber));
-    }
+    });
+    if (!ok) continue;
     any = true;
   }
   return any ? owned : null;
@@ -261,7 +276,12 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
     : await db.select().from(vodMovies);
   out.movies = movies.length;
 
+  // Phase timings: this pass shares a single-threaded runtime with live TV, so
+  // when something here goes slow it is felt as stalled playback. Log where the
+  // time went rather than leaving it to be inferred from a gap between lines.
+  const t0 = performance.now();
   const owned = skipOwned ? await ownedMovieKeys() : null;
+  const tOwned = performance.now();
   const wanted = new Set<string>();
   let seen = 0;
   for (const m of movies) {
@@ -279,6 +299,7 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
       changed ? out.written++ : out.skippedUnchanged++;
   }
 
+  const tMovies = performance.now();
   // prune folders for movies that left the catalog (or the category allow-list)
   seen = 0;
   for (const e of readdirSync(root, { withFileTypes: true })) {
@@ -374,5 +395,6 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
     }
   }
 
+  console.log(`[vod] library timing: owned-lookup ${Math.round(tOwned - t0)}ms, movies ${Math.round(tMovies - tOwned)}ms, total ${Math.round(performance.now() - t0)}ms`);
   return out;
 }
