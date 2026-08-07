@@ -3,6 +3,7 @@ import { selectStream, rankedStreams, markLive, markDead } from "../scheduler/se
 import { cachedSetting } from "../settings.ts";
 import { openSource } from "./source.ts";
 import { TsPreroll } from "../proxy/tspreroll.ts";
+import { JitterBuffer } from "./jitter.ts";
 import type { Stream } from "../db/schema.ts";
 
 /**
@@ -20,6 +21,12 @@ import type { Stream } from "../db/schema.ts";
 // How long to hold a channel's upstream after the last viewer leaves — keeps it
 // warm for instant re-tune. Read live from settings so the UI can change it.
 const keepWarmMs = () => Math.max(0, cachedSetting("stream.keepWarmSeconds")) * 1000;
+
+// Depth of stream to hold before feeding viewers, smoothing a provider that
+// delivers in bursts (silent ~4s, then a burst, with gaps up to 10s measured on
+// the live feed). Costs exactly this much startup latency, so it is a setting:
+// 0 disables the buffer entirely and relays bytes the moment they arrive.
+const jitterMs = () => Math.max(0, cachedSetting("stream.jitterMs") ?? 0);
 
 type Subscriber = {
   id: number;
@@ -43,7 +50,13 @@ class ChannelMux {
   private onRekey: (oldStreamId: number, newStreamId: number) => void;
   // Rolling keyframe buffer: lets a new viewer start on a decodable keyframe
   // instantly instead of waiting out a GOP. Persists while the mux is warm.
+  //
+  // Deliberately fed from the jitter buffer's OUTPUT, not the raw source. Fed
+  // from the source it would describe the live edge while viewers are watching
+  // `jitterMs` behind it, so every new attach would replay a preroll from the
+  // future and then jump backwards.
   private pre = new TsPreroll();
+  private jitter: JitterBuffer | null = null;
 
   constructor(stream: Stream, onTeardown: () => void, onRekey: (o: number, n: number) => void) {
     this.stream = stream;
@@ -66,6 +79,11 @@ class ChannelMux {
     // socket open) is as dead as a closed one — no bytes for 12s with viewers
     // waiting aborts the upstream, which drops us into the failover supervisor.
     this.lastByteAt = Date.now();
+    const jms = jitterMs();
+    if (jms > 0) {
+      this.jitter = new JitterBuffer({ targetMs: jms, onEmit: (chunk) => this.fanout(chunk) });
+      this.jitter.start();
+    }
     this.watchdog = setInterval(() => {
       if (this.subs.size > 0 && Date.now() - this.lastByteAt > 12_000) {
         console.log(`[muxer] channel ${this.channelId}: source ${this.stream.id} stalled (12s silent) — failing over`);
@@ -110,9 +128,24 @@ class ChannelMux {
       this.stream = next;
       this.abort = new AbortController();
       this.pre = new TsPreroll(); // fresh keyframe alignment for the new source
+      this.jitter?.reset(); // don't splice the new source onto the old one's backlog
       this.lastByteAt = Date.now(); // fresh watchdog window for the new source
       markLive(next.id);
       this.onRekey(old.id, next.id);
+    }
+  }
+
+  /** Keyframe-align, then fan out to every attached viewer. */
+  private fanout(chunk: Uint8Array): void {
+    const region = this.pre.push(chunk);
+    if (!region || !region.length) return;
+    for (const sub of this.subs.values()) {
+      try {
+        sub.push(region);
+      } catch {
+        // Slow/broken client — drop it, don't stall the others.
+        this.detach(sub.id);
+      }
     }
   }
 
@@ -144,20 +177,16 @@ class ChannelMux {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
-      this.lastByteAt = Date.now(); // feeds the stall watchdog
-      // Keyframe-aware: aligns packets + buffers the current GOP, returns the
-      // aligned slice to fan out. New viewers get the GOP replayed on attach.
-      const region = this.pre.push(value);
-      if (!region || !region.length) continue;
-      for (const sub of this.subs.values()) {
-        try {
-          sub.push(region);
-        } catch {
-          // Slow/broken client — drop it, don't stall the others.
-          this.detach(sub.id);
-        }
-      }
+      // Measured on SOURCE arrival, deliberately before the jitter buffer, so a
+      // genuinely dead upstream is still detected in 12s rather than 12s plus
+      // however much cushion happens to be held.
+      this.lastByteAt = Date.now();
+      if (this.jitter) this.jitter.push(value);
+      else this.fanout(value);
     }
+    // Upstream ended: hand the viewer the tail we are still holding instead of
+    // cutting mid-cushion.
+    this.jitter?.flush();
     // Upstream EOF: fall back to run(), which fails over or tears down.
   }
 
@@ -201,6 +230,8 @@ class ChannelMux {
     if (!force && this.subs.size > 0) return; // someone re-attached during grace
     this.stopping = true; // tells the failover supervisor this death is intentional
     if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
+    this.jitter?.stop();
+    this.jitter = null;
     try {
       this.abort.abort();
     } catch {

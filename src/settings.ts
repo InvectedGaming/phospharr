@@ -74,6 +74,7 @@ export interface Settings {
   "epg.refreshHours": number;
   "epg.downstream": DownstreamServer[]; // media servers to nudge after our EPG refresh
   "stream.keepWarmSeconds": number; // hold a channel's upstream this long after the last viewer
+  "stream.jitterMs": number; // buffer this much stream before feeding viewers, to smooth a bursty provider (0 = off)
   "vpn.endpoints": { name: string; url: string }[]; // named VPN/proxy endpoints sources can pick from
   "access.streamKey": string; // secret gating /stream, /watch, and HDHR (devices use ?key=)
   "access.allowExternal": boolean; // allow tuner/M3U/EPG/stream exports off the local network (with key)
@@ -121,6 +122,11 @@ const DEFAULTS: Settings = {
   "epg.refreshHours": 6,
   "epg.downstream": [],
   "stream.keepWarmSeconds": 5,
+  // Providers commonly deliver in bursts rather than a steady feed — measured
+  // here as ~4s of silence between bursts with occasional 10s gaps, which empties
+  // a player's live buffer and cuts playback. Hold 12s so the worst measured gap
+  // is covered. Costs 12s of startup latency per tune; set 0 to relay unbuffered.
+  "stream.jitterMs": 12_000,
   "vpn.endpoints": [],
   "access.streamKey": "", // auto-generated on first boot if unset
   "access.allowExternal": false, // LAN-only by default
@@ -162,6 +168,7 @@ const ENV_MAP: Partial<Record<keyof Settings, string>> = {
   "timeshift.windowMinutes": "PHOSPHARR_TIMESHIFT_MINUTES",
   "epg.refreshHours": "PHOSPHARR_EPG_REFRESH_HOURS",
   "stream.keepWarmSeconds": "PHOSPHARR_STREAM_KEEPWARM",
+  "stream.jitterMs": "PHOSPHARR_STREAM_JITTER_MS",
   "tuner.publicUrl": "PHOSPHARR_TUNER_URL",
   "access.streamKey": "PHOSPHARR_STREAM_KEY",
   "access.allowExternal": "PHOSPHARR_ALLOW_EXTERNAL",
