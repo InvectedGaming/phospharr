@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { asc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.ts";
@@ -75,10 +75,17 @@ export function episodePlayUrl(base: string, key: string, seriesRowId: number, s
 const pad2 = (n: number) => String(Math.max(0, n)).padStart(2, "0");
 
 /** Write only when the content actually differs, leaving mtimes of everything
- *  else untouched (see the inotify-storm rationale above). */
-function writeIfChanged(path: string, content: string): boolean {
-  try { if (readFileSync(path, "utf8") === content) return false; } catch { /* new file */ }
-  writeFileSync(path, content);
+ *  else untouched (see the inotify-storm rationale above).
+ *
+ *  Asynchronous on purpose. A converged mirror still compares ~107k files every
+ *  pass (two per title), and the synchronous versions of these calls block the
+ *  single runtime thread for the whole duration of each disk round-trip. Against
+ *  a union filesystem that measured 3.8 minutes of blocking for one pass, during
+ *  which live TV sources went silent and were dropped. Awaiting the I/O keeps the
+ *  loop free to mux while the disk works. */
+async function writeIfChanged(path: string, content: string): Promise<boolean> {
+  try { if ((await Bun.file(path).text()) === content) return false; } catch { /* new file */ }
+  await Bun.write(path, content);
   return true;
 }
 
@@ -233,13 +240,13 @@ const BREATHE_EVERY = 200;
 async function pruneExtraneous(dir: string, wanted: Map<string, string>): Promise<number> {
   let n = 0, seen = 0;
   const walk = async (rel: string): Promise<void> => {
-    for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
+    for (const e of await readdir(join(dir, rel), { withFileTypes: true })) {
       if (++seen % BREATHE_EVERY === 0) await breathe();
       const r = rel ? join(rel, e.name) : e.name;
       if (e.isDirectory()) {
         await walk(r);
-        if (!readdirSync(join(dir, r)).length) { rmSync(join(dir, r), { recursive: true, force: true }); n++; }
-      } else if (!wanted.has(r)) { rmSync(join(dir, r), { force: true }); n++; }
+        if (!(await readdir(join(dir, r))).length) { await rm(join(dir, r), { recursive: true, force: true }); n++; }
+      } else if (!wanted.has(r)) { await rm(join(dir, r), { force: true }); n++; }
     }
   };
   await walk("");
@@ -268,7 +275,7 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
 
   // ── movies ──
   const root = join(libPath, "Movies");
-  mkdirSync(root, { recursive: true });
+  await mkdir(root, { recursive: true });
 
   const cats = (await getSetting("vod.libraryCategories")) ?? [];
   const movies = cats.length
@@ -293,24 +300,26 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
     if (wanted.has(folder)) folder = safeName(`${display} [${m.id}]`); // disambiguate rare collisions
     wanted.add(folder);
     const dir = join(root, folder);
-    mkdirSync(dir, { recursive: true });
+    await mkdir(dir, { recursive: true });
     const url = `${base}/vod/play/movie/${m.id}?key=${encodeURIComponent(key)}`;
-    for (const changed of [writeIfChanged(join(dir, `${folder}.strm`), url), writeIfChanged(join(dir, `${folder}.nfo`), movieNfo(title, year, m))])
-      changed ? out.written++ : out.skippedUnchanged++;
+    for (const changed of await Promise.all([
+      writeIfChanged(join(dir, `${folder}.strm`), url),
+      writeIfChanged(join(dir, `${folder}.nfo`), movieNfo(title, year, m)),
+    ])) changed ? out.written++ : out.skippedUnchanged++;
   }
 
   const tMovies = performance.now();
   // prune folders for movies that left the catalog (or the category allow-list)
   seen = 0;
-  for (const e of readdirSync(root, { withFileTypes: true })) {
+  for (const e of await readdir(root, { withFileTypes: true })) {
     if (++seen % BREATHE_EVERY === 0) await breathe();
-    if (e.isDirectory() && !wanted.has(e.name)) { rmSync(join(root, e.name), { recursive: true, force: true }); out.pruned++; }
+    if (e.isDirectory() && !wanted.has(e.name)) { await rm(join(root, e.name), { recursive: true, force: true }); out.pruned++; }
   }
 
   // ── series (opt-in) ──
   if (await getSetting("vod.includeSeries")) {
     const seriesRoot = join(libPath, "Series");
-    mkdirSync(seriesRoot, { recursive: true });
+    await mkdir(seriesRoot, { recursive: true });
 
     const scats = (await getSetting("vod.seriesCategories")) ?? [];
     const byCategory = scats.length
@@ -381,17 +390,17 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
       for (const [rel, content] of files) {
         if (++wrote % BREATHE_EVERY === 0) await breathe();
         const p = join(dir, rel);
-        mkdirSync(dirname(p), { recursive: true });
-        writeIfChanged(p, content) ? out.written++ : out.skippedUnchanged++;
+        await mkdir(dirname(p), { recursive: true });
+        (await writeIfChanged(p, content)) ? out.written++ : out.skippedUnchanged++;
       }
       out.pruned += await pruneExtraneous(dir, files); // episodes that left / became owned
     }
 
     // prune shows that left the catalog (or the allow-list, or are fully owned)
     let scanned = 0;
-    for (const e of readdirSync(seriesRoot, { withFileTypes: true })) {
+    for (const e of await readdir(seriesRoot, { withFileTypes: true })) {
       if (++scanned % BREATHE_EVERY === 0) await breathe();
-      if (e.isDirectory() && !wantedShows.has(e.name)) { rmSync(join(seriesRoot, e.name), { recursive: true, force: true }); out.pruned++; }
+      if (e.isDirectory() && !wantedShows.has(e.name)) { await rm(join(seriesRoot, e.name), { recursive: true, force: true }); out.pruned++; }
     }
   }
 
