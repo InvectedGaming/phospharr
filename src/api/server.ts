@@ -1145,15 +1145,7 @@ async function serveVodPassthrough(c: Context<Env>, eg: { proxy?: string }, url:
     });
   } catch {
     release();
-    // A throw here is EITHER the CDN being unreachable OR the viewer having
-    // walked away (their abort signal is wired into this fetch). Falling back to
-    // the remux path in the second case spawns an ffmpeg — plus re-takes a
-    // provider slot — for a client that is already gone, and nothing tears it
-    // down promptly. Enough of those and the server runs out of slots and
-    // upstream connections and stops answering ANY route, which is exactly how
-    // this wedged in testing. Only offer the fallback when someone is still
-    // listening.
-    return c.req.raw.signal.aborted ? new Response(null, { status: 499 }) : null;
+    return null; // caller falls back to the remux path
   }
   if (!up.ok && up.status !== 206) { release(); return null; }
 
@@ -1230,11 +1222,6 @@ async function serveVod(c: Context<Env>, kind: "movie" | "series", providerId: n
     ...venc, "-c:a", "aac", "-ac", "2", "-b:a", "160k",
     "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
   ];
-  // Belt and braces: never start an encode for a viewer who has already gone.
-  // The abort listener below only helps once the process exists, so a client
-  // that left during the passthrough attempt (or while acquiring a slot) would
-  // otherwise still cost an ffmpeg and a provider slot.
-  if (c.req.raw.signal.aborted) { release(); return new Response(null, { status: 499 }); }
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn([VOD_FFMPEG, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
