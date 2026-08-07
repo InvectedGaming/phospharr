@@ -1149,26 +1149,13 @@ async function serveVodPassthrough(c: Context<Env>, eg: { proxy?: string }, url:
   }
   if (!up.ok && up.status !== 206) { release(); return null; }
 
-  // Relay what the CDN said about size/ranges — that is the whole point.
+  // Relay exactly what the CDN said about size/ranges — that is the whole point.
   const h = new Headers({ "Cache-Control": "no-store" });
-  for (const k of ["content-type", "content-length", "content-range"]) {
+  for (const k of ["content-type", "content-length", "content-range", "accept-ranges"]) {
     const v = up.headers.get(k);
     if (v) h.set(k, v);
   }
-  // NOT relayed verbatim: this CDN answers `Accept-Ranges: 0-690149421` — a byte
-  // range where the spec requires the unit token. A strict player reads that as
-  // "ranges not supported" and silently refuses to seek, which is the entire
-  // feature. It demonstrably serves 206 with a correct Content-Range, so state
-  // the truth in the form clients actually parse.
-  h.set("Accept-Ranges", "bytes");
-  // Same story for length: the CDN reports `Content-Length: 0` on HEAD but does
-  // give a real total in Content-Range. Recover it so players get a duration.
-  const cr = up.headers.get("content-range");
-  if (!h.get("content-length") || h.get("content-length") === "0") {
-    const total = cr?.match(/\/(\d+)\s*$/)?.[1];
-    if (total && !range) h.set("Content-Length", total);
-    else if (!total) h.delete("Content-Length"); // better absent than a lie
-  }
+  if (!h.has("accept-ranges")) h.set("Accept-Ranges", "bytes"); // CDN honours ranges even when it forgets to advertise
   if (!up.body || c.req.method === "HEAD") { release(); return new Response(null, { status: up.status, headers: h }); }
 
   // Hold the slot until the body genuinely finishes, and let go the moment the
