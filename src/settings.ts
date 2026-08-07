@@ -52,6 +52,13 @@ export interface Settings {
   "vod.syncHours": number; // scheduled VOD refresh + library rebuild every N hours (prunes owned)
   "vod.includeSeries": boolean; // also mirror series/episodes (Sonarr-parseable tree under <libraryPath>/Series)
   "vod.seriesCategories": string[]; // only mirror these series categories (empty = all)
+  // Show-level allowlist, applied AFTER seriesCategories. Category scoping alone
+  // is far too coarse for a curated library: a single category here holds
+  // thousands of shows, and mirroring them all means tens of thousands of .strm
+  // files plus one provider episode-list fetch per show. Listing exact catalog
+  // names (as stored in vod_series.name, e.g. "30 Rock (2006)") mirrors only
+  // those. Empty = no show-level filter.
+  "vod.seriesInclude": string[];
   "vod.refreshExisting": boolean; // re-pull episode lists for mirrored series each run so new episodes appear
   "vod.indexer.enabled": boolean; // expose the VOD catalog to Sonarr as a Torznab indexer (/torznab/api)
   "vod.indexer.apiKey": string; // Torznab apikey (auto-generated on first boot if unset)
@@ -98,6 +105,7 @@ const DEFAULTS: Settings = {
   "vod.syncHours": 24,
   "vod.includeSeries": false, // opt-in — each mirrored series costs a get_series_info call per refresh
   "vod.seriesCategories": [],
+  "vod.seriesInclude": [], // empty = no show-level filter (categories alone decide)
   "vod.refreshExisting": true, // default ON — off freezes the catalog and new episodes never appear
   "vod.indexer.enabled": false, // opt-in — exposes an authenticated Torznab endpoint
   "vod.indexer.apiKey": "", // auto-generated on first boot if unset

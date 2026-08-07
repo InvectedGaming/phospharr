@@ -34,6 +34,16 @@ import { getSetting, cachedSetting, type DownstreamServer } from "../settings.ts
 
 const xml = (s: string) => s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c] as string));
 
+/** Match key for `vod.seriesInclude`. Case- and punctuation-insensitive so an
+ *  operator can paste "Marvel's Agents of S.H.I.E.L.D. (2013)" without
+ *  reproducing the provider's exact punctuation — but the year is KEPT, since
+ *  dropping it would collide remakes ("Fargo (2014)" vs an older "Fargo").
+ *  Deliberately not `normalizeName()`: that one is tuned for channel names and
+ *  strips quality/country tokens that are meaningful in a show title. */
+export function seriesKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 /** Filesystem-safe name: strip the reserved chars (keep dashes etc.), collapse
  *  whitespace, drop trailing dots/spaces (invalid on Windows dirs). */
 function safeName(s: string): string {
@@ -258,10 +268,28 @@ export async function rebuildVodLibrary(): Promise<VodLibraryResult> {
     mkdirSync(seriesRoot, { recursive: true });
 
     const scats = (await getSetting("vod.seriesCategories")) ?? [];
-    const shows = scats.length
+    const byCategory = scats.length
       ? await db.select().from(vodSeries).where(inArray(vodSeries.category, scats))
       : await db.select().from(vodSeries);
+
+    // Show-level allowlist, applied after the category filter. Categories are
+    // far too coarse for a curated library: a single one holds thousands of
+    // shows, and every mirrored show costs a provider episode-list fetch per
+    // refresh plus a folder of .strm files. Matching is on the catalog name
+    // (vod_series.name) case- and punctuation-insensitively, so titles can be
+    // pasted without reproducing the provider's exact punctuation or year.
+    const include = (await getSetting("vod.seriesInclude")) ?? [];
+    const want = new Set(include.map(seriesKey));
+    const shows = want.size ? byCategory.filter((s) => want.has(seriesKey(s.name))) : byCategory;
     out.series = shows.length;
+    if (want.size) {
+      // Loud: a typo'd or renamed title silently mirrors nothing at all.
+      const got = new Set(shows.map((s) => seriesKey(s.name)));
+      const missed = include.filter((n) => !got.has(seriesKey(n)));
+      if (missed.length) {
+        console.warn(`[vod] seriesInclude: ${missed.length}/${include.length} not in the catalog — ${missed.slice(0, 8).join(", ")}${missed.length > 8 ? " …" : ""}`);
+      }
+    }
 
     // Refresh-existing (default ON) re-pulls each mirrored show's episode list
     // every run so newly-aired episodes appear on their own — with it off the
