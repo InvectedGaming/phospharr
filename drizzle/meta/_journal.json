@@ -162,6 +162,13 @@
       "when": 1786076160794,
       "tag": "0022_mighty_juggernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1786162507027,
+      "tag": "0023_light_molten_man",
+      "breakpoints": true
     }
   ]
 }
