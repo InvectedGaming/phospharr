@@ -24,8 +24,13 @@ import { evictionPlan } from "./warmevict.ts";
  */
 
 const HEADROOM = 1; // never leave fewer than this many free slots after warming
-const MAX_WARM = 2; // at most this many simultaneous warm holds
-const HOLD_MS = 90_000; // a hold's lifetime unless refreshed by another tune
+// One hold, held longer. The count matters far less than it used to now that a
+// hold can never outrank a real viewer (see warmevict.ts) — it yields the moment
+// a tune needs the slot — so the useful lever is duration, not quantity. 90s was
+// short enough that a viewer settling on a channel for one programme would find
+// the ring gone cold by the time they surfed again.
+const MAX_WARM = 1; // at most this many simultaneous warm holds
+const HOLD_MS = 5 * 60_000; // a hold's lifetime unless refreshed by another tune
 
 type Hold = { channelId: number; cancel: () => void; expires: ReturnType<typeof setTimeout> };
 const holds = new Map<number, Hold>();
