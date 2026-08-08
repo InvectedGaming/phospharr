@@ -3,11 +3,11 @@ import { sqliteTable, text, integer, real, index, uniqueIndex, primaryKey } from
 /**
  * Phospharr schema — the canonical channel layer is the spine.
  *
- * providers ──< streams >── channels ──< multiviewTiles >── multiviews
+ * providers ──< streams >── channels
  *                  │            │
  *                  └ slot pool  └ canonicalId ──< programs (EPG)
  *
- * Everything smart (dedup, failover, capacity routing, EPG binding, auto-multiview)
+ * Everything smart (dedup, failover, capacity routing, EPG binding)
  * keys off channels.canonicalId.
  */
 
@@ -138,36 +138,6 @@ export const rules = sqliteTable("rules", {
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
 });
 
-// ─── MULTIVIEW: a synthetic channel composed of N other channels ───
-export const multiviews = sqliteTable("multiviews", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  name: text("name").notNull(),
-  number: real("number"), // it's tunable, so it gets a lineup number
-  layout: text("layout", { enum: ["auto", "2x2", "3x3", "side-by-side"] })
-    .notNull()
-    .default("auto"),
-  audioChannelId: integer("audio_channel_id"), // which tile carries audio
-  mode: text("mode", { enum: ["client", "composite"] }).notNull().default("client"),
-  isAuto: integer("is_auto", { mode: "boolean" }).notNull().default(false), // EPG-generated
-  expiresAt: integer("expires_at", { mode: "timestamp" }), // for auto multiviews
-});
-
-export const multiviewTiles = sqliteTable(
-  "multiview_tiles",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    multiviewId: integer("multiview_id")
-      .notNull()
-      .references(() => multiviews.id, { onDelete: "cascade" }),
-    channelId: integer("channel_id")
-      .notNull()
-      .references(() => channels.id, { onDelete: "cascade" }),
-    position: integer("position").notNull(),
-  },
-  (t) => ({
-    mvIdx: index("multiview_tiles_mv_idx").on(t.multiviewId),
-  }),
-);
 
 // ─── VIEW EVENTS: one completed watch session (for analytics) ───
 export const viewEvents = sqliteTable(
@@ -447,19 +417,15 @@ export const syncState = sqliteTable("sync_state", {
   scopeFailures: text("scope_failures"),
 });
 
-export type VodMovie = typeof vodMovies.$inferSelect;
 export type VodSeries = typeof vodSeries.$inferSelect;
-export type VodEpisode = typeof vodEpisodes.$inferSelect;
 
 export type Recording = typeof recordings.$inferSelect;
-export type DvrRule = typeof dvrRules.$inferSelect;
 
 export type Provider = typeof providers.$inferSelect;
 export type Channel = typeof channels.$inferSelect;
 export type Stream = typeof streams.$inferSelect;
 export type Program = typeof programs.$inferSelect;
 export type Rule = typeof rules.$inferSelect;
-export type Multiview = typeof multiviews.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Share = typeof shares.$inferSelect;
 export type Vpn = typeof vpns.$inferSelect;

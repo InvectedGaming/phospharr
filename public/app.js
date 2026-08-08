@@ -2112,9 +2112,7 @@ function settingsScreen() {
           settingRow({ title: "VOD library for Emby / Jellyfin", desc: "Mirror VOD movies as a .strm/.nfo folder your media server can scan, and trigger a scan when the catalog changes.", key: "features.vodLibrary", type: "toggle" })),
         (dvrOn || tsOn)
           ? settingsSection("STORAGE & RETENTION",
-              settingRow({ title: "Storage path", desc: "Where segments and recordings live on disk.", key: "dvr.storagePath", type: "text" }),
               tsOn ? settingRow({ title: "Timeshift window", desc: "How far back you can rewind live TV.", key: "timeshift.windowMinutes", type: "number", suffix: "min" }) : null,
-              dvrOn ? settingRow({ title: "Recording retention", desc: "Auto-delete recordings older than this.", key: "dvr.retentionDays", type: "number", suffix: "days" }) : null,
               dvrOn ? settingRow({ title: "Max DVR size", desc: "Cap total recording storage.", key: "dvr.maxGB", type: "number", suffix: "GB" }) : null,
               dvrOn ? settingRow({ title: "Max concurrent recordings", desc: "How many programs can record at once.", key: "dvr.maxConcurrentRecordings", type: "number" }) : null)
           : null,

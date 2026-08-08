@@ -94,9 +94,9 @@ COPY . .
 # Fetch the wireproxy helper into ./bin (best-effort — see vpn:helpers).
 RUN bun run vpn:helpers || echo "[build] wireproxy not fetched — set PHOSPHARR_WIREPROXY or run 'bun run vpn:helpers'"
 
-# DB + DVR live on a mounted volume so they survive container rebuilds.
+# The DB (and the dvr/ dir alongside it) live on a mounted volume so they
+# survive container rebuilds.
 ENV DATABASE_URL=/data/phospharr.db \
-    PHOSPHARR_DVR_PATH=/data/dvr \
     PORT=7777 \
     NODE_ENV=production \
     FFMPEG_PATH=/usr/local/bin/ffmpeg

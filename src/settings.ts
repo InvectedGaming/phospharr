@@ -66,8 +66,6 @@ export interface Settings {
   "vod.indexer.blackholeCompletePath": string; // where we place the .strm for Sonarr to import (Sonarr's blackhole Watch Folder)
   "vod.indexer.cacheTtlMinutes": number; // per-show provider lookup cache — repeat Sonarr polls inside this window don't refetch
   "vod.indexer.categories": string[]; // only serve these series categories through the indexer (empty = all)
-  "dvr.storagePath": string;
-  "dvr.retentionDays": number;
   "dvr.maxGB": number;
   "dvr.maxConcurrentRecordings": number;
   "timeshift.windowMinutes": number;
@@ -114,8 +112,6 @@ const DEFAULTS: Settings = {
   "vod.indexer.blackholeCompletePath": `${projectRoot}/blackhole/complete`,
   "vod.indexer.cacheTtlMinutes": 15,
   "vod.indexer.categories": [],
-  "dvr.storagePath": `${projectRoot}/dvr`,
-  "dvr.retentionDays": 14,
   "dvr.maxGB": 100,
   "dvr.maxConcurrentRecordings": 4,
   "timeshift.windowMinutes": 120,
@@ -162,8 +158,6 @@ const ENV_MAP: Partial<Record<keyof Settings, string>> = {
   "vod.indexer.blackholeWatchPath": "PHOSPHARR_VOD_INDEXER_NZB_PATH",
   "vod.indexer.blackholeCompletePath": "PHOSPHARR_VOD_INDEXER_COMPLETE_PATH",
   "vod.indexer.cacheTtlMinutes": "PHOSPHARR_VOD_INDEXER_CACHE_TTL",
-  "dvr.storagePath": "PHOSPHARR_DVR_PATH",
-  "dvr.retentionDays": "PHOSPHARR_DVR_RETENTION_DAYS",
   "dvr.maxGB": "PHOSPHARR_DVR_MAX_GB",
   "timeshift.windowMinutes": "PHOSPHARR_TIMESHIFT_MINUTES",
   "epg.refreshHours": "PHOSPHARR_EPG_REFRESH_HOURS",
