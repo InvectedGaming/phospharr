@@ -4,6 +4,7 @@ import { channels, viewEvents } from "../db/schema.ts";
 import { pool } from "../scheduler/pool.ts";
 import { muxer } from "./muxer.ts";
 import { favoriteWeight } from "../sync/favorites.ts";
+import { evictionPlan } from "./warmevict.ts";
 
 /**
  * Predictive prewarm ring — what makes channel surf feel like a real TV.
@@ -17,8 +18,8 @@ import { favoriteWeight } from "../sync/favorites.ts";
  *
  * Politeness rules (a warm hold must NEVER cost a real viewer):
  *  - only warms while the pool keeps ≥ HEADROOM free slots
- *  - muxer's evictor frees the oldest warm hold the instant a real tune needs
- *    the slot (installed via muxer.setEvictor below)
+ *  - muxer's evictor frees the oldest warm hold on a channel NOBODY is
+ *    watching, the instant a real tune needs the slot (see warmevict.ts)
  *  - holds expire on their own; the ring follows the most recent real tune
  */
 
@@ -38,12 +39,32 @@ function release(channelId: number): void {
   muxer.dropIdle(channelId); // free the slot NOW, not after the keep-warm grace
 }
 
-/** Free the oldest warm hold — the muxer calls this when a real tune finds no slot. */
+/**
+ * Free a slot for a real tune by dropping the OLDEST warm hold that nobody is
+ * watching. The muxer calls this when a tune finds no free slot.
+ *
+ * Oldest-first because a warm hold's value decays: the ring follows the most
+ * recent tune, so the channel warmed longest ago is the one least likely to be
+ * surfed to next.
+ *
+ * Skipping watched channels is the part that matters. A hold subscribes to its
+ * channel like any other viewer, so a channel can carry both a hold AND real
+ * viewers — and `release()` tears the upstream down only when nothing is left
+ * attached. Evicting such a hold frees no provider slot at all, yet the old code
+ * reported success, so the muxer stopped looking and failed the very tune it was
+ * evicting for. Those holds are still dropped as we pass them (a channel with a
+ * viewer is not "warm" any more, and its drain-and-discard reader is pure
+ * waste), but only an idle one counts as having freed a slot.
+ */
 function evictOne(): boolean {
-  const first = holds.keys().next();
-  if (first.done) return false;
-  release(first.value);
-  console.log(`[prewarm] evicted warm hold on channel ${first.value} for a real viewer`);
+  // viewers() counts the hold's own subscription, so >1 means a real viewer.
+  const plan = evictionPlan(holds.keys(), (id) => muxer.viewers(id));
+  for (const id of plan.drop) {
+    release(id);
+    if (id !== plan.freed) console.log(`[prewarm] channel ${id} has a viewer — kept live, warm hold dropped`);
+  }
+  if (plan.freed === null) return false;
+  console.log(`[prewarm] evicted warm hold on channel ${plan.freed} for a real viewer`);
   return true;
 }
 muxer.setEvictor(evictOne);
