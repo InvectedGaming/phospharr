@@ -41,6 +41,30 @@ describe("reconnectPlan", () => {
     expect(p.retry).toBe(false);
   });
 
+  /**
+   * Measured against the live provider 2026-08-14: the CDN answers 200, streams
+   * at ~1MB/s, then closes on its own after 5.6s / 6.8s / 13.8s. Every one of
+   * those is a session that delivered real content — the viewer was watching —
+   * but each drop landed under the old 60s bar, so the streak never reset. The
+   * budget burned 1..5 in well under a minute and the viewer was thrown off with
+   * "died, no alternates". A session long enough to have shown real video must
+   * start a fresh incident, or this provider can never be watched at all.
+   */
+  test("a CDN-length session that delivered video resets the budget", () => {
+    for (const uptime of [5_600, 6_800, 13_800]) {
+      const p = reconnectPlan({ attempts: RECONNECT_MAX, sourceUptimeMs: uptime });
+      expect(p.retry).toBe(true);
+      expect(p.attempt).toBe(1);
+    }
+  });
+
+  test("an instantly-failing source still exhausts its budget", () => {
+    // The flip side: sub-second failures are a broken source, not a viewer
+    // mid-watch, and must still give up rather than spin forever.
+    const p = reconnectPlan({ attempts: RECONNECT_MAX, sourceUptimeMs: 900 });
+    expect(p.retry).toBe(false);
+  });
+
   test("the whole budget is usable before giving up", () => {
     let attempts = 0;
     const tried: number[] = [];

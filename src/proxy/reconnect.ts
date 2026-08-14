@@ -13,8 +13,23 @@
  */
 
 export const RECONNECT_MAX = 5;
-/** Streamed at least this long ⇒ the drop starts a fresh incident. */
-export const RECONNECT_HEALTHY_MS = 60_000;
+/**
+ * Streamed at least this long ⇒ the drop starts a fresh incident.
+ *
+ * Deliberately short, and it has to be. This was 60s, chosen when providers
+ * closed a connection every few minutes. Measured 2026-08-14, the CDN now
+ * answers 200, streams at ~1MB/s and closes on its own after 5.6s / 6.8s /
+ * 13.8s — so every drop landed under the old bar, the streak never reset, and
+ * the budget burned 1..5 inside a minute. Viewers were thrown off mid-watch
+ * with "died, no alternates" on every channel this provider serves.
+ *
+ * The threshold's real job is to tell "delivered video, then the provider hung
+ * up" apart from "this source is broken". Observed failures of the second kind
+ * are sub-second, so 5s sits in open space between the two populations rather
+ * than being tuned to either edge. If a provider ever starts closing at ~4s,
+ * this becomes duration-blind and the reset wants to key off bytes delivered.
+ */
+export const RECONNECT_HEALTHY_MS = 5_000;
 
 export interface ReconnectState {
   /** Consecutive reconnects already spent on this source. */
