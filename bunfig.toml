@@ -1,0 +1,5 @@
+[test]
+# Give `bun test` its own migrated database instead of whatever DATABASE_URL
+# happens to point at — which inside the container is the live one. See the
+# header of tests/setup.ts for what this prevents.
+preload = ["./tests/setup.ts"]
