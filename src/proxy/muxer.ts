@@ -1,5 +1,6 @@
 import { pool } from "../scheduler/pool.ts";
 import { selectStream, rankedStreams, markLive, markDead } from "../scheduler/selector.ts";
+import { startCooldown, coolingDown, clearCooldown } from "./cooldown.ts";
 import { cachedSetting } from "../settings.ts";
 import { openSource } from "./source.ts";
 import { TsPreroll } from "../proxy/tspreroll.ts";
@@ -131,6 +132,10 @@ class ChannelMux {
         // draining, a reconnect inside a second or two is invisible to viewers.
         if (await this.reconnectSame()) continue;
         console.log(`[muxer] channel ${this.channelId}: source ${this.stream.id} died, no alternates — dropping ${this.subs.size} viewer(s)`);
+        // Refuse redials briefly: clients auto-reconnect on EOF (mpegts.js,
+        // Emby's tuner), and without this the channel goes right back into
+        // the dial/die loop that just burned the whole budget.
+        startCooldown(this.channelId);
         this.teardown(true);
         return;
       }
@@ -341,6 +346,10 @@ class Muxer {
     // between the peek (selectStream sees a free slot) and the real pool.acquire
     // inside mux.start(). Without this, a viewer gets "all tuners busy" while
     // another provider still had capacity.
+    // A channel whose last source just burned its full reconnect budget is
+    // cooling down: fail fast instead of redialing a provably-dead source for
+    // every client retry (see cooldown.ts for the incident this prevents).
+    if (coolingDown(channelId)) return null;
     let mux: ChannelMux | null = null;
     for (let attempt = 0; attempt < 4 && !mux; attempt++) {
       let selection = await selectStream(channelId);
@@ -360,6 +369,7 @@ class Muxer {
       this.active.delete(selection.stream.id); // slot raced away — try the next-ranked source
     }
     if (!mux) return null;
+    clearCooldown(channelId); // a dial succeeded — the source is back
 
     const mref = mux;
     let subId = -1;
