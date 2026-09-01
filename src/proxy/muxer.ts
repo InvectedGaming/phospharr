@@ -1,12 +1,15 @@
 import { pool } from "../scheduler/pool.ts";
 import { selectStream, rankedStreams, markLive, markDead } from "../scheduler/selector.ts";
 import { startCooldown, coolingDown, clearCooldown } from "./cooldown.ts";
-import { cachedSetting } from "../settings.ts";
+import { cachedSetting, getSetting } from "../settings.ts";
 import { openSource } from "./source.ts";
 import { TsPreroll } from "../proxy/tspreroll.ts";
 import { JitterBuffer } from "./jitter.ts";
 import { reconnectPlan, RECONNECT_MAX } from "./reconnect.ts";
 import { OverlapGate } from "./overlap.ts";
+import { SlateFeeder } from "../slate/feeder.ts";
+import { loadReel, familyFor } from "../slate/cache.ts";
+import { slateEligible } from "../slate/gate.ts";
 import type { Stream } from "../db/schema.ts";
 
 /**
@@ -65,6 +68,9 @@ class ChannelMux {
   // Drops the recent history a provider replays on a fresh connection, which
   // would otherwise reach an already-watching viewer as a jump backwards.
   private overlap = new OverlapGate();
+  // Buffering reel shown on a cold attach while the upstream dials; stopped and
+  // cleared the moment live catches up (fanout) or the mux dies (teardown).
+  private slate: SlateFeeder | null = null;
 
   constructor(stream: Stream, onTeardown: () => void, onRekey: (o: number, n: number) => void) {
     this.stream = stream;
@@ -186,6 +192,17 @@ class ChannelMux {
   private fanout(chunk: Uint8Array): void {
     const region = this.pre.push(chunk);
     if (!region || !region.length) return;
+    if (this.slate) {
+      // Hold live bytes back until a decodable start exists, then hand every
+      // viewer [preroll GOP] and fall through to live — the region just pushed
+      // into `pre` is contained in that preroll, so nothing is lost or doubled.
+      const pre = this.pre.preroll();
+      if (!pre) return;
+      this.slate.stop(); this.slate = null;
+      console.log(`[slate] channel ${this.channelId}: live keyframe — splicing`);
+      for (const sub of this.subs.values()) { try { sub.push(pre); } catch { this.detach(sub.id); } }
+      return;
+    }
     for (const sub of this.subs.values()) {
       try {
         sub.push(region);
@@ -255,7 +272,39 @@ class ChannelMux {
     // The compositor opts OUT (sendPreroll=false): it wants the live edge, not a GOP
     // of backlog, so the cast tracks live (~1-2s) instead of starting a GOP behind.
     if (sendPreroll) { const pre = this.pre.preroll(); if (pre) { try { sub.push(pre); } catch { /* its own stream will detach */ } } }
+    // Cold channel + slate enabled: show the buffering reel instantly instead of
+    // a silent open socket. The reel stops the moment the upstream's first
+    // keyframe lands in the preroll buffer (see fanout) — same keyframe-boundary
+    // switch a failover does, and failover does no timestamp surgery either.
+    if (sendPreroll && !this.slate && this.pre.preroll() == null) void this.maybeStartSlate();
     return id;
+  }
+
+  /**
+   * Load the reel and start it, unless the race was already lost: a live
+   * keyframe arrived, the mux started stopping, or another attach already
+   * started it, all of which can happen across these `await`s. Re-checked
+   * after each one rather than trusted from the top — `void`-called from
+   * `attach()`, so nothing here may throw or reject unhandled.
+   */
+  private async maybeStartSlate(): Promise<void> {
+    try {
+      if (this.slate || this.stopping) return;
+      const enabled = Boolean(await getSetting("features.slate"));
+      if (!slateEligible({ enabled, codec: this.stream.codec ?? null, reel: true, preroll: this.pre.preroll() })) return;
+      const reel = await loadReel(familyFor(this.stream.resolution ?? null));
+      if (!reel || this.slate || this.stopping || this.pre.preroll() != null) return; // live won the race
+      this.slate = new SlateFeeder({
+        ...reel,
+        // Iterates `this.subs` live at push time, so a viewer who attaches mid-slate
+        // simply starts receiving reel bytes mid-stream — fine at a 1s GOP.
+        push: (chunk) => { for (const sub of this.subs.values()) { try { sub.push(chunk); } catch { this.detach(sub.id); } } },
+      });
+      this.slate.start();
+      console.log(`[slate] channel ${this.channelId}: reel up while dialing source ${this.stream.id}`);
+    } catch (err) {
+      console.log(`[slate] channel ${this.channelId}: failed to start reel — ${err}`);
+    }
   }
 
   detach(id: number) {
@@ -289,6 +338,10 @@ class ChannelMux {
     this.jitter?.flush();
     this.jitter?.stop();
     this.jitter = null;
+    // A feeder ticking after teardown is a leak — every path the mux dies
+    // through funnels here.
+    this.slate?.stop();
+    this.slate = null;
     try {
       this.abort.abort();
     } catch {
