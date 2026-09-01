@@ -83,13 +83,19 @@ async function gatherImages(
 
 /**
  * Build one reel per FAMILIES entry from the SAME source images and cache
- * them atomically. Every family is composed to `<family>.ts.tmp` and renamed
- * only on success; the manifest is written LAST, also atomically (see
- * cache.ts's saveManifest). If any family's compose throws (after the
- * nvenc→libx264 retry), buildReelOnce rejects WITHOUT touching the manifest
- * or any already-renamed family file from this run's earlier families — a
- * failed build must never leave loadReel() serving a half-updated cache, and
- * must never clobber a previously-good manifest.
+ * them atomically as ONE batch. Every family is first composed to
+ * `<family>.ts.tmp`; only once EVERY family has succeeded do we rename all of
+ * them into place and write the manifest (also atomically — see cache.ts's
+ * saveManifest), in that order. This two-phase shape matters: renaming a
+ * family in as soon as ITS OWN compose succeeds would let an early family's
+ * fresh bytes land on disk under the OLD manifest's (now stale) entry for it
+ * if a LATER family then throws — loadReel() trusts the manifest completely,
+ * so a half-updated cache like that is a silent correctness bug, not just an
+ * incomplete build. If any family's compose throws (after the nvenc→libx264
+ * retry), buildReelOnce rejects and NOTHING from this run is placed: the
+ * previous manifest and every previously-placed family file are untouched.
+ * A failed family's own `.tmp` file can be left orphaned on disk in that
+ * case — harmless; the next build's `ffmpeg -y` overwrites it.
  */
 export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSource }> {
   mkdirSync(deps.dir, { recursive: true });
@@ -106,13 +112,14 @@ export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSou
 
   try {
     const families: ReelManifest["families"] = {};
+    const placements: { finalPath: string; tmpPath: string }[] = [];
     for (const fam of FAMILIES) {
       const finalPath = join(deps.dir, `${fam.key}.ts`);
       const tmpPath = `${finalPath}.tmp`;
       const { bytes, totalSec } = await composeWithFallback(deps.compose, {
         images, out: tmpPath, width: fam.width, height: fam.height, fps: fam.fps, durationSec, tailSec,
       });
-      renameSync(tmpPath, finalPath);
+      placements.push({ finalPath, tmpPath });
       families[fam.key] = {
         file: `${fam.key}.ts`,
         bytes,
@@ -121,6 +128,9 @@ export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSou
       };
     }
 
+    // Every family composed successfully — NOW place them and write the
+    // manifest. See the doc comment above for why this can't happen per-family.
+    for (const { finalPath, tmpPath } of placements) renameSync(tmpPath, finalPath);
     await saveManifest({ builtAt: Date.now(), families }, deps.dir);
     return { source };
   } finally {
@@ -150,9 +160,23 @@ const BOOT_DELAY_MS = 60_000;
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 
+// Mirrors the `running` guard in src/epg/scheduler.ts: the boot-delay build
+// and the cadence tick's build are two independent setTimeout chains with no
+// other coordination between them, so without this a slow build (or a future
+// manual "rebuild now" action) could overlap a second one. The check-and-set
+// runs before this function's first `await`, so two synchronous callers can
+// never both pass it — JS won't interleave them until a suspension point.
+let building = false;
+
 async function runBuildIfEnabled(): Promise<void> {
-  if (!(await getSetting("features.slate"))) return;
-  await buildReelOnce({ dir: SLATE_DIR, fetchMemes, downloadImage, compose: composeReel });
+  if (building) return; // a build is already in flight — never overlap
+  building = true;
+  try {
+    if (!(await getSetting("features.slate"))) return;
+    await buildReelOnce({ dir: SLATE_DIR, fetchMemes, downloadImage, compose: composeReel });
+  } finally {
+    building = false;
+  }
 }
 
 async function tick(): Promise<void> {
@@ -172,9 +196,17 @@ async function arm(): Promise<void> {
   if (typeof timer.unref === "function") timer.unref();
 }
 
+// `started` (not `timer`) is what makes startSlateBuilder idempotent. `arm()`
+// is async and only assigns `timer` after awaiting getSetting(), so two
+// back-to-back synchronous calls would both see `timer === null` and both
+// arm a timer + schedule a boot build. `started` is set synchronously, before
+// any await, closing that window the same way `building` does above.
+let started = false;
+
 /** Start the scheduler. Safe to call more than once — a second call is a no-op. */
 export function startSlateBuilder(): void {
-  if (timer) return; // already started
+  if (started) return; // already started
+  started = true;
   void arm();
 
   const boot = setTimeout(async () => {

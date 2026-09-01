@@ -37,7 +37,10 @@ export async function readManifest(dir: string = SLATE_DIR): Promise<ReelManifes
   try {
     const raw = await Bun.file(manifestPath(dir)).text();
     const parsed = JSON.parse(raw) as ReelManifest;
-    if (!parsed || typeof parsed !== "object" || typeof parsed.families !== "object") return null;
+    // `typeof null === "object"` — a `families: null` manifest must NOT read
+    // as "warm cache, skip the boot build" (startSlateBuilder's manifest
+    // check would otherwise treat it as present and never rebuild).
+    if (!parsed || typeof parsed !== "object" || !parsed.families || typeof parsed.families !== "object") return null;
     return parsed;
   } catch {
     return null;
@@ -74,6 +77,11 @@ export async function loadReel(
     if (!(await file.exists())) return null;
     const data = new Uint8Array(await file.arrayBuffer());
     if (data.length === 0) return null;
+    // The manifest's recorded byte count is what buildReelOnce measured right
+    // after composing this exact file — a mismatch means the file on disk was
+    // truncated, replaced, or otherwise doesn't match what the manifest
+    // describes, and must not be served as if it does.
+    if (data.length !== entry.bytes) return null;
     return { data, totalSec: entry.totalSec, tailStartFrac: entry.tailStartFrac };
   } catch {
     return null;

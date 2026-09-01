@@ -43,4 +43,26 @@ describe("buildReelOnce", () => {
     })).rejects.toThrow();
     expect(JSON.parse(await Bun.file(join(dir, "manifest.json")).text()).builtAt).toBe(1);
   });
+
+  test("partial family failure: earlier family's placed file is not replaced, manifest untouched", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "slateb-"));
+    // Pre-existing manifest + a real 1080p25.ts already on disk (the "previous
+    // good build"). FAMILIES composes 1080p25 first, 720p30 second — this
+    // mock succeeds for 1080p25 and throws for 720p30, so a per-family
+    // (rather than whole-batch) placement would clobber the sentinel below.
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ builtAt: 1, families: {} }));
+    writeFileSync(join(dir, "1080p25.ts"), "SENTINEL");
+    const compose = (async (o: { out: string; width: number; durationSec: number; tailSec: number }) => {
+      if (o.width === 1920) {
+        writeFileSync(o.out, new Uint8Array(500).fill(0x47));
+        return { bytes: 500, totalSec: o.durationSec + o.tailSec };
+      }
+      throw new Error("boom");
+    }) as never;
+    await expect(buildReelOnce({
+      dir, fetchMemes: async () => [], downloadImage: async () => false, compose,
+    })).rejects.toThrow();
+    expect(JSON.parse(await Bun.file(join(dir, "manifest.json")).text()).builtAt).toBe(1);
+    expect(await Bun.file(join(dir, "1080p25.ts")).text()).toBe("SENTINEL");
+  });
 });
