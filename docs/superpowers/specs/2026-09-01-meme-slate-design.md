@@ -32,28 +32,33 @@ feed the moment it is ready.**
 - `streams` table already stores probed `resolution`/`fps`/`codec` per stream, so
   slate variants can match the channel's parameter family.
 
-## Meme source: API League Random Meme API
+## Meme source: Meme_Api (meme-api.com, D3vd/Meme_Api)
 
-- Endpoint: `https://api.apileague.com/retrieve-random-meme`
-- Auth: `?api-key=KEY` query param; free key on signup
-  (https://apileague.com/docs/authentication/)
-- Response: `{ description, url, type (image/jpeg|png|gif), width, height, ratio }`
-- Only filter: `max-age-days`. **There is NO safe-for-work/rating filter.**
-- Free tier: daily quota; exhaustion returns HTTP 402.
+Chosen by the user over API League after review — it is better on every axis:
 
-### Two consequences, decided as follows
+- Endpoint: `https://meme-api.com/gimme/{count}` (count ≤ 50) — **no API key**
+- Optional `/gimme/{subreddit}/{count}` — the meme pool is user-curatable by
+  subreddit (defaults scrape r/memes, r/dankmemes, r/me_irl)
+- Response per meme: `{ postLink, subreddit, title, url, nsfw, spoiler, author,
+  ups, preview[] }` — **`nsfw` and `spoiler` booleans exist and are filtered on**
+- One request fetches a whole reel (`/gimme/8`, over-fetch then filter)
+- **Verified live from the phospharr container 2026-09-01**: `/gimme/3` returned
+  3 memes, all `nsfw=false`, direct i.redd.it image URLs.
 
-1. **Content risk.** Random internet memes on the household TV, unfiltered. The
-   reel builder is a `SlateSource` interface with the meme API as its first
-   implementation, so a curated source (local image folder, or API League's
-   keyword-constrained Search Memes API) can replace it without touching the
-   pipeline. Ships with the meme API per the user's explicit choice; the local
-   folder fallback doubles as the no-key mode.
-2. **Quota discipline.** Reel is built in the BACKGROUND on a cadence, never on
-   the tune path. Defaults: 5 memes per reel, refreshed every 6h = 20 API
-   calls/day. A 402 or any API failure ⇒ keep serving the previous reel; if no
-   reel has ever been built ⇒ plain generated slate (no memes, banner only).
-   **The meme API being down must never affect tuning.**
+### Decisions
+
+1. **Content filter.** Drop any meme with `nsfw=true` or `spoiler=true`;
+   over-fetch (request 8, keep first 5 clean) so filtering can't starve the reel.
+   `slate.subreddits` (default empty = API default pool) lets the user pin the
+   pool to e.g. `wholesomememes` for stricter curation. `slate.localDir` remains
+   the fully-curated escape hatch. Residual risk: `nsfw` is Reddit's own
+   flagging — imperfect, accepted knowingly.
+2. **Quota discipline.** No documented rate limit and no key, but the same rules
+   stand: reel builds in the BACKGROUND on a cadence (1 request per rebuild,
+   4/day at defaults), never on the tune path. Any API failure ⇒ keep the
+   previous reel; none ever built ⇒ plain slate. **The meme API being down must
+   never affect tuning.** Use the `preview[]` mid-quality URL when present
+   (smaller download than full-res `url`); cap image downloads at 5MB each.
 
 ## Architecture
 
@@ -73,8 +78,9 @@ feed the moment it is ready.**
 ### 1. Reel builder — `src/slate/builder.ts`
 
 Background job (NOT under the big-job mutex — output is ~20s of 1–2 Mbps video,
-small). Steps: fetch 5 memes (skip `image/gif` v1 — static images only), download
-images (size-capped, content-type checked), compose with ffmpeg:
+small). Steps: one `/gimme/8` request, drop `nsfw`/`spoiler`/`.gif` entries, keep
+5 (fewer is fine — reel just gets shorter segments), download images (size-capped
+at 5MB, content-type checked, i.redd.it/preview hosts only), compose with ffmpeg:
 
 - each image scaled/padded to the family resolution, 4s per image
 - banner: semi-transparent bar + `drawtext` countdown from `slate.durationSec`
@@ -111,7 +117,7 @@ today the response stays open with zero bytes):
 | key | default | |
 | --- | --- | --- |
 | `features.slate` | `false` | master switch; ships off |
-| `slate.apiKey` | `""` | API League key; empty ⇒ local-folder/plain slate mode |
+| `slate.subreddits` | `[]` | pin the meme pool (e.g. `["wholesomememes"]`); empty = API default |
 | `slate.durationSec` | `20` | countdown length |
 | `slate.refreshHours` | `6` | reel rebuild cadence |
 | `slate.memesPerReel` | `5` | |
@@ -122,15 +128,15 @@ today the response stays open with zero bytes):
 | risk | answer |
 | --- | --- |
 | Roku/Emby glitches at splice (codec param change) | closed-GOP slate matched to family params; discontinuity flag; **Milestone 1 measures this on the real TV before anything ships** |
-| meme API down / 402 / slow | background-only fetch; stale reel or plain slate; never on tune path |
-| NSFW meme on the family TV | acknowledged, user's call; `SlateSource` swap + `slate.localDir` escape hatch |
+| meme API down / slow | background-only fetch; stale reel or plain slate; never on tune path |
+| NSFW meme on the family TV | `nsfw`/`spoiler` flags filtered; `slate.subreddits` pinning; `slate.localDir` escape hatch; residual risk = Reddit's own flagging accuracy |
 | countdown lies (live ready at 8s, or not at 20s) | early splice just cuts the reel; late = loopable "any second now…" tail |
 | reel encode fails (NVENC busy) | keep previous reel; builder retries next cadence; log once |
 | disk | reels are ~5–10MB total, on /data (sda1) |
 
 ## Out of scope (v1)
 
-- GIF/video memes (static images only)
+- GIF/video memes (static images only; `.gif` URLs are dropped at fetch)
 - Per-channel or per-genre meme theming
 - Slate for VOD or the mosaic
 - An accurate progress bar (the countdown is cosmetic by design)
