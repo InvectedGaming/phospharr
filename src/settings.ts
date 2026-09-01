@@ -85,6 +85,13 @@ export interface Settings {
   "content.hiddenMarkets": string[]; // local markets (cities) the admin chose to hide
   "content.dedupeLocals": boolean; // collapse duplicate local stations (same callsign)
   "alerts.webhookUrl": string; // POST target for self-healing alerts ({kind,message,at} JSON); empty = alerts disabled
+  "features.slate": boolean; // meme/countdown buffering reel on cold channel tunes
+  "slate.durationSec": number; // countdown length baked into the reel
+  "slate.tailSec": number; // loopable "any second now…" hold segment
+  "slate.refreshHours": number; // reel rebuild cadence
+  "slate.memesPerReel": number;
+  "slate.subreddits": string[]; // pin the meme pool (e.g. ["wholesomememes"]); empty = API default
+  "slate.localDir": string; // curated image folder; used when set or when the API fails
 }
 
 const DEFAULTS: Settings = {
@@ -135,6 +142,13 @@ const DEFAULTS: Settings = {
   "content.hiddenMarkets": [],
   "content.dedupeLocals": true, // collapse duplicate local stations by default
   "alerts.webhookUrl": "", // opt-in — no alerts fire until an operator sets this
+  "features.slate": false, // opt-in — ships disabled
+  "slate.durationSec": 20,
+  "slate.tailSec": 6,
+  "slate.refreshHours": 6,
+  "slate.memesPerReel": 5,
+  "slate.subreddits": [], // empty = API default
+  "slate.localDir": "",
 };
 
 // Env overrides (ops/Docker). Present env value wins over DB + default.
@@ -171,6 +185,8 @@ const ENV_MAP: Partial<Record<keyof Settings, string>> = {
   "content.hideNoStream": "PHOSPHARR_HIDE_NO_STREAM",
   "content.dedupeLocals": "PHOSPHARR_DEDUPE_LOCALS",
   "alerts.webhookUrl": "PHOSPHARR_ALERTS_WEBHOOK_URL",
+  "features.slate": "PHOSPHARR_SLATE",
+  "slate.refreshHours": "PHOSPHARR_SLATE_REFRESH_HOURS",
 };
 
 function coerce(key: keyof Settings, raw: string): boolean | number | string {
