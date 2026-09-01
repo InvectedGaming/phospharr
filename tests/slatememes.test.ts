@@ -47,11 +47,22 @@ describe("fetchMemes", () => {
 });
 
 describe("downloadImage", () => {
-  test("rejects non-image content-type and oversize bodies", async () => {
+  test("rejects non-image content-type", async () => {
     const html = (async () => new Response("<html>", { headers: { "content-type": "text/html" } })) as typeof fetch;
     expect(await downloadImage("https://i.redd.it/a.png", "/tmp/x1", 1000, html)).toBe(false);
+  });
+  test("rejects an oversize body streamed with no content-length header (the guard must count bytes as they arrive, not trust a declared length that isn't there)", async () => {
+    // Bun does not auto-populate Content-Length for a Response constructed
+    // from a raw body, so this exercises the running-byte-counter path, not
+    // the header short-circuit.
     const big = (async () => new Response(new Uint8Array(2048), { headers: { "content-type": "image/png" } })) as typeof fetch;
     expect(await downloadImage("https://i.redd.it/a.png", "/tmp/x2", 1000, big)).toBe(false);
+  });
+  test("rejects a declared oversize body via content-length before reading the stream", async () => {
+    const big = (async () => new Response(new Uint8Array(2048), {
+      headers: { "content-type": "image/png", "content-length": "5000" },
+    })) as typeof fetch;
+    expect(await downloadImage("https://i.redd.it/a.png", "/tmp/x3", 1000, big)).toBe(false);
   });
   test("writes a good image and returns true", async () => {
     const ok = (async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } })) as typeof fetch;

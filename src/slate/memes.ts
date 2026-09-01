@@ -41,8 +41,38 @@ export async function downloadImage(url: string, dest: string, maxBytes: number,
     const r = await f(url, { signal: AbortSignal.timeout(20_000) });
     if (!r.ok) return false;
     if (!(r.headers.get("content-type") ?? "").startsWith("image/")) return false;
-    const buf = new Uint8Array(await r.arrayBuffer());
-    if (buf.byteLength === 0 || buf.byteLength > maxBytes) return false;
+
+    // Reject early on a declared oversize body — cheapest possible guard, no
+    // network read needed. Not load-bearing on its own: a server can omit or
+    // lie about Content-Length, which is what the streamed counter below is for.
+    const declared = r.headers.get("content-length");
+    if (declared != null && Number(declared) > maxBytes) return false;
+
+    // Never buffer the whole body before checking size — that would let
+    // maxBytes bound only what's written to disk while the full (possibly
+    // huge) response sits in memory first, defeating the point of the guard
+    // for a background fetcher pulling from an untrusted source. Stream it
+    // and abort the moment the running count exceeds the cap.
+    if (!r.body) return false;
+    const reader = r.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return false;
+      }
+      chunks.push(value);
+    }
+    if (total === 0) return false;
+
+    const buf = new Uint8Array(total);
+    let offset = 0;
+    for (const c of chunks) { buf.set(c, offset); offset += c.byteLength; }
     await Bun.write(dest, buf);
     return true;
   } catch {

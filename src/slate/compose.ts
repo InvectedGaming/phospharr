@@ -47,12 +47,17 @@ export async function composeReel(o: ComposeOpts): Promise<{ bytes: number; tota
     : `[v0]null[vc]`;
   const fontsize = Math.max(16, Math.round(o.height / 15));
   const box = `box=1:boxcolor=black@0.55:boxborderw=${Math.round(fontsize / 2)}`;
-  // shadowcolor=black@0.0 is an invisible no-op — it exists only to make the
-  // option count preceding `text=` ODD. Verified in this image's ffmpeg
-  // (6.0.1-Jellyfin): drawtext's option parser mis-splits a `text` value that
-  // contains escaped colons (our %{eif\:...\:d} countdown expr) whenever an
-  // EVEN number of key=value options precede it, throwing the nonsensical
-  // "Both text and text file provided" error. Odd count avoids it entirely.
+  // shadowcolor=black@0.0 is an invisible no-op — it exists only to dodge a
+  // drawtext parser bug reproduced on two ffmpeg builds (6.0.1-Jellyfin and
+  // 6.1.1) with THIS exact filter string: a `text=` value holding our escaped
+  // countdown expr (%{eif\:...\:d}, three escaped colons, no comma) mis-parses
+  // as "Both text and text file provided" depending on the count of preceding
+  // key=value options in the SAME drawtext instance. Empirically, odd counts
+  // pass and even counts fail for this specific option list + text expression
+  // — that is NOT a general content-independent parity rule, just what was
+  // verified for what's built here. If the option list above or the text
+  // expression changes, re-verify against tests/slatecompose.test.ts before
+  // assuming this still holds.
   const common = `fontfile=${FONT}:fontcolor=white:fontsize=${fontsize}:x=(w-text_w)/2:y=h-text_h-${Math.round(o.height / 14)}:${box}:shadowcolor=black@0.0`;
   const banner =
     `[vc]drawtext=${common}:text=Adding a buffer... %{eif\\:max(0\\,${o.durationSec}-t)\\:d}s:enable='lt(t,${o.durationSec})',` +
@@ -68,9 +73,14 @@ export async function composeReel(o: ComposeOpts): Promise<{ bytes: number; tota
   );
 
   const proc = Bun.spawn(["ffmpeg", ...args], { stderr: "pipe" });
-  const timer = setTimeout(() => proc.kill(), 120_000);
+  // SIGTERM first; a wedged ffmpeg that ignores it would otherwise hang
+  // `await proc.exited` indefinitely past the 120s budget. Escalate to
+  // SIGKILL 5s later if it hasn't exited by then.
+  const termTimer = setTimeout(() => proc.kill(), 120_000);
+  const killTimer = setTimeout(() => proc.kill("SIGKILL"), 125_000);
   const code = await proc.exited;
-  clearTimeout(timer);
+  clearTimeout(termTimer);
+  clearTimeout(killTimer);
   if (code !== 0) {
     const err = await new Response(proc.stderr).text();
     throw new Error(`ffmpeg exited ${code}: ${err.slice(-400)}`);

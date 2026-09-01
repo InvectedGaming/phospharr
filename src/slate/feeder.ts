@@ -38,6 +38,7 @@ export class SlateFeeder {
   }
 
   start(): void {
+    if (this.timer !== null) return; // already running — a second call must not leak a second interval
     this.pos = 0;
     this.segmentStart = 0;
     this.epoch = Date.now();

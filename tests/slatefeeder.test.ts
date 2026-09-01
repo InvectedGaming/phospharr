@@ -40,4 +40,20 @@ describe("SlateFeeder", () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(n).toBe(at);
   });
+
+  test("start() twice does not leak a second interval (single-rate pacing, not double)", async () => {
+    const chunks: Uint8Array[] = [];
+    // Same shape as the real-time-pace test above: 100 packets over 1s,
+    // ticking every 50ms. If a second start() leaked a second interval, the
+    // push volume would roughly double and blow through the upper bound.
+    const f = new SlateFeeder({ data: reel(100), totalSec: 1, tailStartFrac: 0.5, tickMs: 50, push: (c) => chunks.push(c) });
+    f.start();
+    f.start(); // second call — must be a no-op while already running
+    await new Promise((r) => setTimeout(r, 320));
+    f.stop();
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    expect(total % 188).toBe(0);
+    expect(total).toBeGreaterThan(188 * 15); // ~30 expected; generous lower bound
+    expect(total).toBeLessThan(188 * 60);    // double-rate would blow past this
+  });
 });
