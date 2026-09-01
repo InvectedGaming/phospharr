@@ -3,6 +3,7 @@ import { refreshDownstreamGuides } from "./downstream.ts";
 import { convergeAll } from "../sync/converge.ts";
 import { getSetting } from "../settings.ts";
 import { registerLoop } from "../health/watchdog.ts";
+import { withBigJob } from "../scheduler/bigjob.ts";
 
 /**
  * Scheduled EPG auto-refresh. Honors `features.epgAutoRefresh` (on/off) and
@@ -26,7 +27,7 @@ async function runOnce(): Promise<void> {
     const urls = await providerEpgUrls();
     if (urls.length === 0) return;
     const t0 = Date.now();
-    const results = await syncEpgFromUrls(urls);
+    const results = await withBigJob("epg-refresh", () => syncEpgFromUrls(urls)); // big-transient job: never alongside lineup/VOD sync (see bigjob.ts)
     lastRunMs = Date.now();
     const bound = results.reduce((n, r) => n + r.programmesBound, 0);
     console.log(`[epg] auto-refresh: ${bound} programmes from ${urls.length} feed(s) in ${Date.now() - t0}ms`);

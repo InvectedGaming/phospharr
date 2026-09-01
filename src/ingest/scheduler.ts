@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { providers } from "../db/schema.ts";
 import { syncProvider } from "./sync.ts";
+import { withBigJob } from "../scheduler/bigjob.ts";
 import { syncVod } from "./vod.ts";
 import { rebuildVodLibrary } from "./vodlibrary.ts";
 import { refreshDownstreamGuides, scanDownstreamLibraries } from "../epg/downstream.ts";
@@ -41,7 +42,7 @@ async function runDue(): Promise<void> {
       if (last >= cutoff) continue; // still fresh
       try {
         const t0 = Date.now();
-        const r = await syncProvider(p.id);
+        const r = await withBigJob("lineup-sync", () => syncProvider(p.id)); // big-transient job: never alongside EPG/VOD (see bigjob.ts)
         synced++;
         console.log(`[sync] ${p.name}: ${r.channelsTouched} channels / ${r.streamsUpserted} streams from ${r.entries} entries in ${Date.now() - t0}ms`);
       } catch (e) {
@@ -113,7 +114,7 @@ async function runVodDue(): Promise<void> {
   try {
     const provs = await db.select().from(providers).where(and(eq(providers.enabled, true), eq(providers.type, "xtream")));
     for (const p of provs) {
-      try { await syncVod(p.id); } catch (e) { console.error(`[vod] catalog sync ${p.name} failed:`, e instanceof Error ? e.message : e); }
+      try { await withBigJob("vod-sync", () => syncVod(p.id)); } catch (e) { console.error(`[vod] catalog sync ${p.name} failed:`, e instanceof Error ? e.message : e); }
     }
     if (await getSetting("features.vodLibrary")) {
       const lib = await rebuildVodLibrary();
