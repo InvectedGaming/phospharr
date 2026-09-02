@@ -190,9 +190,11 @@ app.get("/share/:token/stream", async (c) => {
   c.req.raw.signal.addEventListener("abort", () => ac.abort(), { once: true });
   ac.signal.addEventListener("abort", () => { unregisterStream(s.id, ac); releaseSlot(s.id); }, { once: true });
   const transcode = c.req.query("mode") === "transcode";
+  // slate: true — a share link is a real remote viewer's own tune, same as
+  // /stream, just token-authed instead of session/key-authed.
   const body = transcode
     ? await transcoder.open(s.channelId, ac.signal)
-    : await muxer.open(s.channelId, ac.signal);
+    : await muxer.open(s.channelId, ac.signal, { slate: true });
   if (!body) { ac.abort(); return c.text("no playable source / tuners busy", 503); }
   touchShare(s.id);
   return new Response(body, {
@@ -398,7 +400,12 @@ async function serveStream(c: Context<Env>, channelId: number, transcode: boolea
     if (!channelVisible({ id: channelId, category: ch.category ?? null }, user.restrictions)) return c.text("forbidden", 403);
   }
   if (transcode && !(await getSetting("features.transcode"))) return c.text("transcode disabled", 503);
-  const body = transcode ? await transcoder.open(channelId, c.req.raw.signal) : await muxer.open(channelId, c.req.raw.signal);
+  // slate: true — this is the shared handler behind /stream, /watch, and the
+  // HDHR tuner's /t/:key/stream: every one of them is a real TV/browser tune.
+  // The transcode branch is excluded on purpose (it opens its own internal
+  // muxer feed in transcode.ts, which must stay slate-free — see muxer.open's
+  // doc comment).
+  const body = transcode ? await transcoder.open(channelId, c.req.raw.signal) : await muxer.open(channelId, c.req.raw.signal, { slate: true });
   if (!body) return c.text(transcode ? "transcoder unavailable or no playable source" : "all tuners busy or no playable source", 503);
   trackSession(c, channelId, transcode ? "transcode" : "passthrough", user?.id);
   // Real watches (not tile previews) prime the surf ring around this channel.
