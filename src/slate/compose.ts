@@ -68,7 +68,18 @@ export async function composeReel(o: ComposeOpts): Promise<{ bytes: number; tota
     "-map", "[vout]", "-map", `${inputs}:a`,
     "-c:v", enc, ...(enc === "h264_nvenc" ? ["-preset", "p4"] : ["-preset", "veryfast"]),
     "-g", String(o.fps), "-bf", "0", // 1s closed GOP, no B-frames: splice-friendly
+    // Pin the video to a fixed rate rather than letting VBR pick per-scene
+    // bitrate. Without this, bytes only APPROXIMATE time, so a byte offset
+    // computed from a time fraction (see slate/builder.ts's tail-scan) lands
+    // at the wrong wall-clock position — sometimes badly wrong on flat
+    // (low-motion) source images that VBR would otherwise starve. CBR-ish
+    // output makes bytes≈time honest for that computation, and -muxrate
+    // below pads the container to a constant rate so PACING (SlateFeeder's
+    // own real-time playout) stays correct too — that padding is the point,
+    // not a side effect to work around.
+    "-b:v", "2500k", "-maxrate", "2500k", "-bufsize", "2500k",
     "-c:a", "aac", "-b:a", "96k",
+    "-muxrate", "3500k",
     "-t", String(totalSec), "-f", "mpegts", o.out,
   );
 

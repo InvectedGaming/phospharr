@@ -3,7 +3,12 @@ const PACKET = 188; // MPEG-TS packet size
 export interface SlateFeederOpts {
   data: Uint8Array;       // the composed reel (raw TS bytes)
   totalSec: number;       // reel duration — sets the real-time pace
-  tailStartFrac: number;  // loop point as a fraction of data.length
+  // Loop point as a 188-aligned byte offset (NOT a time fraction — VBR made a
+  // time-fraction-as-byte-fraction wrong in practice, non-IDR-aligned and off
+  // by a variable amount). builder.ts scans the composed reel for the first
+  // keyframe at/after the countdown's own aligned time offset and records
+  // that byte position; see builder.ts's findTailStartByte.
+  tailStartByte: number;
   tickMs?: number;        // pacing tick interval; default 100ms
   push: (c: Uint8Array) => void; // sink for each paced, packet-aligned chunk
 }
@@ -31,7 +36,11 @@ export class SlateFeeder {
 
   constructor(o: SlateFeederOpts) {
     this.data = o.data;
-    this.tailStart = Math.floor((o.data.length * o.tailStartFrac) / PACKET) * PACKET;
+    // Already 188-aligned by construction (builder.ts's scan snaps to packet
+    // boundaries) — align down and clamp into bounds defensively anyway
+    // rather than trust a manifest that could in principle be stale/corrupt.
+    const dataEnd = o.data.length - (o.data.length % PACKET);
+    this.tailStart = Math.min(dataEnd, Math.max(0, Math.floor(o.tailStartByte / PACKET) * PACKET));
     this.tickMs = o.tickMs ?? 100;
     this.push = o.push;
     this.bytesPerSec = o.totalSec > 0 ? o.data.length / o.totalSec : o.data.length;

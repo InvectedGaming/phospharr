@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, mock } from "bun:test";
 import { buildReelOnce } from "../src/slate/builder.ts";
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setSetting, deleteSetting } from "../src/settings.ts";
 
 const okCompose = async (o: { out: string; durationSec: number; tailSec: number }) => {
   writeFileSync(o.out, new Uint8Array(1000).fill(0x47));
@@ -21,7 +22,11 @@ describe("buildReelOnce", () => {
     expect(r.source).toBe("memes");
     const man = JSON.parse(await Bun.file(join(dir, "manifest.json")).text());
     expect(Object.keys(man.families).sort()).toEqual(["1080p25", "720p30"]);
-    expect(man.families["720p30"].tailStartFrac).toBeCloseTo(20 / 26, 2);
+    // okCompose's fake output is 0x47-filled but carries no real PAT/PMT/video
+    // PIDs, so the scanner never finds a keyframe and falls back to the
+    // aligned time-fraction byte offset — still 188-aligned and non-zero.
+    expect(man.families["720p30"].tailStartByte % 188).toBe(0);
+    expect(man.families["720p30"].tailStartByte).toBeGreaterThan(0);
     expect(existsSync(join(dir, "720p30.ts"))).toBe(true);
   });
 
@@ -64,5 +69,25 @@ describe("buildReelOnce", () => {
     })).rejects.toThrow();
     expect(JSON.parse(await Bun.file(join(dir, "manifest.json")).text()).builtAt).toBe(1);
     expect(await Bun.file(join(dir, "1080p25.ts")).text()).toBe("SENTINEL");
+  });
+
+  test("localDir set with images: used outright, meme fetch skipped entirely (spec: curated escape hatch)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "slateb-"));
+    const localDir = mkdtempSync(join(tmpdir(), "slatelocal-"));
+    writeFileSync(join(localDir, "a.png"), new Uint8Array([1]));
+    const fetchMemes = mock(async () => [{ url: "https://i.redd.it/a.png", nsfw: false, spoiler: false, title: "", subreddit: "" }]);
+    await setSetting("slate.localDir", localDir);
+    try {
+      const r = await buildReelOnce({
+        dir,
+        fetchMemes,
+        downloadImage: async (_u, dest) => { writeFileSync(dest, new Uint8Array([1])); return true; },
+        compose: okCompose as never,
+      });
+      expect(r.source).toBe("localDir");
+      expect(fetchMemes).not.toHaveBeenCalled();
+    } finally {
+      await deleteSetting("slate.localDir"); // restore the default ("") for other suites sharing this test DB
+    }
   });
 });

@@ -11,7 +11,7 @@ describe("SlateFeeder", () => {
   test("pushes packet-aligned chunks at a real-time pace", async () => {
     const chunks: Uint8Array[] = [];
     // 100 packets over 1s, ticking every 50ms → ~5 packets per tick.
-    const f = new SlateFeeder({ data: reel(100), totalSec: 1, tailStartFrac: 0.5, tickMs: 50, push: (c) => chunks.push(c) });
+    const f = new SlateFeeder({ data: reel(100), totalSec: 1, tailStartByte: 50 * 188, tickMs: 50, push: (c) => chunks.push(c) });
     f.start();
     await new Promise((r) => setTimeout(r, 320));
     f.stop();
@@ -22,9 +22,9 @@ describe("SlateFeeder", () => {
     for (const c of chunks) expect(c[0]).toBe(0x47);
   });
 
-  test("loops from the tail fraction instead of stopping", async () => {
+  test("loops from the tail byte offset instead of stopping", async () => {
     const chunks: Uint8Array[] = [];
-    const f = new SlateFeeder({ data: reel(10), totalSec: 0.1, tailStartFrac: 0.5, tickMs: 20, push: (c) => chunks.push(c) });
+    const f = new SlateFeeder({ data: reel(10), totalSec: 0.1, tailStartByte: 5 * 188, tickMs: 20, push: (c) => chunks.push(c) });
     f.start();
     await new Promise((r) => setTimeout(r, 300));
     f.stop();
@@ -34,7 +34,7 @@ describe("SlateFeeder", () => {
 
   test("stop() stops; push after stop never happens", async () => {
     let n = 0;
-    const f = new SlateFeeder({ data: reel(100), totalSec: 1, tailStartFrac: 0.5, tickMs: 20, push: () => n++ });
+    const f = new SlateFeeder({ data: reel(100), totalSec: 1, tailStartByte: 50 * 188, tickMs: 20, push: () => n++ });
     f.start(); await new Promise((r) => setTimeout(r, 60)); f.stop();
     const at = n;
     await new Promise((r) => setTimeout(r, 80));
@@ -46,7 +46,7 @@ describe("SlateFeeder", () => {
     // Same shape as the real-time-pace test above: 100 packets over 1s,
     // ticking every 50ms. If a second start() leaked a second interval, the
     // push volume would roughly double and blow through the upper bound.
-    const f = new SlateFeeder({ data: reel(100), totalSec: 1, tailStartFrac: 0.5, tickMs: 50, push: (c) => chunks.push(c) });
+    const f = new SlateFeeder({ data: reel(100), totalSec: 1, tailStartByte: 50 * 188, tickMs: 50, push: (c) => chunks.push(c) });
     f.start();
     f.start(); // second call — must be a no-op while already running
     await new Promise((r) => setTimeout(r, 320));

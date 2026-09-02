@@ -41,7 +41,7 @@ describe("loadReel", () => {
   test("backing file missing entirely: returns null", async () => {
     const dir = newDir();
     await saveManifest(
-      { builtAt: Date.now(), families: { "720p30": { file: "720p30.ts", bytes: 10, totalSec: 26, tailStartFrac: 0.77 } } },
+      { builtAt: Date.now(), families: { "720p30": { file: "720p30.ts", bytes: 10, totalSec: 26, tailStartByte: 188 } } },
       dir,
     );
     expect(await loadReel("720p30", dir)).toBeNull();
@@ -51,7 +51,7 @@ describe("loadReel", () => {
     const dir = newDir();
     writeFileSync(join(dir, "720p30.ts"), new Uint8Array(10).fill(0x47));
     await saveManifest(
-      { builtAt: Date.now(), families: { "720p30": { file: "720p30.ts", bytes: 999, totalSec: 26, tailStartFrac: 0.77 } } },
+      { builtAt: Date.now(), families: { "720p30": { file: "720p30.ts", bytes: 999, totalSec: 26, tailStartByte: 188 } } },
       dir,
     );
     expect(await loadReel("720p30", dir)).toBeNull();
@@ -61,7 +61,7 @@ describe("loadReel", () => {
     const dir = newDir();
     writeFileSync(join(dir, "720p30.ts"), new Uint8Array(0));
     await saveManifest(
-      { builtAt: Date.now(), families: { "720p30": { file: "720p30.ts", bytes: 0, totalSec: 26, tailStartFrac: 0.77 } } },
+      { builtAt: Date.now(), families: { "720p30": { file: "720p30.ts", bytes: 0, totalSec: 26, tailStartByte: 188 } } },
       dir,
     );
     expect(await loadReel("720p30", dir)).toBeNull();
@@ -77,7 +77,7 @@ describe("loadReel", () => {
     const dir = newDir();
     writeFileSync(join(dir, "720p30.ts"), new Uint8Array(10).fill(0x47));
     await saveManifest(
-      { builtAt: Date.now(), families: { "720p30": { file: "720p30.ts", bytes: 10, totalSec: 26, tailStartFrac: 0.77 } } },
+      { builtAt: Date.now(), families: { "720p30": { file: "720p30.ts", bytes: 10, totalSec: 26, tailStartByte: 188 } } },
       dir,
     );
     const r = await loadReel("720p30", dir);

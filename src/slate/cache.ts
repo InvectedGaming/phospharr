@@ -1,7 +1,11 @@
 import { mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
-/** Where the built reel cache lives in the running container. */
+/** Where the built reel cache lives in the running container.
+ *
+ * NOT related to proxy/tilefeed.ts's `slateFor`/`tile.slate` — that is an
+ * unrelated per-mosaic-tile placeholder card. Same word, two independent
+ * features; don't conflate them. */
 export const SLATE_DIR = "/data/slate";
 
 export interface ReelFamily { key: string; width: number; height: number; fps: number }
@@ -23,7 +27,7 @@ export function familyFor(resolution: number | null): string {
 
 export interface ReelManifest {
   builtAt: number;
-  families: Record<string, { file: string; bytes: number; totalSec: number; tailStartFrac: number }>;
+  families: Record<string, { file: string; bytes: number; totalSec: number; tailStartByte: number }>;
 }
 
 function manifestPath(dir: string): string {
@@ -67,7 +71,7 @@ export async function saveManifest(man: ReelManifest, dir: string = SLATE_DIR): 
 export async function loadReel(
   family: string,
   dir: string = SLATE_DIR,
-): Promise<{ data: Uint8Array; totalSec: number; tailStartFrac: number } | null> {
+): Promise<{ data: Uint8Array; totalSec: number; tailStartByte: number } | null> {
   try {
     const man = await readManifest(dir);
     if (!man) return null;
@@ -82,7 +86,7 @@ export async function loadReel(
     // truncated, replaced, or otherwise doesn't match what the manifest
     // describes, and must not be served as if it does.
     if (data.length !== entry.bytes) return null;
-    return { data, totalSec: entry.totalSec, tailStartFrac: entry.tailStartFrac };
+    return { data, totalSec: entry.totalSec, tailStartByte: entry.tailStartByte };
   } catch {
     return null;
   }

@@ -1,13 +1,12 @@
 export interface SlateGateInput {
   enabled: boolean;
   codec: string | null;
-  reel: boolean;
   preroll: Uint8Array | null;
 }
 
 /**
  * Decides whether a cold channel attach should show the buffering reel instead
- * of a silent open socket. Four independent conditions, all required:
+ * of a silent open socket. Three independent conditions, all required:
  *
  * - `enabled`: the operator opted in (ships off — see settings.ts).
  * - `codec === "h264"`: the splice hands viewers raw reel bytes and then raw
@@ -20,12 +19,15 @@ export interface SlateGateInput {
  * - `codec != null`: an unprobed stream is neither known-h264 nor known-safe
  *   to exclude — treat the unknown as the risk it is and decline rather than
  *   guess.
- * - `reel`: a reel must actually be cached (loadReel succeeded) — nothing to
- *   splice otherwise.
  * - `preroll === null`: a warm channel already has TsPreroll's instant-start
  *   GOP replay; the reel is only for the cold case where that buffer is
  *   still empty.
+ *
+ * Whether a reel is actually CACHED is deliberately not a gate input here —
+ * the caller (muxer.ts's maybeStartSlate) finds that out from loadReel()
+ * returning null, which is the real and only check; a separate boolean here
+ * would just be a second, redundant place for that fact to go stale.
  */
 export function slateEligible(o: SlateGateInput): boolean {
-  return o.enabled && o.codec === "h264" && o.reel && o.preroll === null;
+  return o.enabled && o.codec === "h264" && o.preroll === null;
 }

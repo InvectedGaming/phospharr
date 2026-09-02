@@ -4,6 +4,7 @@ import { getSetting } from "../settings.ts";
 import { composeReel, type ComposeOpts } from "./compose.ts";
 import { downloadImage, fetchMemes, pickClean, type Meme } from "./memes.ts";
 import { FAMILIES, readManifest, saveManifest, SLATE_DIR, type ReelManifest } from "./cache.ts";
+import { SYNC, PKT, isKeyframe, patPmtPid, pmtVideoPids } from "../proxy/ts.ts";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB cap — same convention as memes.ts's downloadImage
 const IMAGE_EXT = /\.(png|jpe?g)$/i;
@@ -41,11 +42,16 @@ async function composeWithFallback(
 }
 
 /**
- * Gather source images for the reel: memes API → curated `slate.localDir` →
- * none (compose() draws a plain color-background slate). Downloaded meme
- * images land in a temp subdir of `dir`, which the caller removes once every
- * family has been composed from them — localDir images are the admin's own
- * files and are used in place, never deleted.
+ * Gather source images for the reel: curated `slate.localDir` → memes API →
+ * none (compose() draws a plain color-background slate). `slate.localDir` is
+ * the escape hatch (spec: "used when set or when the API fails") — an
+ * operator who pointed it at a folder did so specifically to keep Reddit off
+ * the family TV, so a non-empty, non-image-empty localDir wins outright and
+ * the meme fetch is skipped entirely, not just preferred. The API path only
+ * runs when localDir is unset, empty, or contains no usable images.
+ * Downloaded meme images land in a temp subdir of `dir`, which the caller
+ * removes once every family has been composed from them — localDir images
+ * are the admin's own files and are used in place, never deleted.
  */
 async function gatherImages(
   deps: BuildDeps,
@@ -53,6 +59,17 @@ async function gatherImages(
   subreddits: string[],
   localDir: string,
 ): Promise<{ source: BuildSource; images: string[]; tmpDir: string | null }> {
+  if (localDir) {
+    let names: string[] = [];
+    try { names = readdirSync(localDir); } catch { names = []; }
+    const images = names
+      .filter((n) => IMAGE_EXT.test(n))
+      .sort()
+      .slice(0, want)
+      .map((n) => join(localDir, n));
+    if (images.length > 0) return { source: "localDir", images, tmpDir: null };
+  }
+
   const fetched = await deps.fetchMemes(want + 3, subreddits).catch(() => [] as Meme[]);
   const clean = pickClean(fetched, want);
   if (clean.length > 0) {
@@ -67,18 +84,43 @@ async function gatherImages(
     rmSync(tmpDir, { recursive: true, force: true }); // nothing landed — don't leak the empty temp dir
   }
 
-  if (localDir) {
-    let names: string[] = [];
-    try { names = readdirSync(localDir); } catch { names = []; }
-    const images = names
-      .filter((n) => IMAGE_EXT.test(n))
-      .sort()
-      .slice(0, want)
-      .map((n) => join(localDir, n));
-    if (images.length > 0) return { source: "localDir", images, tmpDir: null };
-  }
-
   return { source: "plain", images: [], tmpDir: null };
+}
+
+/**
+ * Scan a freshly composed reel for the byte offset to loop from: the aligned
+ * time-fraction position (durationSec/totalSec of the file, 188-aligned),
+ * advanced forward to the first packet at or after that point where
+ * isKeyframe() reports a decodable start. Landing exactly on a keyframe is
+ * what makes the loop restart clean instead of mid-GOP/mid-countdown — the
+ * bug this replaces: the old tailStartFrac was a TIME fraction consumed as a
+ * BYTE fraction over VBR output, so it wasn't even byte-accurate over the
+ * uneven bitrate, let alone keyframe-aligned.
+ *
+ * A single forward pass tracks PAT/PMT (needed to know which PID carries
+ * video and to read the random_access_indicator on it — same primitives
+ * TsPreroll uses live) so it can resolve keyframes anywhere in the file, not
+ * just after the first PAT/PMT repeat following the search start.
+ */
+function findTailStartByte(data: Uint8Array, durationSec: number, totalSec: number): number {
+  const end = data.length - (data.length % PKT);
+  const approx = totalSec > 0 ? Math.floor((end * durationSec) / totalSec / PKT) * PKT : 0;
+  let pmtPid = -1;
+  const videoPids = new Set<number>();
+  for (let off = 0; off < end; off += PKT) {
+    const p = data.subarray(off, off + PKT);
+    if (p[0] !== SYNC) continue; // defensive; our own compose output is always packet-aligned
+    const pid = ((p[1]! & 0x1f) << 8) | p[2]!;
+    if (pid === 0) { const m = patPmtPid(p); if (m >= 0) pmtPid = m; }
+    else if (pid === pmtPid) pmtVideoPids(p, videoPids);
+    if (off >= approx && isKeyframe(p, pid, videoPids)) return off;
+  }
+  // No keyframe found at/after the aligned fraction offset before EOF —
+  // shouldn't happen for our own 1s-closed-GOP encode, but ffmpeg output
+  // isn't a guarantee. Fall back to the aligned fraction itself: still
+  // 188-aligned, just not keyframe-guaranteed. SlateFeeder aligns/clamps it
+  // again defensively regardless.
+  return approx;
 }
 
 /**
@@ -100,13 +142,20 @@ async function gatherImages(
 export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSource }> {
   mkdirSync(deps.dir, { recursive: true });
 
-  const [durationSec, tailSec, memesPerReel, subreddits, localDir] = await Promise.all([
+  const [rawDurationSec, rawTailSec, rawMemesPerReel, subreddits, localDir] = await Promise.all([
     getSetting("slate.durationSec"),
     getSetting("slate.tailSec"),
     getSetting("slate.memesPerReel"),
     getSetting("slate.subreddits"),
     getSetting("slate.localDir"),
   ]);
+  // Clamp against pathological settings-UI input (0, negative, absurdly
+  // large) that would otherwise reach ffmpeg/gatherImages and produce a
+  // broken or unwatchable reel instead of a validation error the operator
+  // could act on.
+  const durationSec = Math.max(5, rawDurationSec); // below ~5s the countdown reads as a glitch, not a buffer
+  const tailSec = Math.max(2, rawTailSec); // the loop-point hold segment needs at least a beat, or the loop feels like a stutter
+  const memesPerReel = Math.min(12, Math.max(1, rawMemesPerReel)); // 0 collapses gatherImages into an unintended plain slate; >12 makes each image's on-screen segment sub-second and the countdown unreadable
 
   const { source, images, tmpDir } = await gatherImages(deps, memesPerReel, subreddits, localDir);
 
@@ -119,12 +168,16 @@ export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSou
       const { bytes, totalSec } = await composeWithFallback(deps.compose, {
         images, out: tmpPath, width: fam.width, height: fam.height, fps: fam.fps, durationSec, tailSec,
       });
+      // Read back the just-composed tmp file to scan for the keyframe-aligned
+      // loop point — see findTailStartByte's doc comment.
+      const composed = new Uint8Array(await Bun.file(tmpPath).arrayBuffer());
+      const tailStartByte = findTailStartByte(composed, durationSec, totalSec);
       placements.push({ finalPath, tmpPath });
       families[fam.key] = {
         file: `${fam.key}.ts`,
         bytes,
         totalSec,
-        tailStartFrac: totalSec > 0 ? durationSec / totalSec : 0,
+        tailStartByte,
       };
     }
 
@@ -140,84 +193,59 @@ export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSou
 
 // --- Scheduler -------------------------------------------------------------
 //
-// Arm/tick pattern mirrored from the live-priority-band branch's
-// src/content/priorityscheduler.ts (not yet merged to main as of this
-// writing): a single setTimeout re-armed from tick()'s `finally`, cadence and
-// the feature flag both re-read from settings every tick so the UI can
-// change them live, and NO unconditional heavy boot work — that pattern (an
-// unconditional pull seconds after every boot) caused an autoheal restart
-// loop against /healthz on 2026-09-01. The one addition here is a small
-// delayed build shortly after boot, but ONLY when no manifest exists yet, so
-// a fresh install doesn't sit with an empty slate cache until the first full
-// cadence period elapses.
+// Poll pattern, not a single boot-anchored setTimeout: this host restarts
+// often (container updates, autoheal, manual bounces), and a "one 6h
+// setTimeout from boot, re-armed after each build" scheduler effectively
+// never fires on a host that restarts more often than the cadence — every
+// restart resets the clock back to the full interval. A setInterval-style
+// tick instead runs every TICK_MS and decides FOR ITSELF whether a build is
+// due (feature on, and either no manifest yet or the current one has aged
+// past slate.refreshHours) — a restart costs at most one missed tick, not
+// the whole cadence, and there is no separate boot-build special case: the
+// first tick after `features.slate` goes from off to on (or after a fresh
+// install with no manifest) covers it within one poll period.
 //
 // The build itself deliberately does NOT go through withBigJob (src/scheduler/
 // bigjob.ts): it's seconds of ffmpeg work producing a couple of small TS
 // files, nothing like the tens-to-hundreds of MB EPG/VOD/lineup transients
 // that mutex exists to keep from stacking.
 
-const BOOT_DELAY_MS = 60_000;
+const TICK_MS = 10 * 60_000; // poll cadence — independent of slate.refreshHours, which only gates staleness
 
-let timer: ReturnType<typeof setTimeout> | null = null;
+let timer: ReturnType<typeof setInterval> | null = null;
 
-// Mirrors the `running` guard in src/epg/scheduler.ts: the boot-delay build
-// and the cadence tick's build are two independent setTimeout chains with no
-// other coordination between them, so without this a slow build (or a future
-// manual "rebuild now" action) could overlap a second one. The check-and-set
-// runs before this function's first `await`, so two synchronous callers can
-// never both pass it — JS won't interleave them until a suspension point.
+// Prevents two ticks from overlapping if a build runs long (or a future
+// manual "rebuild now" action lands mid-tick). The check-and-set runs before
+// this function's first `await`, so two synchronous callers can never both
+// pass it — JS won't interleave them until a suspension point.
 let building = false;
 
-async function runBuildIfEnabled(): Promise<void> {
+async function tick(): Promise<void> {
   if (building) return; // a build is already in flight — never overlap
   building = true;
   try {
     if (!(await getSetting("features.slate"))) return;
+    const man = await readManifest(SLATE_DIR);
+    const hours = Math.max(1, Number(await getSetting("slate.refreshHours")) || 6);
+    if (man && Date.now() - man.builtAt <= hours * 3600_000) return; // still fresh — nothing to do this tick
     await buildReelOnce({ dir: SLATE_DIR, fetchMemes, downloadImage, compose: composeReel });
+  } catch (e) {
+    console.error("[slate] builder tick error:", e instanceof Error ? e.message : e);
   } finally {
     building = false;
   }
 }
 
-async function tick(): Promise<void> {
-  try {
-    await runBuildIfEnabled();
-  } catch (e) {
-    console.error("[slate] builder tick error:", e instanceof Error ? e.message : e);
-  } finally {
-    arm();
-  }
-}
-
-async function arm(): Promise<void> {
-  const hours = Math.max(1, Number(await getSetting("slate.refreshHours")) || 6);
-  if (timer) clearTimeout(timer);
-  timer = setTimeout(tick, hours * 3600_000);
-  if (typeof timer.unref === "function") timer.unref();
-}
-
-// `started` (not `timer`) is what makes startSlateBuilder idempotent. `arm()`
-// is async and only assigns `timer` after awaiting getSetting(), so two
-// back-to-back synchronous calls would both see `timer === null` and both
-// arm a timer + schedule a boot build. `started` is set synchronously, before
-// any await, closing that window the same way `building` does above.
+// `started` is what makes startSlateBuilder idempotent — set synchronously,
+// before any await, so two back-to-back synchronous calls can't both pass it
+// and each arm their own interval.
 let started = false;
 
 /** Start the scheduler. Safe to call more than once — a second call is a no-op. */
 export function startSlateBuilder(): void {
   if (started) return; // already started
   started = true;
-  void arm();
-
-  const boot = setTimeout(async () => {
-    try {
-      if (!(await getSetting("features.slate"))) return;
-      if (await readManifest(SLATE_DIR)) return; // cache already warm — the regular cadence covers refreshes
-      await runBuildIfEnabled();
-    } catch (e) {
-      console.error("[slate] initial build failed:", e instanceof Error ? e.message : e);
-      // tick()'s own cadence will retry regardless of this failing.
-    }
-  }, BOOT_DELAY_MS);
-  if (typeof boot.unref === "function") boot.unref();
+  console.log(`[slate] builder polling every ${Math.round(TICK_MS / 60_000)}min — a freshly-enabled flag (or fresh install) produces a reel within one tick, not immediately`);
+  timer = setInterval(() => { void tick(); }, TICK_MS);
+  if (typeof timer.unref === "function") timer.unref();
 }
