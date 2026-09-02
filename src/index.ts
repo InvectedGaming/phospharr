@@ -9,6 +9,7 @@ import { startWatchdog } from "./health/watchdog.ts";
 import { reconcileTunnels } from "./net/tunnel.ts";
 import { startFavoritesLoop } from "./sync/favorites.ts";
 import { startReconciler } from "./sync/reconciler.ts";
+import { startSlateBuilder } from "./slate/builder.ts";
 
 const port = Number(process.env.PORT ?? 7777);
 
@@ -52,6 +53,7 @@ startHealthProbe(); // background stream probes per features.healthProbe
 startFavoritesLoop(); // periodic Emby/Jellyfin favorites read-back, weights the prewarm ring
 startReconciler(); // 5-min self-healing check: Emby reachable/tuner present/converged + VOD mirror writable, repairs + alerts
 startWatchdog(); // restarts a stale scheduler/probe loop, exits for container restart after repeated failures
+startSlateBuilder(); // periodic meme reel builds per features.slate / slate.refreshHours — inert while features.slate is off
 {
   const { startBlackholeWatcher } = await import("./ingest/blackhole.ts");
   startBlackholeWatcher(); // Torznab grab handoff (gated per-tick on vod.indexer.enabled)

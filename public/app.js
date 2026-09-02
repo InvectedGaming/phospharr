@@ -1893,6 +1893,29 @@ function settingRow(o) {
     control);
 }
 
+// `slate.subreddits` is stored as a string[] (see settings.ts), so it can't go
+// through settingRow's generic text handling (that reads/writes a plain
+// scalar). Same row layout/styling as settingRow, but the input shows the
+// list joined with ", " and saves it split on comma, trimmed, empties dropped.
+function slateSubredditsRow() {
+  const s = state.settings;
+  const locked = state.envLocked.includes("slate.subreddits");
+  const control = h("input", {
+    type: "text",
+    value: (s["slate.subreddits"] || []).join(", "),
+    disabled: locked,
+    onBlur: (e) => saveSetting("slate.subreddits", e.target.value.split(",").map((x) => x.trim()).filter(Boolean)),
+    style: { width: "300px", height: "34px", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", padding: "0 11px", color: "#e6e9ec", fontSize: "13px", fontFamily: "inherit", outline: "none", opacity: locked ? 0.5 : 1 },
+  });
+  return h("div", { style: "display:flex;align-items:center;gap:16px;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.045)" },
+    h("div", { style: "flex:1;min-width:0" },
+      h("div", { style: "display:flex;align-items:center;gap:8px" },
+        h("span", { style: "font-size:14px;font-weight:600;color:#e6e9ec" }, "Subreddits"),
+        locked ? h("span", { style: "font-size:9px;font-weight:600;letter-spacing:.1em;color:#f4b740;border:1px solid rgba(244,183,64,0.4);border-radius:5px;padding:2px 5px" }, "ENV") : null),
+      h("div", { style: "font-size:12.5px;color:#7e858c;margin-top:3px" }, "Comma-separated subreddits to curate the meme pool (e.g. wholesomememes) — leave blank to use the API's default mix.")),
+    control);
+}
+
 function settingsSection(title, ...rows) {
   return h("div", { style: "margin-bottom:22px;border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.015)" },
     h("div", { style: "padding:12px 16px;font-size:11px;font-weight:600;letter-spacing:.12em;color:#7e858c;border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02)" }, title),
@@ -2123,6 +2146,13 @@ function settingsScreen() {
           settingRow({ title: "Behind a reverse proxy", desc: "Resolve the real client IP from X-Forwarded-For. Enable if Phospharr runs behind nginx / Traefik / Caddy. Note: with plain Docker port-publishing every client looks local, so the key remains your real lock.", key: "access.trustProxy", type: "toggle" })),
         settingsSection("STREAMING",
           settingRow({ title: "Keep stream warm", desc: "Hold a channel's upstream this long after the last viewer leaves, so re-tuning is instant. Higher values keep a tuner slot in use longer.", key: "stream.keepWarmSeconds", type: "number", suffix: "sec" })),
+        settingsSection("BUFFERING SLATE",
+          settingRow({ title: "Buffering slate", desc: "Show a countdown/meme reel while a channel's real stream is still dialing in, instead of a black screen. Only kicks in for direct viewer streams (TV/browser), never transcoded sessions. phospharr's own DVR recordings are unaffected, but recordings Emby itself schedules through the tuner may include the reel at the start. Memes come from meme-api.com (Reddit); NSFW-flagged posts are filtered out.", key: "features.slate", type: "toggle" }),
+          settingRow({ title: "Countdown length", desc: "How long the slate holds before handing off to the real stream.", key: "slate.durationSec", type: "number", suffix: "sec" }),
+          settingRow({ title: "Reel refresh interval", desc: "How often a fresh batch of memes gets built into a new reel.", key: "slate.refreshHours", type: "number", suffix: "hours" }),
+          settingRow({ title: "Memes per reel", desc: "How many images get stitched into each reel.", key: "slate.memesPerReel", type: "number" }),
+          settingRow({ title: "Local image folder", desc: "Optional folder of your own images, used instead of — or as a fallback to — the meme API.", key: "slate.localDir", type: "text" }),
+          slateSubredditsRow()),
         settingsSection("VPN TUNNELS", vpnsRow()),
         settingsSection("VPN ENDPOINTS (external proxies)", vpnEndpointsRow()),
         settingsSection("GUIDE",
