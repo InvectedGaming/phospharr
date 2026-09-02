@@ -144,3 +144,43 @@ describe("ChannelMux slate hold/splice/abandon (fanout)", () => {
     expect((mux as unknown as { slate: unknown }).slate).toBeNull();
   });
 });
+
+/**
+ * C1 (final-review fix): the mux is shared by every consumer of a channel —
+ * a real viewer's TV/browser tune, but ALSO a DVR recorder (lossless — a
+ * reel byte would be baked permanently into the saved file), a transcoder
+ * that already mapped the reel's program at probe (and would stall on the
+ * splice), and internal plumbing like mosaic/timeshift. Those routes attach
+ * with `allowSlate=false` (see muxer.open's `opts.slate`). Before this fix,
+ * `allowSlate` only gated who could START the reel — once started, fanout's
+ * push loop and the hold both hit every attached subscriber unconditionally,
+ * so an opted-out consumer sharing the mux with a slate-triggering viewer
+ * still received reel bytes / had live withheld from it.
+ */
+describe("ChannelMux slate mux-wide isolation (C1)", () => {
+  test("(e) slate does not start when a non-slate sub is already attached", async () => {
+    const mux = new ChannelMux(fakeStream(), () => {}, () => {});
+    const dvr = { push: mock((_c: Uint8Array) => {}), close: mock(() => {}) };
+    mux.attach(dvr, true, false); // DVR/transcoder-style consumer — allowSlate=false
+    // maybeStartSlate's non-slate-sub check runs before it ever touches
+    // settings/cache, so this is testable without standing up loadReel/
+    // cachedSetting plumbing (covered elsewhere, per this file's own header).
+    await (mux as unknown as { maybeStartSlate: () => Promise<void> }).maybeStartSlate();
+    expect((mux as unknown as { slate: unknown }).slate).toBeNull();
+  });
+
+  test("(f) a non-slate attach mid-slate stops the feeder immediately and never receives reel bytes", () => {
+    const mux = new ChannelMux(fakeStream(), () => {}, () => {});
+    const viewer = { push: mock((_c: Uint8Array) => {}), close: mock(() => {}) };
+    mux.attach(viewer, true, true); // real viewer — slate-eligible
+    const feeder = fakeFeeder();
+    (mux as unknown as { slate: unknown }).slate = feeder; // simulate an already-running reel
+
+    const dvr = { push: mock((_c: Uint8Array) => {}), close: mock(() => {}) };
+    mux.attach(dvr, true, false); // DVR/transcoder attaches mid-slate
+
+    expect(feeder.stop).toHaveBeenCalledTimes(1);
+    expect((mux as unknown as { slate: unknown }).slate).toBeNull();
+    expect(dvr.push).not.toHaveBeenCalled(); // never fed a reel byte
+  });
+});

@@ -45,6 +45,12 @@ type Subscriber = {
   id: number;
   push: (chunk: Uint8Array) => void;
   close: () => void;
+  // Set from `attach`'s `allowSlate` — a mux is shared by every consumer of a
+  // channel (DVR recorder, transcoder, mosaic/timeshift feeds, AND the human
+  // viewer(s)), but the reel is only for a real viewer's own tune. A sub with
+  // `slate: false` must never receive reel bytes and must never have live
+  // withheld from it while a slate is up — see maybeStartSlate and attach.
+  slate: boolean;
 };
 
 // Exported so tests/slatemux.test.ts can drive the hold/splice/teardown logic
@@ -80,6 +86,9 @@ export class ChannelMux {
   private overlap = new OverlapGate();
   // Buffering reel shown on a cold attach while the upstream dials; stopped and
   // cleared the moment live catches up (fanout) or the mux dies (teardown).
+  // NOT the same "slate" as proxy/tilefeed.ts's `slateFor`/`tile.slate` — that
+  // is an unrelated per-mosaic-tile placeholder card. Two independently named
+  // features that both happen to use the word "slate"; don't conflate them.
   private slate: SlateFeeder | null = null;
   // Date.now() of the first live region fanout held back this hold-cycle; 0
   // when not currently holding. Bounds the hold at SLATE_HOLD_MAX_MS.
@@ -312,12 +321,26 @@ export class ChannelMux {
     // Upstream EOF: fall back to run(), which fails over or tears down.
   }
 
-  attach(sub: Omit<Subscriber, "id">, sendPreroll = true, allowSlate = false): number {
+  attach(sub: Omit<Subscriber, "id" | "slate">, sendPreroll = true, allowSlate = false): number {
     const id = ++this.subSeq;
-    this.subs.set(id, { id, ...sub });
+    this.subs.set(id, { id, ...sub, slate: allowSlate });
     if (this.graceTimer) {
       clearTimeout(this.graceTimer);
       this.graceTimer = null;
+    }
+    // A non-slate consumer (DVR/transcoder/mosaic/timeshift) attaching while
+    // the reel is up must not be fed reel bytes, and must not have live
+    // withheld waiting for a splice it never asked for — worse than a black
+    // start (see maybeStartSlate). This is the same "abandon" fanout does on
+    // a mid-slate codec change, minus the region to forward: there's nothing
+    // live to hand out from attach(), so just stop the feeder. Once
+    // `this.slate` is null, fanout's hold block (`if (this.slate) {...}`)
+    // stops running on its own — live flows normally the next chunk.
+    if (!allowSlate && this.slate) {
+      console.log(`[slate] channel ${this.channelId}: non-slate subscriber attached — stopping the reel`);
+      this.slate.stop();
+      this.slate = null;
+      this.slateHeldSince = 0;
     }
     // Replay the current GOP (keyframe → now) so this viewer decodes immediately.
     // The compositor opts OUT (sendPreroll=false): it wants the live edge, not a GOP
@@ -346,10 +369,19 @@ export class ChannelMux {
   private async maybeStartSlate(): Promise<void> {
     try {
       if (this.slate || this.stopping) return;
+      // A non-viewer consumer (DVR, transcoder, mosaic, timeshift) shares this
+      // mux via a non-slate attach — withholding live from it or feeding it
+      // reel bytes is worse than a black start, so decline outright rather
+      // than start a reel this mux can no longer show cleanly.
+      for (const sub of this.subs.values()) if (!sub.slate) return;
       const enabled = cachedSetting("features.slate");
-      if (!slateEligible({ enabled, codec: this.stream.codec ?? null, reel: true, preroll: this.pre.preroll() })) return;
+      if (!slateEligible({ enabled, codec: this.stream.codec ?? null, preroll: this.pre.preroll() })) return;
       const reel = await loadReel(familyFor(this.stream.resolution ?? null));
       if (!reel || this.slate || this.stopping || this.sawLive || this.pre.preroll() != null) return; // live won the race
+      // Re-check: a non-slate subscriber may have attached during the await
+      // above (attach()'s own guard only stops an ALREADY-running slate; at
+      // this point `this.slate` is still null, so that guard never fired).
+      for (const sub of this.subs.values()) if (!sub.slate) return;
       this.slate = new SlateFeeder({
         ...reel,
         // Iterates `this.subs` live at push time, so a viewer who attaches mid-slate
@@ -373,9 +405,14 @@ export class ChannelMux {
     } catch {
       /* already closed */
     }
-    if (this.subs.size === 0 && !this.graceTimer) {
-      // Hold the upstream briefly so channel-surfing back is instant.
-      this.graceTimer = setTimeout(() => this.teardown(), keepWarmMs());
+    if (this.subs.size === 0) {
+      // Nobody left to show the reel to — stop it now instead of letting it
+      // tick through the warm-hold grace period for an empty mux.
+      if (this.slate) { this.slate.stop(); this.slate = null; this.slateHeldSince = 0; }
+      if (!this.graceTimer) {
+        // Hold the upstream briefly so channel-surfing back is instant.
+        this.graceTimer = setTimeout(() => this.teardown(), keepWarmMs());
+      }
     }
   }
 
