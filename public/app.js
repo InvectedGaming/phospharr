@@ -2147,7 +2147,7 @@ function settingsScreen() {
         settingsSection("STREAMING",
           settingRow({ title: "Keep stream warm", desc: "Hold a channel's upstream this long after the last viewer leaves, so re-tuning is instant. Higher values keep a tuner slot in use longer.", key: "stream.keepWarmSeconds", type: "number", suffix: "sec" })),
         settingsSection("BUFFERING SLATE",
-          settingRow({ title: "Buffering slate", desc: "Show a countdown/meme reel while a channel's real stream is still dialing in, instead of a black screen. Only kicks in for direct viewer streams (TV/browser) — never DVR recordings or transcoded sessions. Memes come from meme-api.com (Reddit); NSFW-flagged posts are filtered out.", key: "features.slate", type: "toggle" }),
+          settingRow({ title: "Buffering slate", desc: "Show a countdown/meme reel while a channel's real stream is still dialing in, instead of a black screen. Only kicks in for direct viewer streams (TV/browser), never transcoded sessions. phospharr's own DVR recordings are unaffected, but recordings Emby itself schedules through the tuner may include the reel at the start. Memes come from meme-api.com (Reddit); NSFW-flagged posts are filtered out.", key: "features.slate", type: "toggle" }),
           settingRow({ title: "Countdown length", desc: "How long the slate holds before handing off to the real stream.", key: "slate.durationSec", type: "number", suffix: "sec" }),
           settingRow({ title: "Reel refresh interval", desc: "How often a fresh batch of memes gets built into a new reel.", key: "slate.refreshHours", type: "number", suffix: "hours" }),
           settingRow({ title: "Memes per reel", desc: "How many images get stitched into each reel.", key: "slate.memesPerReel", type: "number" }),

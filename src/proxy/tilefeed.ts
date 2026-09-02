@@ -32,6 +32,11 @@ import { SupervisedProc } from "./supervisor.ts";
  * Normalizers keep running for a short LINGER after a tile leaves the layout
  * (focus toggles, layout flips), so flipping back is instant — the encode
  * restarts, the tiles don't.
+ *
+ * NOT the same "slate" as src/slate/ (the per-channel meme/countdown
+ * buffering reel proxy/muxer.ts splices in on a cold viewer tune) — this
+ * file's slate is an unrelated per-mosaic-tile placeholder card. Same word,
+ * two independent features; don't conflate them.
  */
 
 const PKT = 188;
