@@ -90,3 +90,38 @@ describe("SlateFeeder startByte", () => {
     }
   });
 });
+
+describe("SlateFeeder lifetime cap", () => {
+  test("stops itself and fires onExpire when live never arrives", async () => {
+    const d = new Uint8Array(20 * 188);
+    for (let i = 0; i < 20; i++) d[i * 188] = 0x47;
+    let expired = 0;
+    let pushes = 0;
+    const f = new SlateFeeder({
+      data: d, totalSec: 0.2, tailStartByte: 10 * 188, tickMs: 20,
+      maxMs: 150, onExpire: () => { expired++; },
+      push: () => { pushes++; },
+    });
+    f.start();
+    await new Promise((r) => setTimeout(r, 400));
+    const atStop = pushes;
+    await new Promise((r) => setTimeout(r, 120));
+    expect(expired).toBe(1);          // fired exactly once
+    expect(pushes).toBe(atStop);      // and genuinely stopped pushing
+  });
+
+  test("no maxMs means it loops indefinitely, as before", async () => {
+    const d = new Uint8Array(20 * 188);
+    for (let i = 0; i < 20; i++) d[i * 188] = 0x47;
+    let expired = 0, pushes = 0;
+    const f = new SlateFeeder({
+      data: d, totalSec: 0.2, tailStartByte: 10 * 188, tickMs: 20,
+      onExpire: () => { expired++; }, push: () => { pushes++; },
+    });
+    f.start();
+    await new Promise((r) => setTimeout(r, 250));
+    f.stop();
+    expect(expired).toBe(0);
+    expect(pushes).toBeGreaterThan(3);
+  });
+});

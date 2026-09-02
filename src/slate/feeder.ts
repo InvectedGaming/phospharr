@@ -14,6 +14,12 @@ export interface SlateFeederOpts {
    *  clamped into [0, tailStart) so a random start always lands in the countdown
    *  body, never inside the loop tail. */
   startByte?: number;
+  /** Hard lifetime cap. The hold bound in the muxer only fires once live bytes
+   *  ARRIVE; a source that never delivers a single byte would otherwise loop the
+   *  tail forever, which reads as "frozen on the last meme" rather than as a
+   *  failure. Past this, stop and hand control back via onExpire. */
+  maxMs?: number;
+  onExpire?: () => void;
   tickMs?: number;        // pacing tick interval; default 100ms
   push: (c: Uint8Array) => void; // sink for each paced, packet-aligned chunk
 }
@@ -33,6 +39,9 @@ export class SlateFeeder {
   private readonly tickMs: number;
   private readonly push: (c: Uint8Array) => void;
   private readonly bytesPerSec: number;
+  private readonly maxMs: number;
+  private readonly onExpire: (() => void) | null;
+  private startedAt = 0; // NOT reset on tail loop — the cap is wall-clock from start
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly startAt: number;
@@ -52,6 +61,8 @@ export class SlateFeeder {
     this.tickMs = o.tickMs ?? 100;
     this.push = o.push;
     this.bytesPerSec = o.totalSec > 0 ? o.data.length / o.totalSec : o.data.length;
+    this.maxMs = o.maxMs ?? 0; // 0 = uncapped (previous behaviour)
+    this.onExpire = o.onExpire ?? null;
   }
 
   start(): void {
@@ -59,6 +70,7 @@ export class SlateFeeder {
     this.pos = this.startAt;
     this.segmentStart = this.startAt;
     this.epoch = Date.now();
+    this.startedAt = this.epoch;
     this.timer = setInterval(() => this.tick(), this.tickMs);
     (this.timer as unknown as { unref?: () => void }).unref?.();
   }
@@ -71,6 +83,14 @@ export class SlateFeeder {
   }
 
   private tick(): void {
+    // Wall-clock cap first: a source that never sends a byte leaves the muxer's
+    // hold bound unreachable (it only runs on live arrival), so this is the only
+    // thing standing between a dead channel and an endlessly looping reel.
+    if (this.maxMs > 0 && Date.now() - this.startedAt >= this.maxMs) {
+      this.stop();
+      this.onExpire?.();
+      return;
+    }
     const elapsedSec = (Date.now() - this.epoch) / 1000;
     let target = this.segmentStart + Math.floor((this.bytesPerSec * elapsedSec) / PACKET) * PACKET;
     const dataEnd = this.data.length - (this.data.length % PACKET); // defensive: last full packet

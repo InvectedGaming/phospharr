@@ -40,6 +40,12 @@ const jitterMs = () => Math.max(0, cachedSetting("stream.jitterMs") ?? 0);
 // TsPreroll's raw-passthrough mode would otherwise never produce a preroll,
 // holding live back forever — worse than not having the slate at all.
 const SLATE_HOLD_MAX_MS = 8_000;
+// Hard cap on how long the reel may play with no live bytes at all. The hold
+// bound above only starts counting once live ARRIVES, so a source that never
+// delivers (dead upstream, endless reconnect) would loop the tail forever and
+// read as "frozen on the last meme" instead of as a failed tune. Past this the
+// reel stops and the channel behaves exactly as it did before the feature.
+const SLATE_MAX_LIFETIME_MS = 40_000;
 
 type Subscriber = {
   id: number;
@@ -389,6 +395,12 @@ export class ChannelMux {
         // repeat every ~100ms and its GOP is 1s, so decoders lock on almost
         // immediately, exactly as they do at our own splice.
         startByte: Math.floor((Math.random() * reel.tailStartByte) / 188) * 188,
+        maxMs: SLATE_MAX_LIFETIME_MS,
+        onExpire: () => {
+          this.slate = null;
+          this.slateHeldSince = 0;
+          console.log(`[slate] channel ${this.channelId}: no live within ${SLATE_MAX_LIFETIME_MS}ms — reel stopped, source ${this.stream.id} is not delivering`);
+        },
         // Iterates `this.subs` live at push time, so a viewer who attaches mid-slate
         // simply starts receiving reel bytes mid-stream — fine at a 1s GOP.
         push: (chunk) => { for (const sub of this.subs.values()) { try { sub.push(chunk); } catch { this.detach(sub.id); } } },
