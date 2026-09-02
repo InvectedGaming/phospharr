@@ -384,6 +384,11 @@ export class ChannelMux {
       for (const sub of this.subs.values()) if (!sub.slate) return;
       this.slate = new SlateFeeder({
         ...reel,
+        // Random meme each tune: start somewhere in the countdown body (the
+        // feeder aligns/clamps). Mid-file TS starts are fine — the reel's PAT/PMT
+        // repeat every ~100ms and its GOP is 1s, so decoders lock on almost
+        // immediately, exactly as they do at our own splice.
+        startByte: Math.floor((Math.random() * reel.tailStartByte) / 188) * 188,
         // Iterates `this.subs` live at push time, so a viewer who attaches mid-slate
         // simply starts receiving reel bytes mid-stream — fine at a 1s GOP.
         push: (chunk) => { for (const sub of this.subs.values()) { try { sub.push(chunk); } catch { this.detach(sub.id); } } },

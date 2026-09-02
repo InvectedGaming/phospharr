@@ -57,3 +57,36 @@ describe("SlateFeeder", () => {
     expect(total).toBeLessThan(188 * 60);    // double-rate would blow past this
   });
 });
+
+describe("SlateFeeder startByte", () => {
+  test("begins pushing from the requested 188-aligned offset", async () => {
+    // 100 packets; each packet's 2nd byte encodes its index so we can tell
+    // WHERE the feed started from.
+    const d = new Uint8Array(100 * 188);
+    for (let i = 0; i < 100; i++) { d[i * 188] = 0x47; d[i * 188 + 1] = i; }
+    const chunks: Uint8Array[] = [];
+    const f = new SlateFeeder({
+      data: d, totalSec: 1, tailStartByte: 50 * 188, tickMs: 20,
+      startByte: 30 * 188, push: (c) => chunks.push(c),
+    });
+    f.start();
+    await new Promise((r) => setTimeout(r, 120));
+    f.stop();
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks[0][0]).toBe(0x47);
+    expect(chunks[0][1]).toBe(30); // first pushed packet IS packet 30
+  });
+
+  test("a misaligned or out-of-range startByte is clamped, never throws", async () => {
+    const d = new Uint8Array(10 * 188);
+    for (let i = 0; i < 10; i++) d[i * 188] = 0x47;
+    for (const sb of [37, 10 * 188 + 500, -40]) {
+      const chunks: Uint8Array[] = [];
+      const f = new SlateFeeder({ data: d, totalSec: 0.1, tailStartByte: 5 * 188, tickMs: 20, startByte: sb, push: (c) => chunks.push(c) });
+      f.start();
+      await new Promise((r) => setTimeout(r, 60));
+      f.stop();
+      for (const c of chunks) { expect(c.length % 188).toBe(0); expect(c[0]).toBe(0x47); }
+    }
+  });
+});

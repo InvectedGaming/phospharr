@@ -9,6 +9,11 @@ export interface SlateFeederOpts {
   // keyframe at/after the countdown's own aligned time offset and records
   // that byte position; see builder.ts's findTailStartByte.
   tailStartByte: number;
+  /** Begin playback at this 188-aligned byte offset (default 0). Lets each tune
+   *  start at a different meme so the reel doesn't feel identical every time;
+   *  clamped into [0, tailStart) so a random start always lands in the countdown
+   *  body, never inside the loop tail. */
+  startByte?: number;
   tickMs?: number;        // pacing tick interval; default 100ms
   push: (c: Uint8Array) => void; // sink for each paced, packet-aligned chunk
 }
@@ -30,6 +35,7 @@ export class SlateFeeder {
   private readonly bytesPerSec: number;
 
   private timer: ReturnType<typeof setInterval> | null = null;
+  private readonly startAt: number;
   private pos = 0;
   private segmentStart = 0; // byte offset the current pacing epoch started counting from
   private epoch = 0; // Date.now() when segmentStart began playing
@@ -41,6 +47,8 @@ export class SlateFeeder {
     // rather than trust a manifest that could in principle be stale/corrupt.
     const dataEnd = o.data.length - (o.data.length % PACKET);
     this.tailStart = Math.min(dataEnd, Math.max(0, Math.floor(o.tailStartByte / PACKET) * PACKET));
+    const rawStart = Math.floor((o.startByte ?? 0) / PACKET) * PACKET;
+    this.startAt = Math.min(Math.max(0, rawStart), Math.max(0, this.tailStart - PACKET));
     this.tickMs = o.tickMs ?? 100;
     this.push = o.push;
     this.bytesPerSec = o.totalSec > 0 ? o.data.length / o.totalSec : o.data.length;
@@ -48,8 +56,8 @@ export class SlateFeeder {
 
   start(): void {
     if (this.timer !== null) return; // already running — a second call must not leak a second interval
-    this.pos = 0;
-    this.segmentStart = 0;
+    this.pos = this.startAt;
+    this.segmentStart = this.startAt;
     this.epoch = Date.now();
     this.timer = setInterval(() => this.tick(), this.tickMs);
     (this.timer as unknown as { unref?: () => void }).unref?.();
