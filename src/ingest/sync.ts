@@ -3,7 +3,7 @@ import { db } from "../db/index.ts";
 import { providers, channels, streams, type Provider } from "../db/schema.ts";
 import { fetchM3U } from "./m3u.ts";
 import { fetchXtream, fetchXtreamCategories } from "./xtream.ts";
-import { egress, providerEgress } from "../net/egress.ts";
+import { egress, providerControlEgress } from "../net/egress.ts";
 import { matchCanonical, qualityScore } from "../canonical/matcher.ts";
 import { muxer } from "../proxy/muxer.ts";
 import { pool } from "../scheduler/pool.ts";
@@ -21,7 +21,7 @@ import type { RawEntry } from "./types.ts";
 async function fetchEntries(p: Provider, categories?: string[]): Promise<RawEntry[]> {
   // Resolve a `vpn:<id>` pin to the tunnel's HTTP bridge — the raw pin string is
   // not a proxy URL fetch can use. Fail closed while the pinned VPN is down.
-  const eg = providerEgress(p.id);
+  const eg = providerControlEgress(p.id);
   if (eg.blocked) throw new Error(`egress blocked: ${eg.reason}`);
   const opts = egress(eg.proxy); // VPN passthrough per-source
   if (p.type === "m3u") {

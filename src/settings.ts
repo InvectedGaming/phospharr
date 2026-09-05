@@ -97,6 +97,7 @@ export interface Settings {
   "access.trustProxy": boolean; // resolve client IP from X-Forwarded-For (set true behind a reverse proxy)
   "tuner.publicUrl": string; // absolute base URL a downstream tuner (Emby) uses to reach US — must match what Emby stored, else the sync layer won't recognize its own tuner hosts (falls back to vod.publicUrl, then BASE_URL)
   "tuner.groups": TunerGroup[]; // split categories into their own playlist+EPG (/t/<key>/g/<slug>/…) with an optional fast sync cadence; the main playlist excludes them
+  "providers.controlProxy": string; // HTTP proxy for provider control-plane calls (lineup + EPG) when the provider blocks the streaming egress IP; empty = use the streaming egress
   "mosaic.state": MosaicPersisted; // channel-1 mosaic tile selection; persisted so a restart does not blank channel 1
   "content.hideAdult": boolean; // auto-hide adult/XXX channels (on by default)
   "content.hideNoStream": boolean; // auto-hide channels with no attached stream — event channels get theirs back at air time (on by default)
@@ -155,6 +156,7 @@ const DEFAULTS: Settings = {
   "access.trustProxy": false,
   "tuner.publicUrl": "", // empty = fall back to vod.publicUrl / BASE_URL
   "tuner.groups": [], // e.g. [{ name: "Events", categories: ["PPV FLOSPORTS", "USA MLB"], syncMinutes: 15 }]
+  "providers.controlProxy": "", // e.g. http://10.125.52.230:8888 (gluetun) — empty keeps one egress for everything
   "mosaic.state": { channels: [], layout: "2x2", focus: null, audio: 0 }, // empty = seeded on first boot
   "content.hideAdult": true, // hide adult/XXX channels by default
   "content.hideNoStream": true, // a channel with zero streams can't play — dead guide entries otherwise
