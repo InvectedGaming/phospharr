@@ -5,6 +5,7 @@ import { getSettings, setSetting } from "./settings.ts";
 import { startEpgScheduler } from "./epg/scheduler.ts";
 import { startSyncScheduler } from "./ingest/scheduler.ts";
 import { startHealthProbe } from "./health/probe.ts";
+import { startLivenessLoop } from "./health/liveness.ts";
 import { startWatchdog } from "./health/watchdog.ts";
 import { reconcileTunnels } from "./net/tunnel.ts";
 import { startFavoritesLoop } from "./sync/favorites.ts";
@@ -51,6 +52,7 @@ if (!settings["vod.indexer.apiKey"]) {
 startEpgScheduler(); // periodic XMLTV pulls per features.epgAutoRefresh / epg.refreshHours
 startSyncScheduler(); // periodic provider lineup re-sync per features.providerAutoSync / providers.syncHours
 startHealthProbe(); // background stream probes per features.healthProbe
+startLivenessLoop(); // Twitch/resolver channels: live while broadcasting, out of the lineup when not
 startFavoritesLoop(); // periodic Emby/Jellyfin favorites read-back, weights the prewarm ring
 await compositor.restore(); // channel 1's tiles survive a restart — without this the mosaic is dead after every deploy
 startReconciler(); // 5-min self-healing check: Emby reachable/tuner present/converged + VOD mirror writable, repairs + alerts
