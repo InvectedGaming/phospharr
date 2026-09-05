@@ -29,9 +29,9 @@ export type Egress =
  *
  * Normally identical to providerEgress. The split exists because a provider can
  * block the streaming egress IP for its API while still serving video from it:
- * 2026-09-05, beetvhost closed every PHP request from our Nord exit
- * (92.119.18.205) with zero bytes, for 39 hours, while .ts streams from that
- * same IP played perfectly. The guide aged out completely and every channel
+ * 2026-09-05, an upstream provider closed every PHP request from our VPN exit
+ * IP with zero bytes, for 39 hours, while .ts streams from that same IP played
+ * perfectly. The guide aged out completely and every channel
  * showed a blank row.
  *
  * `providers.controlProxy` points those two calls at a different HTTP proxy

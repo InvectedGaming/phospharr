@@ -156,7 +156,7 @@ const DEFAULTS: Settings = {
   "access.trustProxy": false,
   "tuner.publicUrl": "", // empty = fall back to vod.publicUrl / BASE_URL
   "tuner.groups": [], // e.g. [{ name: "Events", categories: ["PPV FLOSPORTS", "USA MLB"], syncMinutes: 15 }]
-  "providers.controlProxy": "", // e.g. http://10.125.52.230:8888 (gluetun) — empty keeps one egress for everything
+  "providers.controlProxy": "", // e.g. http://<vpn-host>:8888 — empty keeps one egress for everything
   "mosaic.state": { channels: [], layout: "2x2", focus: null, audio: 0 }, // empty = seeded on first boot
   "content.hideAdult": true, // hide adult/XXX channels by default
   "content.hideNoStream": true, // a channel with zero streams can't play — dead guide entries otherwise
