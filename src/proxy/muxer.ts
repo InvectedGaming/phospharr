@@ -400,6 +400,7 @@ export class ChannelMux {
           this.slate = null;
           this.slateHeldSince = 0;
           console.log(`[slate] channel ${this.channelId}: no live within ${SLATE_MAX_LIFETIME_MS}ms — reel stopped, source ${this.stream.id} is not delivering`);
+          this.dropStrandedViewers();
         },
         // Iterates `this.subs` live at push time, so a viewer who attaches mid-slate
         // simply starts receiving reel bytes mid-stream — fine at a 1s GOP.
@@ -411,6 +412,24 @@ export class ChannelMux {
     } catch (err) {
       console.error(`[slate] channel ${this.channelId}: failed to start reel — ${err}`);
     }
+  }
+
+  /**
+   * The reel has stopped and live never arrived, so this mux will emit nothing
+   * further. Leaving viewers attached strands them on a silent socket that spins
+   * forever with no error — which is exactly how a dead SOURCE came to look like
+   * a broken SLATE: the reel played, stopped, and the picture never changed
+   * again, so the reel got the blame for the source's failure.
+   *
+   * Closing them lets the player surface the failure and retry, the same call
+   * compositor.ts's onDown makes rather than leave viewers on a dead encode.
+   *
+   * No-op once live has been seen: a mid-stream reel expiry is not a stranding,
+   * and dropping a working stream would be far worse than the bug being fixed.
+   */
+  dropStrandedViewers(): void {
+    if (this.sawLive) return;
+    for (const id of [...this.subs.keys()]) this.detach(id);
   }
 
   detach(id: number) {

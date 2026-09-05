@@ -184,3 +184,44 @@ describe("ChannelMux slate mux-wide isolation (C1)", () => {
     expect(dvr.push).not.toHaveBeenCalled(); // never fed a reel byte
   });
 });
+
+describe("a source that never delivers must not strand viewers on the reel", () => {
+  // The 2026-09-05 outage: the provider blocked our egress IP, so upstream bytes
+  // never arrived. The reel played, hit its lifetime cap, stopped — and viewers
+  // sat on a silent socket that never produced another byte and never errored.
+  // The picture stayed on the last meme, so a dead SOURCE looked like a broken
+  // SLATE. Viewers must be closed so the player reports the failure and retries.
+  test("closes viewers when the reel expires and live never arrived", () => {
+    const mux = new ChannelMux(fakeStream(), () => {}, () => {});
+    const push = mock((_c: Uint8Array) => {});
+    const close = mock(() => {});
+    mux.attach({ push, close }, true, true);
+    const m = mux as unknown as { dropStrandedViewers: () => void; subs: Map<number, unknown> };
+
+    expect(m.subs.size).toBe(1);
+    m.dropStrandedViewers();
+    expect(close).toHaveBeenCalled();
+    expect(m.subs.size).toBe(0); // detached, not left dangling
+  });
+
+  test("does NOT drop viewers once live has been seen — a mid-stream expiry is not a stranding", () => {
+    const mux = new ChannelMux(fakeStream(), () => {}, () => {});
+    const push = mock((_c: Uint8Array) => {});
+    const close = mock(() => {});
+    mux.attach({ push, close }, true, true);
+    const m = mux as unknown as {
+      dropStrandedViewers: () => void; subs: Map<number, unknown>; sawLive: boolean;
+    };
+
+    m.sawLive = true; // live already spliced through
+    m.dropStrandedViewers();
+    expect(close).not.toHaveBeenCalled();
+    expect(m.subs.size).toBe(1); // a working stream is never torn down by this path
+  });
+
+  test("is safe with no viewers attached", () => {
+    const mux = new ChannelMux(fakeStream(), () => {}, () => {});
+    const m = mux as unknown as { dropStrandedViewers: () => void };
+    expect(() => m.dropStrandedViewers()).not.toThrow();
+  });
+});
