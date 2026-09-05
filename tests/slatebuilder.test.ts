@@ -25,9 +25,9 @@ describe("buildReelOnce", () => {
     // okCompose's fake output is 0x47-filled but carries no real PAT/PMT/video
     // PIDs, so the scanner never finds a keyframe and falls back to the
     // aligned time-fraction byte offset — still 188-aligned and non-zero.
-    expect(man.families["720p30"].tailStartByte % 188).toBe(0);
-    expect(man.families["720p30"].tailStartByte).toBeGreaterThan(0);
-    expect(existsSync(join(dir, "720p30.ts"))).toBe(true);
+    expect(man.families["720p30"][0]!.tailStartByte % 188).toBe(0);
+    expect(man.families["720p30"][0]!.tailStartByte).toBeGreaterThan(0);
+    expect(existsSync(join(dir, man.families["720p30"][0]!.file))).toBe(true);
   });
 
   test("no memes and no localDir: plain slate still builds", async () => {

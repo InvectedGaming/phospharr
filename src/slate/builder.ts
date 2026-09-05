@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { getSetting } from "../settings.ts";
 import { composeReel, type ComposeOpts } from "./compose.ts";
 import { downloadImage, fetchMemes, pickClean, type Meme } from "./memes.ts";
-import { FAMILIES, readManifest, saveManifest, SLATE_DIR, type ReelManifest } from "./cache.ts";
+import { FAMILIES, RING_SIZE, readManifest, saveManifest, SLATE_DIR, type ReelManifest } from "./cache.ts";
 import { SYNC, PKT, isKeyframe, patPmtPid, pmtVideoPids } from "../proxy/ts.ts";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB cap — same convention as memes.ts's downloadImage
@@ -139,6 +139,17 @@ function findTailStartByte(data: Uint8Array, durationSec: number, totalSec: numb
  * A failed family's own `.tmp` file can be left orphaned on disk in that
  * case — harmless; the next build's `ffmpeg -y` overwrites it.
  */
+/** Lowest slot number not currently in the ring, else the oldest slot's number
+ *  (so a full ring overwrites its least-recent member). Keyed off the first
+ *  family — every family is built in the same batch, so their slots agree. */
+function nextFreeSlot(prev: ReelManifest["families"]): number {
+  const ring = prev[FAMILIES[0]!.key] ?? [];
+  const used = new Set(ring.map((e) => Number(/\.(\d+)\.ts$/.exec(e.file)?.[1] ?? -1)));
+  for (let i = 0; i < RING_SIZE; i++) if (!used.has(i)) return i;
+  const oldest = ring[ring.length - 1]?.file ?? "";
+  return Number(/\.(\d+)\.ts$/.exec(oldest)?.[1] ?? 0);
+}
+
 export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSource }> {
   mkdirSync(deps.dir, { recursive: true });
 
@@ -160,10 +171,15 @@ export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSou
   const { source, images, tmpDir } = await gatherImages(deps, memesPerReel, subreddits, localDir);
 
   try {
+    // Rotate: this build becomes the newest slot and the oldest is dropped once
+    // the ring is full, so the cache holds RING_SIZE independent meme sets and a
+    // tune cycles through them instead of replaying one.
+    const prev = (await readManifest(deps.dir))?.families ?? {};
+    const slot = nextFreeSlot(prev);
     const families: ReelManifest["families"] = {};
     const placements: { finalPath: string; tmpPath: string }[] = [];
     for (const fam of FAMILIES) {
-      const finalPath = join(deps.dir, `${fam.key}.ts`);
+      const finalPath = join(deps.dir, `${fam.key}.${slot}.ts`);
       const tmpPath = `${finalPath}.tmp`;
       const { bytes, totalSec } = await composeWithFallback(deps.compose, {
         images, out: tmpPath, width: fam.width, height: fam.height, fps: fam.fps, durationSec, tailSec,
@@ -173,12 +189,13 @@ export async function buildReelOnce(deps: BuildDeps): Promise<{ source: BuildSou
       const composed = new Uint8Array(await Bun.file(tmpPath).arrayBuffer());
       const tailStartByte = findTailStartByte(composed, durationSec, totalSec);
       placements.push({ finalPath, tmpPath });
-      families[fam.key] = {
-        file: `${fam.key}.ts`,
-        bytes,
-        totalSec,
-        tailStartByte,
-      };
+      const fresh = { file: `${fam.key}.${slot}.ts`, bytes, totalSec, tailStartByte };
+      // Newest first, capped at RING_SIZE. Any prior entry that reused this slot
+      // number is dropped: its file is about to be overwritten by the rename
+      // below, so keeping it would point the manifest at the new bytes under the
+      // old entry's (now wrong) byte count, which loadReel rejects.
+      const kept = (prev[fam.key] ?? []).filter((e) => e.file !== fresh.file);
+      families[fam.key] = [fresh, ...kept].slice(0, RING_SIZE);
     }
 
     // Every family composed successfully — NOW place them and write the
@@ -227,7 +244,12 @@ async function tick(): Promise<void> {
     if (!(await getSetting("features.slate"))) return;
     const man = await readManifest(SLATE_DIR);
     const hours = Math.max(1, Number(await getSetting("slate.refreshHours")) || 6);
-    if (man && Date.now() - man.builtAt <= hours * 3600_000) return; // still fresh — nothing to do this tick
+    // A fresh cache holds ONE reel, so every tune replays it until the ring
+    // fills — the exact repetition the ring exists to remove. Build on every
+    // tick until all RING_SIZE slots exist (~1h at the 10min poll), then settle
+    // to the configured cadence so we stop hammering the meme API and NVENC.
+    const ringFull = (man?.families[FAMILIES[0]!.key]?.length ?? 0) >= RING_SIZE;
+    if (man && ringFull && Date.now() - man.builtAt <= hours * 3600_000) return; // full and fresh — nothing to do
     await buildReelOnce({ dir: SLATE_DIR, fetchMemes, downloadImage, compose: composeReel });
   } catch (e) {
     console.error("[slate] builder tick error:", e instanceof Error ? e.message : e);
