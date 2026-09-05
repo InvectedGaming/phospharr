@@ -59,7 +59,7 @@ const TEXT_FIELDS = new Set(["display-name", "title", "sub-title", "desc", "cate
 export async function streamXmltv(
   stream: ReadableStream<Uint8Array>,
   handlers: StreamHandlers,
-): Promise<void> {
+): Promise<{ bytes: number }> {
   let cur: Cur | null = null;
   let field: string | null = null;
   let buf = "";
@@ -124,19 +124,33 @@ export async function streamXmltv(
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let chunks = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) parser.write(decoder.decode(value, { stream: true }));
+  // Byte count travels out with the result AND with a mid-feed throw. A provider
+  // that drops the socket produces the same opaque message whether it died on
+  // the first packet or the last, so without this there is no way to tell a
+  // connection that never opened from one that delivered 95% of the guide.
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) { bytes += value.byteLength; parser.write(decoder.decode(value, { stream: true })); }
     // `reader.read()` on an already-buffered stream resolves as a MICROTASK, so a
     // feed that downloads faster than it parses runs as one unbroken chain that
     // never returns to the event loop — HTTP serving starves for the whole feed
     // (the 64s freeze / 504s during EPG sync). A real timer yield every few
     // chunks lets pending requests run between parse slices.
-    if (++chunks % 4 === 0) await Bun.sleep(0);
+      if (++chunks % 4 === 0) await Bun.sleep(0);
+    }
+  } catch (e) {
+    // Re-thrown with the byte offset attached so the caller can log where the
+    // feed died and decide whether a retry is worth it.
+    throw Object.assign(e instanceof Error ? e : new Error(String(e)), { bytesRead: bytes });
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
   }
   parser.write(decoder.decode());
   parser.end();
+  return { bytes };
 }
 
 /** Fetch an XMLTV feed as a byte stream, transparently handling .gz payloads. */
