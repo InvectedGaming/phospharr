@@ -35,6 +35,24 @@ export interface TunerGroup {
   syncMinutes?: number; // scoped fast-sync cadence (xtream providers); omit/0 = no fast sync
 }
 
+/** The mosaic's tile selection, persisted so it survives a restart.
+ *
+ *  Declared structurally rather than importing MosaicState from
+ *  src/proxy/compositor.ts: that module already imports THIS one, and a type
+ *  import back would close the cycle. The literal union is kept identical to
+ *  MosaicLayout so the two assign to each other without a cast — if one gains
+ *  a layout the other must too, and tsc will say so at both call sites.
+ *
+ *  `names` is deliberately not persisted: it is display sugar derived from the
+ *  channel rows, and storing it would let a renamed channel keep a stale label
+ *  forever. */
+export interface MosaicPersisted {
+  channels: number[];
+  layout: "2up" | "2x2" | "3x3";
+  focus: number | null;
+  audio: number;
+}
+
 export interface Settings {
   "features.hdhr": boolean; // HDHomeRun emulation (Plex/Emby/Jellyfin tuner)
   "features.transcode": boolean; // browser audio transcode (AC-3 → AAC)
@@ -79,6 +97,7 @@ export interface Settings {
   "access.trustProxy": boolean; // resolve client IP from X-Forwarded-For (set true behind a reverse proxy)
   "tuner.publicUrl": string; // absolute base URL a downstream tuner (Emby) uses to reach US — must match what Emby stored, else the sync layer won't recognize its own tuner hosts (falls back to vod.publicUrl, then BASE_URL)
   "tuner.groups": TunerGroup[]; // split categories into their own playlist+EPG (/t/<key>/g/<slug>/…) with an optional fast sync cadence; the main playlist excludes them
+  "mosaic.state": MosaicPersisted; // channel-1 mosaic tile selection; persisted so a restart does not blank channel 1
   "content.hideAdult": boolean; // auto-hide adult/XXX channels (on by default)
   "content.hideNoStream": boolean; // auto-hide channels with no attached stream — event channels get theirs back at air time (on by default)
   "content.hiddenCategories": string[]; // whole categories the admin chose to hide
@@ -136,6 +155,7 @@ const DEFAULTS: Settings = {
   "access.trustProxy": false,
   "tuner.publicUrl": "", // empty = fall back to vod.publicUrl / BASE_URL
   "tuner.groups": [], // e.g. [{ name: "Events", categories: ["PPV FLOSPORTS", "USA MLB"], syncMinutes: 15 }]
+  "mosaic.state": { channels: [], layout: "2x2", focus: null, audio: 0 }, // empty = seeded on first boot
   "content.hideAdult": true, // hide adult/XXX channels by default
   "content.hideNoStream": true, // a channel with zero streams can't play — dead guide entries otherwise
   "content.hiddenCategories": [],

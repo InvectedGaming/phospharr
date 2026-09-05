@@ -8,6 +8,7 @@ import { startHealthProbe } from "./health/probe.ts";
 import { startWatchdog } from "./health/watchdog.ts";
 import { reconcileTunnels } from "./net/tunnel.ts";
 import { startFavoritesLoop } from "./sync/favorites.ts";
+import { compositor } from "./proxy/compositor.ts";
 import { startReconciler } from "./sync/reconciler.ts";
 import { startSlateBuilder } from "./slate/builder.ts";
 
@@ -51,6 +52,7 @@ startEpgScheduler(); // periodic XMLTV pulls per features.epgAutoRefresh / epg.r
 startSyncScheduler(); // periodic provider lineup re-sync per features.providerAutoSync / providers.syncHours
 startHealthProbe(); // background stream probes per features.healthProbe
 startFavoritesLoop(); // periodic Emby/Jellyfin favorites read-back, weights the prewarm ring
+await compositor.restore(); // channel 1's tiles survive a restart — without this the mosaic is dead after every deploy
 startReconciler(); // 5-min self-healing check: Emby reachable/tuner present/converged + VOD mirror writable, repairs + alerts
 startWatchdog(); // restarts a stale scheduler/probe loop, exits for container restart after repeated failures
 startSlateBuilder(); // periodic meme reel builds per features.slate / slate.refreshHours — inert while features.slate is off

@@ -1,4 +1,7 @@
-import { cachedSetting } from "../settings.ts";
+import { inArray } from "drizzle-orm";
+import { db } from "../db/index.ts";
+import { channels as channelsTable } from "../db/schema.ts";
+import { cachedSetting, getSetting, setSetting } from "../settings.ts";
 import { SupervisedProc } from "./supervisor.ts";
 import { tileFeeds, TILE_FPS } from "./tilefeed.ts";
 
@@ -157,6 +160,53 @@ class Compositor {
     watchdogMs: 20_000, // alive but silent → wedged; tile slates make real starts fast
   });
 
+  /** Write the selection through to settings so it outlives the process.
+   *  Fire-and-forget: the mosaic must keep compositing even if the write fails,
+   *  and the next setState tries again. `names` is dropped — derived display
+   *  sugar, see MosaicPersisted. */
+  private persist(): void {
+    const { channels, layout, focus, audio } = this.state;
+    void setSetting("mosaic.state", { channels, layout, focus, audio })
+      .catch((e) => this.sup.noteErr(`[mosaic persist failed: ${String(e)}]`));
+  }
+
+  /** Reload the selection at boot.
+   *
+   *  Channel 1 is ALWAYS advertised in the lineup (see tuner/hdhr.ts) because
+   *  Emby caches lineups and would never pick up a conditionally-listed channel.
+   *  That made an unrestored mosaic a guaranteed dead channel 1 after every
+   *  restart — which is exactly what it was.
+   *
+   *  Assigns this.state DIRECTLY rather than going through setState(), which
+   *  would open a 45s pre-warm window and spawn an ffmpeg at boot that no viewer
+   *  asked for. The supervisor gates on `subs.size > 0 || warmUntil`, so staying
+   *  out of setState leaves the encode idle until someone actually tunes.
+   *
+   *  Ids are pruned against the DB: provider re-syncs retire channel rows, and a
+   *  stale id would compose a tile that can never dial. Order is preserved so the
+   *  arrangement survives; if nothing survives, the state stays empty rather than
+   *  compositing dead tiles. */
+  async restore(): Promise<void> {
+    // getSetting, not cachedSetting: setSetting invalidates the cache, so a
+    // cached read straight after a write returns the DEFAULT. This runs once at
+    // boot and is already async — there is no reason to take that hazard.
+    const saved = await getSetting("mosaic.state");
+    if (!saved?.channels?.length) return;
+    const live = new Set(
+      db.select({ id: channelsTable.id }).from(channelsTable)
+        .where(inArray(channelsTable.id, saved.channels)).all().map((r) => r.id),
+    );
+    const channels = saved.channels.filter((id) => live.has(id));
+    const dropped = saved.channels.length - channels.length;
+    if (dropped) console.log(`[mosaic] dropped ${dropped} tile(s) whose channel no longer exists`);
+    if (!channels.length) return;
+    // focus names a channel id, so it must be re-checked against the survivors.
+    const focus = saved.focus != null && channels.includes(saved.focus) ? saved.focus : null;
+    const audio = Math.min(Math.max(0, saved.audio | 0), channels.length - 1);
+    this.state = { channels, layout: saved.layout, focus, audio };
+    console.log(`[mosaic] restored ${channels.length} tile(s) in ${saved.layout}`);
+  }
+
   getState(): MosaicState { return this.state; }
   running(): boolean { return this.sup.running(); }
   status() { return { running: this.sup.running(), viewers: this.subs.size, state: this.state, err: this.sup.lastErr().slice(-300), tiles: tileFeeds.status() }; }
@@ -171,6 +221,7 @@ class Compositor {
     const videoChanged = vsig(merged) !== vsig(this.state);
     const audioChanged = merged.audio !== this.state.audio;
     this.state = merged;
+    this.persist();
     if (!buildArgs(this.state)) { this.stop(); return; } // no channels selected → tear down
     // Pre-warm: start the encode the moment the app composes, BEFORE the TV
     // connects, and keep it warm long enough for the TV to open.
