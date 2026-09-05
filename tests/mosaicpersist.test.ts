@@ -77,3 +77,65 @@ describe("mosaic selection survives a restart", () => {
     compositor.setState({ channels: [] }); // tear the encode back down
   });
 });
+
+describe("first-boot seed", () => {
+  // A resolver-backed (Twitch) channel and a provider-backed one, so the seed
+  // has to choose correctly between them.
+  const FREE = 991101, PAID = 991102;
+  const FREE_PROV = 99120, PAID_PROV = 99121;
+  // A free (resolver) source and a connection-capped provider source, so the
+  // seed has to choose correctly between them.
+  sqlite.exec(
+    `INSERT OR IGNORE INTO providers (id,name,type,url,max_connections,priority,enabled,via_vpn) VALUES
+       (${FREE_PROV},'MOSAIC TEST CUSTOM','custom','',0,0,1,0),
+       (${PAID_PROV},'MOSAIC TEST XTREAM','xtream','http://example.invalid',4,0,1,0)`,
+  );
+  sqlite.exec(
+    `INSERT INTO channels (id,name,is_hidden,number) VALUES
+       (${FREE},'MOSAIC TEST TWITCH',0,99111),(${PAID},'MOSAIC TEST PROVIDER',0,99112)`,
+  );
+  sqlite.exec(
+    `INSERT INTO streams (channel_id,provider_id,url,raw_name,health,quality_score,resolver) VALUES
+       (${FREE},${FREE_PROV},'https://twitch.tv/mosaictest','MOSAIC TEST TWITCH','live',0,'streamlink')`,
+  );
+  sqlite.exec(
+    `INSERT INTO streams (channel_id,provider_id,url,raw_name,health,quality_score) VALUES
+       (${PAID},${PAID_PROV},'http://example.invalid/x.ts','MOSAIC TEST PROVIDER','live',0)`,
+  );
+  afterAll(() => {
+    sqlite.exec(`DELETE FROM streams WHERE channel_id IN (${FREE},${PAID})`);
+    sqlite.exec(`DELETE FROM channels WHERE id IN (${FREE},${PAID})`);
+    sqlite.exec(`DELETE FROM providers WHERE id IN (${FREE_PROV},${PAID_PROV})`);
+  });
+
+  test("with nothing saved, seeds from free sources and never the provider", async () => {
+    await save({ channels: [], layout: "2x2", focus: null, audio: 0 });
+    await compositor.restore();
+    const picked = compositor.getState().channels;
+    expect(picked).toContain(FREE);
+    // The provider caps concurrent connections; seeding it would starve viewers.
+    expect(picked).not.toContain(PAID);
+  });
+
+  test("the seed is not persisted, so it keeps tracking new free sources", async () => {
+    await save({ channels: [], layout: "2x2", focus: null, audio: 0 });
+    await compositor.restore();
+    expect(compositor.getState().channels.length).toBeGreaterThan(0);
+    const stored = await getSetting("mosaic.state");
+    expect(stored.channels).toEqual([]); // still empty on disk
+  });
+
+  test("a saved selection always beats the seed", async () => {
+    await save({ channels: [A], layout: "2up", focus: null, audio: 0 });
+    await compositor.restore();
+    expect(compositor.getState().channels).toEqual([A]);
+  });
+
+  test("dead free sources are not seeded", async () => {
+    sqlite.exec(`UPDATE streams SET health='dead' WHERE channel_id=${FREE}`);
+    await save({ channels: [], layout: "2x2", focus: null, audio: 0 });
+    await compositor.restore();
+    expect(compositor.getState().channels).not.toContain(FREE);
+    sqlite.exec(`UPDATE streams SET health='live' WHERE channel_id=${FREE}`);
+  });
+});

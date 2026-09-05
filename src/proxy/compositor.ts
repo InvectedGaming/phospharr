@@ -1,6 +1,6 @@
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { channels as channelsTable } from "../db/schema.ts";
+import { channels as channelsTable, streams as streamsTable } from "../db/schema.ts";
 import { cachedSetting, getSetting, setSetting } from "../settings.ts";
 import { SupervisedProc } from "./supervisor.ts";
 import { tileFeeds, TILE_FPS } from "./tilefeed.ts";
@@ -43,6 +43,10 @@ const FPS = Number(process.env.PHOSPHARR_MOSAIC_FPS ?? TILE_FPS);
 // owned by exactly the running encode.
 const ZMQ_PORT = Number(process.env.PHOSPHARR_COMPOSITOR_ZMQ_PORT || 5595);
 const ZMQ_ENDPOINT = `tcp://127.0.0.1:${ZMQ_PORT}`;
+
+/** Most tiles the first-boot seed will fill. 4 = a full 2x2 without spilling
+ *  into a 3x3 of mostly-empty cells. */
+const MOSAIC_SEED_MAX = 4;
 
 export type MosaicLayout = "2up" | "2x2" | "3x3";
 export interface MosaicState { channels: number[]; layout: MosaicLayout; focus: number | null; audio: number; names?: string[] }
@@ -186,12 +190,39 @@ class Compositor {
    *  stale id would compose a tile that can never dial. Order is preserved so the
    *  arrangement survives; if nothing survives, the state stays empty rather than
    *  compositing dead tiles. */
+  /** First-boot fallback: give channel 1 something to show before anyone has
+   *  picked tiles.
+   *
+   *  Seeded ONLY from resolver-backed streams (Twitch/YouTube via streamlink or
+   *  yt-dlp), never from the provider. The provider caps us at 4 concurrent
+   *  connections, and a 4-tile mosaic would consume every one of them — so a
+   *  provider-seeded channel 1 would starve real viewers the instant anyone
+   *  landed on it while browsing the guide. Free sources cost nothing to hold.
+   *
+   *  Deliberately NOT persisted: leaving it unsaved means the seed keeps
+   *  reflecting whatever free sources exist as you add them, right up until you
+   *  pick tiles yourself — at which point setState persists YOUR choice and this
+   *  never runs again. */
+  private seed(): void {
+    const rows = db.select({ id: channelsTable.id, name: channelsTable.name })
+      .from(channelsTable)
+      .innerJoin(streamsTable, eq(streamsTable.channelId, channelsTable.id))
+      .where(and(eq(channelsTable.isHidden, false), isNotNull(streamsTable.resolver), ne(streamsTable.health, "dead")))
+      .orderBy(channelsTable.number)
+      .all();
+    const seen = new Set<number>();
+    const picked = rows.filter((r) => !seen.has(r.id) && seen.add(r.id)).slice(0, MOSAIC_SEED_MAX);
+    if (!picked.length) return; // nothing free to show — channel 1 stays a 503 until tiles are picked
+    this.state = { channels: picked.map((r) => r.id), layout: "2x2", focus: null, audio: 0 };
+    console.log(`[mosaic] seeded ${picked.length} free-source tile(s): ${picked.map((r) => r.name).join(", ")}`);
+  }
+
   async restore(): Promise<void> {
     // getSetting, not cachedSetting: setSetting invalidates the cache, so a
     // cached read straight after a write returns the DEFAULT. This runs once at
     // boot and is already async — there is no reason to take that hazard.
     const saved = await getSetting("mosaic.state");
-    if (!saved?.channels?.length) return;
+    if (!saved?.channels?.length) return this.seed();
     const live = new Set(
       db.select({ id: channelsTable.id }).from(channelsTable)
         .where(inArray(channelsTable.id, saved.channels)).all().map((r) => r.id),
