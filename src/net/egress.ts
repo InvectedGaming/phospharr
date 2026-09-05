@@ -1,3 +1,4 @@
+import { cachedSetting } from "../settings.ts";
 import { sqlite } from "../db/index.ts";
 import { vpnProxyUrl } from "./tunnel.ts";
 
@@ -21,6 +22,28 @@ const proxyStmt = sqlite.prepare("SELECT proxy_url FROM providers WHERE id = ?")
 export type Egress =
   | { proxy?: string; blocked?: false }
   | { blocked: true; reason: string }; // must NOT connect (would leak the real IP)
+
+/**
+ * Egress for a provider's CONTROL-plane calls — the lineup sync (player_api.php)
+ * and the EPG feed (xmltv.php) — as opposed to the DATA plane (the .ts streams).
+ *
+ * Normally identical to providerEgress. The split exists because a provider can
+ * block the streaming egress IP for its API while still serving video from it:
+ * 2026-09-05, beetvhost closed every PHP request from our Nord exit
+ * (92.119.18.205) with zero bytes, for 39 hours, while .ts streams from that
+ * same IP played perfectly. The guide aged out completely and every channel
+ * showed a blank row.
+ *
+ * `providers.controlProxy` points those two calls at a different HTTP proxy
+ * (another VPN's) while streaming stays on the tunnel that works. It is still a
+ * VPN, so this is never a path back to the host IP — the fail-closed guarantee
+ * is preserved. Empty (the default) keeps the old single-egress behaviour.
+ */
+export function providerControlEgress(providerId: number | null | undefined): Egress {
+  const override = cachedSetting("providers.controlProxy")?.trim();
+  if (override) return { proxy: override };
+  return providerEgress(providerId);
+}
 
 /** Resolve how a provider's upstream traffic should exit. */
 export function providerEgress(providerId: number | null | undefined): Egress {
