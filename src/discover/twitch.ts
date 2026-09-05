@@ -37,7 +37,13 @@ async function gql<T>(query: string): Promise<T | null> {
 
 const STREAM_FIELDS = "title viewersCount previewImageURL(width: 320, height: 180) broadcaster { login displayName } game { displayName }";
 type EdgeNode = { title: string; viewersCount: number; previewImageURL: string | null; broadcaster: { login: string; displayName: string }; game: { displayName: string } | null };
-function norm(n: EdgeNode): DiscoverStream {
+// Twitch intermittently returns a node whose `broadcaster` is null — a banned,
+// deleted, or geo-restricted stream still occupying a slot in the top-N edge
+// list. Dereferencing it threw, and because norm() runs inside a .map() over the
+// whole page, ONE such node emptied the entire discovery grid. Skip those nodes
+// instead: a page of 29 good streams beats an exception.
+function norm(n: EdgeNode | null | undefined): DiscoverStream | null {
+  if (!n?.broadcaster?.login) return null;
   return { login: n.broadcaster.login, name: n.broadcaster.displayName, title: n.title, game: n.game?.displayName ?? "", viewers: n.viewersCount, thumb: n.previewImageURL, live: true };
 }
 
@@ -50,7 +56,7 @@ export async function topStreams(limit = 30): Promise<DiscoverStream[]> {
   const d = await gql<{ streams: { edges: { node: EdgeNode }[] } }>(
     `query { streams(first: ${limit}, options: { sort: VIEWER_COUNT }) { edges { node { ${STREAM_FIELDS} } } } }`,
   );
-  const data = (d?.streams?.edges ?? []).map((e) => norm(e.node));
+  const data = (d?.streams?.edges ?? []).map((e) => norm(e?.node)).filter((x): x is DiscoverStream => x !== null);
   if (data.length) popCache = { at: Date.now(), data };
   return data;
 }
