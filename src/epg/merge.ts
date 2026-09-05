@@ -133,10 +133,15 @@ async function runEpgSync(sources: EpgSource[]): Promise<EpgSyncResult[]> {
   // write that interleaves during a yield — rolled back with the sync on failure.
   // A few-thousand-row sync transaction is a couple of ms; upserts are idempotent,
   // so a mid-feed failure just leaves earlier batches applied (next sync repairs).
+  // A dropped socket is transient; three tries with a widening gap cost at most
+  // a couple of minutes and turn "guide blank for two days" into a blip. Kept
+  // small so a genuinely dead feed still fails the run promptly.
+  const EPG_FETCH_ATTEMPTS = 3;
+  const EPG_RETRY_BACKOFF_MS = 5_000;
+
   const BATCH_ROWS = 2000;
 
   for (const { url, proxy } of sources) {
-    const stream = await fetchXmltvStream(url, egress(proxy));
     const nameById = new Map<string, string>();
     let bound = 0;
     let skipped = 0;
@@ -157,7 +162,20 @@ async function runEpgSync(sources: EpgSource[]): Promise<EpgSyncResult[]> {
       batch = [];
     };
 
-    await streamXmltv(stream, {
+    // Retry a dropped feed.
+    //
+    // The provider closes the socket partway through the XMLTV download —
+    // "The socket connection was closed unexpectedly" — and every attempt died
+    // there, so the guide aged out completely and every channel showed a blank
+    // row. A drop is transient, not a permanent error, and the upserts are
+    // idempotent (ON CONFLICT ... DO UPDATE), so re-reading a feed we already
+    // partly applied costs only time.
+    //
+    // Restarting from byte 0 rather than resuming with a Range request is
+    // deliberate: the SAX parser is stateful, and mid-document resumption would
+    // need the open-element stack rebuilt from a byte offset the server is free
+    // to align differently on a re-request.
+    const attempt = (): Promise<{ bytes: number }> => fetchXmltvStream(url, egress(proxy)).then((stream) => streamXmltv(stream, {
       onChannel: (c) => nameById.set(c.id.toLowerCase(), c.displayName),
       onProgramme: (p: XmltvProgramme) => {
         const startMs = p.start.getTime();
@@ -186,7 +204,29 @@ async function runEpgSync(sources: EpgSource[]): Promise<EpgSyncResult[]> {
         ]);
         if (batch.length >= BATCH_ROWS) flush();
       },
-    });
+    }));
+
+    const safe = url.replace(/(username|password)=[^&]*/g, "$1=***");
+    let lastErr: unknown;
+    for (let tryNo = 1; tryNo <= EPG_FETCH_ATTEMPTS; tryNo++) {
+      try {
+        await attempt();
+        if (tryNo > 1) console.log(`[epg] ${safe}: recovered on attempt ${tryNo}`);
+        lastErr = undefined;
+        break;
+      } catch (e) {
+        lastErr = e;
+        const read = (e as { bytesRead?: number }).bytesRead ?? 0;
+        console.error(`[epg] attempt ${tryNo}/${EPG_FETCH_ATTEMPTS} failed after ${read} bytes / ${bound} programmes: ${e instanceof Error ? e.message : String(e)}`);
+        // Whatever this attempt parsed is already committed in 2000-row batches;
+        // flush the tail so a partial feed still improves the guide, then retry.
+        flush();
+        if (tryNo < EPG_FETCH_ATTEMPTS) await Bun.sleep(EPG_RETRY_BACKOFF_MS * tryNo);
+      }
+    }
+    // Give up on THIS source only — other feeds still run, because one bad feed
+    // must never blank the whole guide.
+    if (lastErr) console.error(`[epg] giving up on ${safe}; keeping the ${bound} programmes it did deliver`);
     flush();
     // Bound table growth: drop programmes that ended well in the past.
     db.delete(programs).where(lt(programs.endTime, new Date(Date.now() - PRUNE_BEHIND_MS))).run();

@@ -76,3 +76,51 @@ describe("streamXmltv", () => {
     expect(norm(tiny)).toEqual(norm(big));
   });
 });
+
+/** A stream that delivers `okBytes` and then dies, exactly as the provider does
+ *  when it closes the socket partway through the guide. */
+function dropsAfter(s: string, okBytes: number): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  let sent = 0;
+  return new ReadableStream({
+    pull(c) {
+      if (sent >= okBytes) return c.error(new Error("The socket connection was closed unexpectedly"));
+      const chunk = s.slice(sent, sent + 64);
+      sent += chunk.length;
+      c.enqueue(enc.encode(chunk));
+    },
+  });
+}
+
+describe("a feed that dies mid-download", () => {
+  test("reports how many bytes arrived, so an early death is distinguishable from a late one", async () => {
+    let err: (Error & { bytesRead?: number }) | null = null;
+    try {
+      await streamXmltv(dropsAfter(XML, 128), { onChannel: () => {}, onProgramme: () => {} });
+    } catch (e) {
+      err = e as Error & { bytesRead?: number };
+    }
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain("socket connection was closed");
+    // The point of the change: the failure carries its progress.
+    expect(err!.bytesRead).toBeGreaterThan(0);
+    expect(err!.bytesRead).toBeLessThan(XML.length);
+  });
+
+  test("hands back the byte count on success too", async () => {
+    const r = await streamXmltv(chunked(XML, 64), { onChannel: () => {}, onProgramme: () => {} });
+    expect(r.bytes).toBe(new TextEncoder().encode(XML).length);
+  });
+
+  test("programmes parsed before the drop still reach the handler", async () => {
+    const programmes: XmltvProgramme[] = [];
+    // Far enough in to have completed the first <programme> element.
+    const upTo = XML.indexOf("</programme>") + "</programme>".length;
+    await streamXmltv(dropsAfter(XML, upTo), {
+      onChannel: () => {},
+      onProgramme: (p) => programmes.push(p),
+    }).catch(() => {});
+    expect(programmes.length).toBeGreaterThanOrEqual(1);
+    expect(programmes[0]!.title).toBe("SportsCenter & Friends");
+  });
+});
