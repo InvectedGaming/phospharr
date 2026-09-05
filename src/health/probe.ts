@@ -152,7 +152,7 @@ async function probeOne(s: Due): Promise<ProbeVerdictRow | void> {
         qualityScore: qualityScore(o.resolution ?? undefined, o.health),
       })
       .where(eq(streams.id, s.id));
-    const healthy = o.health !== "dead";
+      const healthy = o.health !== "dead";
       recordProbe(s.providerId, healthy);
       if (!healthy && breakerOpen(s.providerId)) {
         console.log(`[health] provider ${s.providerId}: ${BREAKER_TRIP_STREAK} dead probes in a row — pausing probes so a provider outage cannot condemn the whole catalogue`);
