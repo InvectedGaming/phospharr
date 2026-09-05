@@ -25,9 +25,28 @@ export function familyFor(resolution: number | null): string {
   return resolution != null && resolution >= 1080 ? "1080p25" : "720p30";
 }
 
+export interface ReelEntry { file: string; bytes: number; totalSec: number; tailStartByte: number }
+
+/**
+ * How many distinct reels we keep per family.
+ *
+ * One reel meant every tune inside a rebuild window replayed the same memes —
+ * the random start offset varied the entry point but not the content, so it read
+ * as "the same memes again". Each build now writes a fresh slot and rotates, and
+ * loadReel hands out a different slot per tune, so you cycle RING_SIZE distinct
+ * meme sets before anything repeats.
+ *
+ * Six is a deliberate ceiling: reels are ~20s of low-bitrate video (a few MB
+ * each, two families), so the disk cost is trivial, but every slot is an extra
+ * meme-API call and ffmpeg encode over the ring's lifetime.
+ */
+export const RING_SIZE = 6;
+
 export interface ReelManifest {
   builtAt: number;
-  families: Record<string, { file: string; bytes: number; totalSec: number; tailStartByte: number }>;
+  /** Newest first. Older single-entry manifests are rejected by readManifest
+   *  (see there) and simply rebuilt — the cache is disposable. */
+  families: Record<string, ReelEntry[]>;
 }
 
 function manifestPath(dir: string): string {
@@ -45,6 +64,11 @@ export async function readManifest(dir: string = SLATE_DIR): Promise<ReelManifes
     // as "warm cache, skip the boot build" (startSlateBuilder's manifest
     // check would otherwise treat it as present and never rebuild).
     if (!parsed || typeof parsed !== "object" || !parsed.families || typeof parsed.families !== "object") return null;
+    // Every family must carry an ARRAY of slots. A manifest written before the
+    // ring existed holds a bare object per family; treating that as a one-slot
+    // ring would work, but rejecting it is better — it costs one rebuild and
+    // keeps exactly one shape in play rather than two forever.
+    for (const v of Object.values(parsed.families)) if (!Array.isArray(v) || v.length === 0) return null;
     return parsed;
   } catch {
     return null;
@@ -68,6 +92,29 @@ export async function saveManifest(man: ReelManifest, dir: string = SLATE_DIR): 
  * absent cache (that would take down the tune instead of just skipping the
  * slate).
  */
+/**
+ * Round-robin cursor per family, so consecutive tunes serve different reels
+ * rather than replaying whichever slot happens to be first.
+ *
+ * In-memory and per-process: a restart begins at slot 0 again, which is fine —
+ * the goal is that CONSECUTIVE tunes differ, not that the sequence is globally
+ * unique. Deliberately not random: random repeats itself roughly one tune in
+ * RING_SIZE, which is exactly the "same memes again" complaint this fixes.
+ */
+const cursor = new Map<string, number>();
+
+function nextSlot(family: string, ring: ReelEntry[]): ReelEntry | null {
+  if (!ring.length) return null;
+  const at = (cursor.get(family) ?? -1) + 1;
+  cursor.set(family, at);
+  return ring[at % ring.length] ?? null;
+}
+
+/** Test-only: forget the round-robin positions. */
+export function _resetReelCursor(): void {
+  cursor.clear();
+}
+
 export async function loadReel(
   family: string,
   dir: string = SLATE_DIR,
@@ -75,7 +122,9 @@ export async function loadReel(
   try {
     const man = await readManifest(dir);
     if (!man) return null;
-    const entry = man.families[family];
+    const ring = man.families[family];
+    if (!ring || !ring.length) return null;
+    const entry = nextSlot(family, ring);
     if (!entry) return null;
     const file = Bun.file(join(dir, entry.file));
     if (!(await file.exists())) return null;
