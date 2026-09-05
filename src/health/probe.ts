@@ -110,7 +110,11 @@ async function dueStreams(limit: number): Promise<Due[]> {
     .select({ id: streams.id, url: streams.url, providerId: streams.providerId })
     .from(streams)
     .innerJoin(channels, eq(channels.id, streams.channelId))
-    .where(and(eq(channels.isHidden, false), or(isNull(streams.lastProbedAt), lt(streams.lastProbedAt, cutoff))))
+    // Resolver-backed streams (Twitch/YouTube) are NOT ours. Fetching
+    // https://twitch.tv/<login> returns an HTML page — bytes flow, so we would
+    // hand out a verdict that says nothing about whether anyone is broadcasting,
+    // and fight the liveness poller that actually knows. See health/liveness.ts.
+    .where(and(eq(channels.isHidden, false), isNull(streams.resolver), or(isNull(streams.lastProbedAt), lt(streams.lastProbedAt, cutoff))))
     .orderBy(sql`${streams.lastProbedAt} ASC NULLS FIRST`)
     .limit(limit);
 }
