@@ -8,6 +8,7 @@ import { qualityScore } from "../canonical/matcher.ts";
 import { registerLoop } from "./watchdog.ts";
 import { sendAlert } from "../alerts.ts";
 import { updateVerdicts, type VerdictChange } from "./verdict.ts";
+import { recordProbe, breakerOpen, BREAKER_TRIP_STREAK } from "./breaker.ts";
 
 /**
  * Health probe loop: pull a short slice of each stream (through its provider's
@@ -127,6 +128,12 @@ type ProbeVerdictRow = { providerId: number; healthy: boolean };
 async function probeOne(s: Due): Promise<ProbeVerdictRow | void> {
   const eg = providerEgress(s.providerId);
   if (eg.blocked) return; // VPN down: no verdict — never probe direct, never guess
+  // Same principle, the other failure shape: tunnel UP but the provider itself
+  // closing connections, so every sample comes back short and classifies dead.
+  // A long unbroken run of that is evidence about the provider, not about that
+  // many channels — and a wrong `dead` drops the channel out of the tuner
+  // lineup entirely (hasUsableSource in tuner/hdhr.ts). Record nothing instead.
+  if (breakerOpen(s.providerId)) return;
   // Politeness: leave viewers headroom, and skip (not fail) when the pool is busy.
   const usage = pool.usage(s.providerId);
   if (usage.max - usage.used <= HEADROOM_SLOTS) return;
@@ -145,7 +152,12 @@ async function probeOne(s: Due): Promise<ProbeVerdictRow | void> {
         qualityScore: qualityScore(o.resolution ?? undefined, o.health),
       })
       .where(eq(streams.id, s.id));
-    return { providerId: s.providerId, healthy: o.health !== "dead" };
+      const healthy = o.health !== "dead";
+      recordProbe(s.providerId, healthy);
+      if (!healthy && breakerOpen(s.providerId)) {
+        console.log(`[health] provider ${s.providerId}: ${BREAKER_TRIP_STREAK} dead probes in a row — pausing probes so a provider outage cannot condemn the whole catalogue`);
+      }
+      return { providerId: s.providerId, healthy };
   } finally {
     pool.release(s.providerId);
   }
