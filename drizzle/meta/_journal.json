@@ -169,6 +169,13 @@
       "when": 1786162507027,
       "tag": "0023_light_molten_man",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1788674017571,
+      "tag": "0024_classy_the_stranger",
+      "breakpoints": true
     }
   ]
 }

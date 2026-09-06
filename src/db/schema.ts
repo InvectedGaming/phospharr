@@ -417,6 +417,20 @@ export const syncState = sqliteTable("sync_state", {
   scopeFailures: text("scope_failures"),
 });
 
+// ─── EMBY GUIDE PUSH: per-channel fingerprint of the last programme set we
+// pushed to a downstream server's guide plugin, so each push sends only the
+// channels that changed. Row absent = never pushed / last push not acknowledged.
+export const guidePushState = sqliteTable(
+  "guide_push_state",
+  {
+    serverId: text("server_id").notNull(),
+    canonicalId: text("canonical_id").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    pushedAt: integer("pushed_at").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.serverId, t.canonicalId] }) }),
+);
+
 export type VodSeries = typeof vodSeries.$inferSelect;
 
 export type Recording = typeof recordings.$inferSelect;

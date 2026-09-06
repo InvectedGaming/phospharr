@@ -24,6 +24,9 @@ export interface DownstreamServer {
   url: string; // base URL, e.g. http://10.0.0.5:8096
   apiKey: string;
   enabled: boolean;
+  /** Push guide programmes straight into this server via the Phospharr plugin
+   *  instead of asking it to run a full guide refresh. Off = today's behaviour. */
+  guidePush?: boolean;
 }
 
 /** A named split of provider categories served as its own playlist + EPG
