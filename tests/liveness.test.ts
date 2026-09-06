@@ -112,4 +112,18 @@ describe("live title → guide text", () => {
     const r = await pollOnce(async () => new Map([["liveone", { live: true, title: "a" }]]));
     expect(r.changed).toBe(false);
   });
+
+  test("a login Twitch did not answer for keeps its customNow — never cleared on silence", async () => {
+    await pollOnce(async () => new Map([["liveone", { live: true, title: "kept" }]]));
+    expect(nowOf(ON)).toBe("Live now: kept");
+    const r = await pollOnce(async () => new Map()); // Twitch answered for nobody
+    expect(nowOf(ON)).toBe("Live now: kept");
+    expect(r.changed).toBe(false);
+  });
+
+  test("a network failure leaves customNow untouched", async () => {
+    await pollOnce(async () => new Map([["liveone", { live: true, title: "kept" }]]));
+    await pollOnce(async () => { throw new Error("network down"); }).catch(() => {});
+    expect(nowOf(ON)).toBe("Live now: kept");
+  });
 });
