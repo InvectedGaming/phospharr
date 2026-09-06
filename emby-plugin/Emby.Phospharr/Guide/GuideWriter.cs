@@ -22,6 +22,13 @@ namespace Emby.Phospharr.Guide
     public class GuideWriter
     {
         private static readonly object Gate = new object();
+        private static readonly TimeSpan ChannelIndexTtl = TimeSpan.FromSeconds(60);
+        // GuideApi builds a new GuideWriter per request, so the cache and its timestamp are
+        // static — shared across pushes and protected by the same Gate that already serializes
+        // Apply(). A phospharr sync fans one push out into ~40 chunked POSTs; without this,
+        // each one re-runs a full LiveTvChannel enumeration just to resolve tvg-id -> channel.
+        private static Dictionary<string, List<LiveTvChannel>> _channelIndex;
+        private static DateTime _channelIndexAt = DateTime.MinValue;
         private readonly ILibraryManager _lib;
         private readonly ILogger _log;
 
@@ -45,6 +52,10 @@ namespace Emby.Phospharr.Guide
                     }
                     if (!channels.TryGetValue(batch.TvgId, out var targets))
                     {
+                        // A miss might just mean the cached index predates a channel that was
+                        // added since — invalidate so the next request rebuilds it. This one
+                        // still reports "not found"; the retry lands on the following push.
+                        _channelIndexAt = DateTime.MinValue;
                         r.Skipped = true; r.Reason = "channel not found"; continue;
                     }
 
@@ -72,9 +83,13 @@ namespace Emby.Phospharr.Guide
             return result;
         }
 
-        /// <summary>tvg-id → every M3U-tuner channel item carrying it.</summary>
+        /// <summary>tvg-id → every M3U-tuner channel item carrying it. Cached under Gate for
+        /// ChannelIndexTtl so a burst of chunked pushes shares one enumeration.</summary>
         private Dictionary<string, List<LiveTvChannel>> IndexChannels()
         {
+            if (_channelIndex != null && DateTime.UtcNow - _channelIndexAt < ChannelIndexTtl)
+                return _channelIndex;
+
             var map = new Dictionary<string, List<LiveTvChannel>>(StringComparer.Ordinal);
             var items = _lib.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { typeof(LiveTvChannel).Name } });
             foreach (var item in items)
@@ -84,7 +99,9 @@ namespace Emby.Phospharr.Guide
                 if (!map.TryGetValue(tvg, out var list)) map[tvg] = list = new List<LiveTvChannel>();
                 list.Add(ch);
             }
-            return map;
+            _channelIndex = map;
+            _channelIndexAt = DateTime.UtcNow;
+            return _channelIndex;
         }
 
         private TargetOutcome ApplyToChannel(LiveTvChannel ch, ChannelBatch batch)
@@ -102,6 +119,8 @@ namespace Emby.Phospharr.Guide
             {
                 InternalId = p.InternalId, ExternalId = p.ExternalId, Start = p.StartDate, End = p.EndDate,
                 Name = p.Name, Overview = p.Overview, IsLive = p.IsLive,
+                // Fill() always writes Genres as exactly [Category] (or empty), so this round-trips.
+                Category = p.Genres != null && p.Genres.Length > 0 ? p.Genres[0] : null,
             }).ToList();
 
             var diff = GuideDiff.Compute(ch.ExternalId, batch, existing);
@@ -147,6 +166,8 @@ namespace Emby.Phospharr.Guide
             item.Name = p.Title ?? "";
             item.SortName = p.Title ?? "";
             item.Overview = p.Description;
+            // p.Subtitle is intentionally not persisted here: Emby 4.9's LiveTvProgram has no
+            // per-programme episode-title field (see ProgramDto.Subtitle for details).
             item.StartDate = start;
             item.EndDate = end;
             item.RunTimeTicks = (end - start).Ticks;

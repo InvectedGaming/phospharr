@@ -13,6 +13,7 @@ namespace Emby.Phospharr.Guide
         public DateTimeOffset? End { get; set; }
         public string Name { get; set; }
         public string Overview { get; set; }
+        public string Category { get; set; }
         public bool IsLive { get; set; }
     }
 
@@ -47,7 +48,10 @@ namespace Emby.Phospharr.Guide
             foreach (var p in batch.Programs ?? new List<ProgramDto>())
             {
                 var id = ProgramIdentity.ExternalId(batch.TvgId, p.Start, channelExternalId);
-                seen.Add(id);
+                // Two incoming programmes landing on the same channel + start (bad upstream
+                // data, or a duplicate row from a client retry) would otherwise both try to
+                // create/update the same ExternalId. Keep the first, drop the rest.
+                if (!seen.Add(id)) continue;
                 if (!byId.TryGetValue(id, out var cur)) { result.Create.Add(p); continue; }
                 if (!Same(cur, p)) result.Update.Add(new ProgramUpdate { Existing = cur, Incoming = p });
             }
@@ -67,6 +71,7 @@ namespace Emby.Phospharr.Guide
         {
             return string.Equals(e.Name, p.Title, StringComparison.Ordinal)
                 && string.Equals(e.Overview ?? "", p.Description ?? "", StringComparison.Ordinal)
+                && string.Equals(e.Category ?? "", p.Category ?? "", StringComparison.Ordinal)
                 && e.End == p.End
                 && e.IsLive == p.IsLive;
         }

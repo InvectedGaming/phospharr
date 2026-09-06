@@ -4,6 +4,7 @@ using MediaBrowser.Model.Services;
 namespace Emby.Phospharr.Api
 {
     [Route("/Phospharr/Ping", "GET", Summary = "Plugin liveness + version")]
+    [MediaBrowser.Controller.Net.Authenticated(Roles = "Admin")]
     public class PingRequest : IReturn<PingResult> { }
 
     public class PingResult
@@ -32,6 +33,9 @@ namespace Emby.Phospharr.Api
         public System.DateTimeOffset Start { get; set; }
         public System.DateTimeOffset End { get; set; }
         public string Title { get; set; }
+        // Accepted for contract stability and intentionally not persisted: Emby 4.9's
+        // LiveTvProgram has no per-programme episode-title field (the API's EpisodeTitle
+        // mirrors Name).
         public string Subtitle { get; set; }
         public string Description { get; set; }
         /// <summary>Emby colour keyword: Sports / News / Movie / Kids / Series.</summary>
