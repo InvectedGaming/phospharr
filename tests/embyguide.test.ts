@@ -2,7 +2,8 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { sqlite } from "../src/db/index.ts";
 import type { DownstreamServer } from "../src/settings.ts";
 import { setSetting } from "../src/settings.ts";
-import { pushGuide, pushOrRefreshDownstream, pushGuideOnly, fingerprint, _resetGuidePushState, _resetFallbackLog } from "../src/sync/embyguide.ts";
+import { downstreamResults } from "../src/epg/downstream.ts";
+import { pushGuide, pushOrRefreshDownstream, pushGuideOnly, fingerprint, parseNotFound, _resetGuidePushState, _resetFallbackLog } from "../src/sync/embyguide.ts";
 
 const NOW = 1_800_000_000;
 const A = 994001, B = 994002;
@@ -19,8 +20,19 @@ afterAll(async () => {
 });
 
 type Seen = { method: string; path: string; body?: any };
-function fakePlugin(opts: { ping?: boolean; skip?: string[] } = {}) {
+// A skip entry is either a bare TvgId (skipped with reason "channel not
+// found", the common case) or an { id, reason } pair for an arbitrary skip
+// reason — existing call sites passing string[] keep working unchanged.
+type SkipSpec = string | { id: string; reason?: string };
+function fakePlugin(opts: { ping?: boolean; skip?: SkipSpec[]; delayMs?: number } = {}) {
   const seen: Seen[] = [];
+  const skipReason = (tvgId: string): string | undefined => {
+    for (const s of opts.skip ?? []) {
+      if (typeof s === "string") { if (s === tvgId) return "channel not found"; }
+      else if (s.id === tvgId) return s.reason ?? "channel not found";
+    }
+    return undefined;
+  };
   const srv = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -30,9 +42,12 @@ function fakePlugin(opts: { ping?: boolean; skip?: string[] } = {}) {
       seen.push(rec);
       if (u.pathname === "/Phospharr/Ping") return opts.ping === false ? new Response("nope", { status: 404 }) : Response.json({ Version: "0.1.0.0", EmbyVersion: "4.9.5.0" });
       if (u.pathname === "/Phospharr/Guide") {
-        const chans = (rec.body.Channels as any[]).map((c) =>
-          opts.skip?.includes(c.TvgId) ? { TvgId: c.TvgId, Skipped: true, Reason: "channel not found" }
-                                        : { TvgId: c.TvgId, Created: c.Programs.length, Updated: 0, Deleted: 0, Skipped: false });
+        if (opts.delayMs) await Bun.sleep(opts.delayMs);
+        const chans = (rec.body.Channels as any[]).map((c) => {
+          const reason = skipReason(c.TvgId);
+          return reason ? { TvgId: c.TvgId, Skipped: true, Reason: reason }
+                        : { TvgId: c.TvgId, Created: c.Programs.length, Updated: 0, Deleted: 0, Skipped: false };
+        });
         return Response.json({ Channels: chans });
       }
       if (u.pathname === "/ScheduledTasks") return Response.json([{ Id: "rg", Key: "RefreshGuide", Name: "Refresh Guide" }]);
@@ -90,14 +105,73 @@ describe("pushGuide", () => {
     f.srv.stop(true);
   });
 
-  test("a skipped channel keeps no fingerprint, so it is retried next push", async () => {
+  test("a not-found channel stores a backoff marker and is deferred on the very next push", async () => {
     const f = fakePlugin({ skip: ["eg.loop.test"] }); _resetGuidePushState(f.server.id);
     const out = await pushGuide(f.server, { now: NOW });
     expect(out.skipped).toBeGreaterThanOrEqual(1);
-    const row = sqlite.query("SELECT 1 FROM guide_push_state WHERE server_id=? AND canonical_id='eg.loop.test'").get(f.server.id);
-    expect(row).toBeNull();
+    const row = sqlite.query("SELECT fingerprint FROM guide_push_state WHERE server_id=? AND canonical_id='eg.loop.test'")
+      .get(f.server.id) as { fingerprint: string } | null;
+    expect(row).not.toBeNull();
+    expect(row!.fingerprint.startsWith("!notfound:")).toBe(true);
+    const parsed = parseNotFound(row!.fingerprint);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.k).toBe(0);
+    expect(parsed!.retryAtMs).toBeGreaterThan(NOW * 1000);
+
+    // eg.news.test is unchanged and eg.loop.test's retry isn't due yet, so an
+    // immediate second push sends nothing at all — not even a Guide POST.
+    const before = f.posts().length;
+    const out2 = await pushGuide(f.server, { now: NOW });
+    expect(out2.channelsSent).toBe(0);
+    expect(out2.channelsDeferred).toBe(1);
+    expect(f.posts().length).toBe(before);
+    f.srv.stop(true);
+  });
+
+  test("a backoff marker past its retryAt is retried, and replaced once the channel is found", async () => {
+    const f = fakePlugin({ skip: ["eg.loop.test"] }); _resetGuidePushState(f.server.id);
     await pushGuide(f.server, { now: NOW });
-    expect(f.posts().at(-1)!.body.Channels.map((c: any) => c.TvgId)).toContain("eg.loop.test");
+
+    // Force the marker's retryAt into the past, as if enough time had elapsed.
+    sqlite.exec(`UPDATE guide_push_state SET fingerprint='!notfound:3:1' WHERE server_id='${f.server.id}' AND canonical_id='eg.loop.test'`);
+
+    // A different plugin instance, sharing the same server id (same push-state
+    // row), that no longer reports the channel as missing.
+    const found = fakePlugin();
+    const sameServer: DownstreamServer = { ...found.server, id: f.server.id };
+    const out = await pushGuide(sameServer, { now: NOW });
+    expect(out.channelsSent).toBe(1);
+    expect(out.channelsDeferred).toBe(0);
+    expect(found.posts().flatMap((p) => p.body.Channels.map((c: any) => c.TvgId))).toContain("eg.loop.test");
+
+    const row = sqlite.query("SELECT fingerprint FROM guide_push_state WHERE server_id=? AND canonical_id='eg.loop.test'")
+      .get(f.server.id) as { fingerprint: string };
+    expect(row.fingerprint.startsWith("!notfound:")).toBe(false);
+
+    f.srv.stop(true);
+    found.srv.stop(true);
+  });
+
+  test("a channel skipped for a reason other than not-found stores no fingerprint and is retried next push", async () => {
+    const f = fakePlugin({ skip: [{ id: "eg.loop.test", reason: "missing TvgId" }] }); _resetGuidePushState(f.server.id);
+    const out = await pushGuide(f.server, { now: NOW });
+    expect(out.skipped).toBeGreaterThanOrEqual(1);
+
+    // Unlike a "channel not found" skip, no row — and in particular no
+    // !notfound: backoff marker — is stored for this channel at all.
+    const row = sqlite.query("SELECT fingerprint FROM guide_push_state WHERE server_id=? AND canonical_id='eg.loop.test'")
+      .get(f.server.id) as { fingerprint: string } | null;
+    expect(row).toBeNull();
+
+    // So it's sent again on the very next push — not deferred like a
+    // not-found backoff would defer it.
+    const before = f.posts().length;
+    const out2 = await pushGuide(f.server, { now: NOW });
+    expect(out2.channelsDeferred).toBe(0);
+    expect(out2.channelsSent).toBeGreaterThanOrEqual(1);
+    expect(f.posts().length).toBeGreaterThan(before);
+    const sentIds = f.posts().at(-1)!.body.Channels.map((c: any) => c.TvgId);
+    expect(sentIds).toContain("eg.loop.test");
     f.srv.stop(true);
   });
 
@@ -191,6 +265,85 @@ describe("pushGuideOnly", () => {
 
     f.srv.stop(true);
     await setSetting("epg.downstream", []);
+  });
+});
+
+describe("record() outcomes", () => {
+  test("a push is reflected in downstreamResults(), not a stale refresh result", async () => {
+    const f = fakePlugin(); _resetGuidePushState(f.server.id);
+    await setSetting("epg.downstream", [f.server]);
+    try {
+      await pushOrRefreshDownstream();
+      const r = downstreamResults().find((x) => x.id === f.server.id);
+      expect(r).toBeDefined();
+      expect(r!.ok).toBe(true);
+      expect(r!.message).toContain("push:");
+      expect(r!.message).toContain("skipped");
+      expect(r!.message).toContain("deferred");
+    } finally {
+      f.srv.stop(true);
+      await setSetting("epg.downstream", []);
+    }
+  });
+
+  test("a plugin-absent push records a fallback outcome", async () => {
+    const f = fakePlugin({ ping: false }); _resetGuidePushState(f.server.id); _resetFallbackLog(f.server.id);
+    const out = await pushGuide(f.server, { now: NOW, fallback: false });
+    expect(out.mode).toBe("fallback");
+    const r = downstreamResults().find((x) => x.id === f.server.id);
+    expect(r).toBeDefined();
+    expect(r!.ok).toBe(false);
+    expect(r!.message).toContain("fallback disabled");
+    f.srv.stop(true);
+  });
+});
+
+describe("busy guard", () => {
+  test("a second concurrent pushGuide for the same server is skipped-busy, not a duplicate push", async () => {
+    const f = fakePlugin({ delayMs: 200 }); _resetGuidePushState(f.server.id);
+    const [a, b] = await Promise.all([
+      pushGuide(f.server, { now: NOW }),
+      pushGuide(f.server, { now: NOW }),
+    ]);
+    const modes = [a.mode, b.mode].sort();
+    expect(modes).toEqual(["pushed", "skipped-busy"]);
+    // Only the real push's request(s) reached the plugin.
+    expect(f.posts().length).toBeGreaterThanOrEqual(1);
+    f.srv.stop(true);
+  });
+
+  test("a busy-skip does not block a later push once the first one finishes", async () => {
+    const f = fakePlugin({ delayMs: 100 }); _resetGuidePushState(f.server.id);
+    const [a, b] = await Promise.all([
+      pushGuide(f.server, { now: NOW }),
+      pushGuide(f.server, { now: NOW }),
+    ]);
+    expect([a.mode, b.mode].includes("skipped-busy")).toBe(true);
+    // The guard must be released after the in-flight push completes.
+    const out = await pushGuide(f.server, { now: NOW });
+    expect(out.mode).not.toBe("skipped-busy");
+    f.srv.stop(true);
+  });
+});
+
+describe("servers missing url/apiKey are filtered", () => {
+  test("pushOrRefreshDownstream and pushGuideOnly never send a server without url or apiKey any request", async () => {
+    const f = fakePlugin(); _resetGuidePushState(f.server.id);
+    const noUrl: DownstreamServer = { ...f.server, id: "eg-nourl", url: "", guidePush: true };
+    const noKey: DownstreamServer = { ...f.server, id: "eg-nokey", apiKey: "", guidePush: true };
+    await setSetting("epg.downstream", [noUrl, noKey]);
+    try {
+      const a = await pushOrRefreshDownstream();
+      expect(a.length).toBe(0);
+      expect(f.seen.length).toBe(0);
+
+      const b = await pushGuideOnly();
+      expect(b.length).toBe(0);
+      expect(f.seen.length).toBe(0);
+    } finally {
+      f.srv.stop(true);
+      await setSetting("epg.downstream", []);
+    }
   });
 });
 
