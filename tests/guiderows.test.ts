@@ -88,4 +88,13 @@ describe("guideRows", () => {
     expect(exc).not.toContain("gr.twitch.test");
     expect(exc).toContain("gr.news.test");
   });
+
+  test("the filler flag marks channels with no real rows, including the mosaic", () => {
+    const byId = new Map(guideRows({ now: NOW }).channels.map((c) => [c.canonicalId, c.filler]));
+    expect(byId.get("gr.news.test")).toBe(false);
+    expect(byId.get("gr.alpha.test")).toBe(false);
+    expect(byId.get("gr.loop.test")).toBe(true);
+    expect(byId.get("gr.twitch.test")).toBe(true);
+    expect(byId.get("phospharr.mosaic")).toBe(true);
+  });
 });

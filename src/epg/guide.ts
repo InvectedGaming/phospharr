@@ -25,7 +25,7 @@ export interface GuideProgram {
   extraCategory: string | null;
   season: number | null; episode: number | null; iconUrl: string | null;
 }
-export interface GuideChannel { id: number | null; canonicalId: string; name: string; iconUrl: string | null }
+export interface GuideChannel { id: number | null; canonicalId: string; name: string; iconUrl: string | null; filler: boolean }
 export interface GuideRows { channels: GuideChannel[]; programs: Map<string, GuideProgram[]>; windowStart: number; windowEnd: number }
 
 /** The category vocabulary Emby (and Jellyfin) recognise for guide cell colours. */
@@ -60,7 +60,7 @@ export function guideRows(opts: { catFilter?: { include?: string[]; exclude?: st
   // Channel 1, the always-listed mosaic — no DB row; main lineup only, mirroring playlistM3U's split.
   if (!opts.catFilter?.include?.length) {
     seen.add("phospharr.mosaic");
-    out.push({ id: null, canonicalId: "phospharr.mosaic", name: "Mosaic", iconUrl: null });
+    out.push({ id: null, canonicalId: "phospharr.mosaic", name: "Mosaic", iconUrl: null, filler: false });
     fillTitleBy.set("phospharr.mosaic", "Mosaic — compose in Phospharr");
   }
   for (const ch of rows) {
@@ -71,7 +71,7 @@ export function guideRows(opts: { catFilter?: { include?: string[]; exclude?: st
     // Emby shows what's actually on the stream (liveness writes the Twitch title here).
     fillTitleBy.set(ch.canonicalId, ch.kind === "live" && ch.customNow ? ch.customNow : ch.name);
     const iconUrl = ch.logoUrl ? (opts.logoBase ? `${opts.logoBase}/logo/${ch.id}` : ch.logoUrl) : null;
-    out.push({ id: ch.id, canonicalId: ch.canonicalId, name: ch.name, iconUrl });
+    out.push({ id: ch.id, canonicalId: ch.canonicalId, name: ch.name, iconUrl, filler: false });
   }
 
   const programs = new Map<string, GuideProgram[]>();
@@ -94,6 +94,7 @@ export function guideRows(opts: { catFilter?: { include?: string[]; exclude?: st
   // loops the provider publishes no schedule for. Hour-aligned 4h blocks titled
   // with the channel (or its "now" text) so the guide is never a blank row.
   const fillStart = Math.floor(windowStart / 3600) * 3600;
+  const chById = new Map(out.map((ch) => [ch.canonicalId, ch]));
   for (const cid of seen) {
     if (programs.has(cid)) continue;
     const title = fillTitleBy.get(cid) ?? cid;
@@ -103,6 +104,8 @@ export function guideRows(opts: { catFilter?: { include?: string[]; exclude?: st
       list.push({ start: t, end: t + FILL_BLOCK, title, subtitle: null, description: null, category, extraCategory: "24/7", season: null, episode: null, iconUrl: null });
     }
     programs.set(cid, list);
+    const ch = chById.get(cid);
+    if (ch) ch.filler = true;
   }
   return { channels: out, programs, windowStart, windowEnd };
 }
