@@ -20,8 +20,19 @@ afterAll(async () => {
 });
 
 type Seen = { method: string; path: string; body?: any };
-function fakePlugin(opts: { ping?: boolean; skip?: string[]; delayMs?: number } = {}) {
+// A skip entry is either a bare TvgId (skipped with reason "channel not
+// found", the common case) or an { id, reason } pair for an arbitrary skip
+// reason — existing call sites passing string[] keep working unchanged.
+type SkipSpec = string | { id: string; reason?: string };
+function fakePlugin(opts: { ping?: boolean; skip?: SkipSpec[]; delayMs?: number } = {}) {
   const seen: Seen[] = [];
+  const skipReason = (tvgId: string): string | undefined => {
+    for (const s of opts.skip ?? []) {
+      if (typeof s === "string") { if (s === tvgId) return "channel not found"; }
+      else if (s.id === tvgId) return s.reason ?? "channel not found";
+    }
+    return undefined;
+  };
   const srv = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -32,9 +43,11 @@ function fakePlugin(opts: { ping?: boolean; skip?: string[]; delayMs?: number } 
       if (u.pathname === "/Phospharr/Ping") return opts.ping === false ? new Response("nope", { status: 404 }) : Response.json({ Version: "0.1.0.0", EmbyVersion: "4.9.5.0" });
       if (u.pathname === "/Phospharr/Guide") {
         if (opts.delayMs) await Bun.sleep(opts.delayMs);
-        const chans = (rec.body.Channels as any[]).map((c) =>
-          opts.skip?.includes(c.TvgId) ? { TvgId: c.TvgId, Skipped: true, Reason: "channel not found" }
-                                        : { TvgId: c.TvgId, Created: c.Programs.length, Updated: 0, Deleted: 0, Skipped: false });
+        const chans = (rec.body.Channels as any[]).map((c) => {
+          const reason = skipReason(c.TvgId);
+          return reason ? { TvgId: c.TvgId, Skipped: true, Reason: reason }
+                        : { TvgId: c.TvgId, Created: c.Programs.length, Updated: 0, Deleted: 0, Skipped: false };
+        });
         return Response.json({ Channels: chans });
       }
       if (u.pathname === "/ScheduledTasks") return Response.json([{ Id: "rg", Key: "RefreshGuide", Name: "Refresh Guide" }]);
@@ -137,6 +150,29 @@ describe("pushGuide", () => {
 
     f.srv.stop(true);
     found.srv.stop(true);
+  });
+
+  test("a channel skipped for a reason other than not-found stores no fingerprint and is retried next push", async () => {
+    const f = fakePlugin({ skip: [{ id: "eg.loop.test", reason: "missing TvgId" }] }); _resetGuidePushState(f.server.id);
+    const out = await pushGuide(f.server, { now: NOW });
+    expect(out.skipped).toBeGreaterThanOrEqual(1);
+
+    // Unlike a "channel not found" skip, no row — and in particular no
+    // !notfound: backoff marker — is stored for this channel at all.
+    const row = sqlite.query("SELECT fingerprint FROM guide_push_state WHERE server_id=? AND canonical_id='eg.loop.test'")
+      .get(f.server.id) as { fingerprint: string } | null;
+    expect(row).toBeNull();
+
+    // So it's sent again on the very next push — not deferred like a
+    // not-found backoff would defer it.
+    const before = f.posts().length;
+    const out2 = await pushGuide(f.server, { now: NOW });
+    expect(out2.channelsDeferred).toBe(0);
+    expect(out2.channelsSent).toBeGreaterThanOrEqual(1);
+    expect(f.posts().length).toBeGreaterThan(before);
+    const sentIds = f.posts().at(-1)!.body.Channels.map((c: any) => c.TvgId);
+    expect(sentIds).toContain("eg.loop.test");
+    f.srv.stop(true);
   });
 
   test("plugin absent → fallback to RefreshGuide, nothing pushed", async () => {

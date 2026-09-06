@@ -205,6 +205,13 @@ export async function pushGuide(s: DownstreamServer, opts: { now?: number; chunk
               .onConflictDoUpdate({ target: [guidePushState.serverId, guidePushState.canonicalId], set: { fingerprint: marker, pushedAt: now } }).run();
           }
           // Any other skip reason: store nothing, so it is retried next push.
+          // If this channel still carried a `!notfound:` marker whose retryAtMs
+          // had already elapsed (that's why it was in `pending` at all — see the
+          // parseNotFound branch above), the stale marker is simply left in the
+          // table rather than cleared. That's harmless: retryAtMs is in the past,
+          // so every push from here on re-includes the channel in `pending`
+          // regardless of the marker's presence — it's sent every push, not stuck
+          // on backoff. Self-correcting, not a starvation bug.
           continue;
         }
         out.created += r.Created ?? 0; out.updated += r.Updated ?? 0; out.deleted += r.Deleted ?? 0;
