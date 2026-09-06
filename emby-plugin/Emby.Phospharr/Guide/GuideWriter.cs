@@ -166,13 +166,8 @@ namespace Emby.Phospharr.Guide
             item.Name = p.Title ?? "";
             item.SortName = p.Title ?? "";
             item.Overview = p.Description;
-            // MediaBrowser.Controller.LiveTv.LiveTvProgram (Emby 4.9.5 SDK) has no EpisodeTitle
-            // or Subtitle property — that name only exists on ProgramInfo/RecordingInfo/TimerInfo
-            // and MediaBrowser.Model.Dto.BaseItemDto (verified via reflection over the shipped
-            // lib/emby-4.9.5 DLLs), none of which this entity type is. OriginalTitle is the
-            // closest unused plain-text field with no grouping/linking side effects (unlike
-            // SeriesName, which Emby's library engine may use to associate items into a series).
-            item.OriginalTitle = string.IsNullOrEmpty(p.Subtitle) ? null : p.Subtitle;
+            // p.Subtitle is intentionally not persisted here: Emby 4.9's LiveTvProgram has no
+            // per-programme episode-title field (see ProgramDto.Subtitle for details).
             item.StartDate = start;
             item.EndDate = end;
             item.RunTimeTicks = (end - start).Ticks;

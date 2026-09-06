@@ -74,6 +74,23 @@ public class GuideDiffTests
     }
 
     [Fact]
+    public void null_and_empty_category_are_equivalent()
+    {
+        var d1 = GuideDiff.Compute(Ch, Batch(P(0, "A", "x", category: "")), new List<ExistingProgram> { E(0, "A", "x", category: null) });
+        Assert.Empty(d1.Update); Assert.Empty(d1.Create); Assert.Empty(d1.Delete);
+
+        var d2 = GuideDiff.Compute(Ch, Batch(P(0, "A", "x", category: null)), new List<ExistingProgram> { E(0, "A", "x", category: "") });
+        Assert.Empty(d2.Update); Assert.Empty(d2.Create); Assert.Empty(d2.Delete);
+    }
+
+    [Fact]
+    public void null_category_versus_a_real_category_is_an_update()
+    {
+        var d = GuideDiff.Compute(Ch, Batch(P(0, "A", "x", category: "News")), new List<ExistingProgram> { E(0, "A", "x", category: null) });
+        Assert.Single(d.Update); Assert.Empty(d.Create); Assert.Empty(d.Delete);
+    }
+
+    [Fact]
     public void duplicate_incoming_starts_in_one_batch_produce_only_one_create()
     {
         // Two programmes claiming the same channel + start (bad upstream data, or a client
