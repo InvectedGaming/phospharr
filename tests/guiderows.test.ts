@@ -61,11 +61,12 @@ describe("guideRows", () => {
     expect(news[0]!.category).toBe("News");
   });
 
-  test("a channel with no rows gets hour-aligned 4h filler across the whole window", () => {
+  test("a channel with no rows gets filler on a fixed 4h UTC grid across the whole window", () => {
     const g = guideRows({ now: NOW });
     const fill = g.programs.get("gr.loop.test")!;
     expect(fill.length).toBeGreaterThan(10);
-    expect(fill[0]!.start % 3600).toBe(0);
+    expect(fill[0]!.start % (4 * 3600)).toBe(0);
+    expect(fill[0]!.start).toBeLessThanOrEqual(g.windowStart);
     expect(fill.every((p) => p.end - p.start === 4 * 3600 && p.title === "GR LOOP" && p.extraCategory === "24/7")).toBe(true);
     expect(fill[fill.length - 1]!.start).toBeLessThan(g.windowEnd);
   });

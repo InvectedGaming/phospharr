@@ -91,9 +91,12 @@ export function guideRows(opts: { catFilter?: { include?: string[]; exclude?: st
   }
 
   // Synthetic filler for channels with no real guide data — overwhelmingly 24/7
-  // loops the provider publishes no schedule for. Hour-aligned 4h blocks titled
-  // with the channel (or its "now" text) so the guide is never a blank row.
-  const fillStart = Math.floor(windowStart / 3600) * 3600;
+  // loops the provider publishes no schedule for. Blocks are anchored to a
+  // fixed 4h UTC grid (00/04/08/12/16/20) rather than the fetch hour, so a
+  // block's start — and therefore its Emby ExternalId — stays the same across
+  // pushes; floors to the hour instead would shift every filler row's identity
+  // each time the window moved, making the plugin delete and recreate them.
+  const fillStart = Math.floor(windowStart / FILL_BLOCK) * FILL_BLOCK;
   const chById = new Map(out.map((ch) => [ch.canonicalId, ch]));
   for (const cid of seen) {
     if (programs.has(cid)) continue;

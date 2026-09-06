@@ -16,7 +16,10 @@ import { refreshOne } from "../epg/downstream.ts";
  * "channel not found" is the normal state until Emby's lineup refresh lands it.
  *
  * The plugin being absent must change nothing: a failed Ping falls back to the
- * existing RefreshGuide path. Off by default per server.
+ * existing RefreshGuide path (`pushGuide`'s default). Off by default per server.
+ * Event-driven callers that only want the push — never a 15-minute RefreshGuide
+ * triggered by e.g. a single Twitch title change — use `pushGuideOnly`, which
+ * passes `{ fallback: false }` and silently skips servers without the plugin.
  */
 export interface PushOutcome {
   serverId: string; mode: "pushed" | "fallback" | "disabled";
@@ -46,12 +49,30 @@ async function ping(s: DownstreamServer): Promise<boolean> {
   } catch { return false; }
 }
 
-export async function pushGuide(s: DownstreamServer, opts: { now?: number; chunk?: number } = {}): Promise<PushOutcome> {
+/** Last time the "plugin not reachable" line was logged, per server — throttled
+ *  to once an hour so a steady-state outage doesn't spam the log every tick. */
+const lastFallbackLog = new Map<string, number>();
+
+/** Test-only: forget the fallback-log throttle for one (or all) servers. */
+export function _resetFallbackLog(serverId?: string): void {
+  if (serverId) lastFallbackLog.delete(serverId);
+  else lastFallbackLog.clear();
+}
+
+export async function pushGuide(s: DownstreamServer, opts: { now?: number; chunk?: number; fallback?: boolean } = {}): Promise<PushOutcome> {
   const out: PushOutcome = { serverId: s.id, mode: "pushed", channelsSent: 0, created: 0, updated: 0, deleted: 0, skipped: 0 };
   if (!s.guidePush || !s.enabled || !s.url || !s.apiKey) return { ...out, mode: "disabled" };
+  const fallback = opts.fallback ?? true;
   if (!(await ping(s))) {
-    // No plugin → the old path, targeted at just this server (never throws).
-    // One line, not one per tick: this is a steady state, not an incident.
+    // No plugin (or fallback disabled) → log once an hour, not once a tick —
+    // this is a steady state, not an incident.
+    const last = lastFallbackLog.get(s.id) ?? 0;
+    if (Date.now() - last >= 3_600_000) {
+      console.log(`[guidepush] ${s.name}: plugin not reachable — ${fallback ? "falling back to RefreshGuide" : "skipping push (fallback disabled)"}`);
+      lastFallbackLog.set(s.id, Date.now());
+    }
+    if (!fallback) return { ...out, mode: "fallback", error: "plugin not reachable — no push (fallback disabled)" };
+    // The old path, targeted at just this server (never throws).
     await refreshOne(s);
     return { ...out, mode: "fallback", error: "plugin not reachable — fell back to RefreshGuide" };
   }
@@ -124,6 +145,15 @@ export async function pushOrRefreshDownstream(): Promise<PushOutcome[]> {
     Promise.all(refreshing.map((s) => refreshOne(s).catch(() => undefined))),
   ]);
   return pushed;
+}
+
+/** Push to every server running the plugin; never touch the rest. For event-
+ *  driven callers (liveness) — a Twitch title change must not start a
+ *  15-minute Refresh Guide on a server that has no plugin, and the 6-hourly
+ *  EPG cycle already covers those servers. */
+export async function pushGuideOnly(): Promise<PushOutcome[]> {
+  const servers = ((await getSetting("epg.downstream")) ?? []).filter((s) => s.enabled && s.url && s.apiKey && s.guidePush);
+  return Promise.all(servers.map((s) => pushGuide(s, { fallback: false })));
 }
 
 /** Test-only: forget one server's fingerprints. */

@@ -33,7 +33,7 @@
 import { eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { channels, streams } from "../db/schema.ts";
-import { pushOrRefreshDownstream } from "../sync/embyguide.ts";
+import { pushGuideOnly } from "../sync/embyguide.ts";
 import { registerLoop } from "./watchdog.ts";
 
 const CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
@@ -153,12 +153,19 @@ let watchdogRegistered = false;
 let beat: () => void = () => {};
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
-/** Coalesce a burst of liveness changes into one push, ~10s later. */
+/** Coalesce a burst of liveness changes into one push, ~10s later.
+ *  Push-only: a Twitch title change must never start Emby's 15-minute
+ *  RefreshGuide on a server that has no plugin (or has it unreachable) — the
+ *  6-hourly EPG cycle already covers those servers via pushOrRefreshDownstream. */
 function scheduleGuidePush(): void {
   if (pushTimer) return;
   pushTimer = setTimeout(() => {
     pushTimer = null;
-    void pushOrRefreshDownstream().catch((e) => console.error("[liveness] guide push failed:", e));
+    void pushGuideOnly()
+      .then((r) => {
+        if (r.length) console.log(`[liveness] guide push: ${r.map((x) => `${x.serverId}:${x.mode} ${x.channelsSent}ch`).join(", ")}`);
+      })
+      .catch((e) => console.error("[liveness] guide push failed:", e));
   }, 10_000);
   if (typeof pushTimer.unref === "function") pushTimer.unref();
 }

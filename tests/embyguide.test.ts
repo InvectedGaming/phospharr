@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { sqlite } from "../src/db/index.ts";
 import type { DownstreamServer } from "../src/settings.ts";
 import { setSetting } from "../src/settings.ts";
-import { pushGuide, pushOrRefreshDownstream, fingerprint, _resetGuidePushState } from "../src/sync/embyguide.ts";
+import { pushGuide, pushOrRefreshDownstream, pushGuideOnly, fingerprint, _resetGuidePushState, _resetFallbackLog } from "../src/sync/embyguide.ts";
 
 const NOW = 1_800_000_000;
 const A = 994001, B = 994002;
@@ -110,6 +110,15 @@ describe("pushGuide", () => {
     f.srv.stop(true);
   });
 
+  test("plugin absent with fallback disabled → fallback mode, no RefreshGuide at all", async () => {
+    const f = fakePlugin({ ping: false }); _resetGuidePushState(f.server.id); _resetFallbackLog(f.server.id);
+    const out = await pushGuide(f.server, { now: NOW, fallback: false });
+    expect(out.mode).toBe("fallback");
+    expect(f.posts().length).toBe(0);
+    expect(f.seen.some((s) => s.path.startsWith("/ScheduledTasks/Running/"))).toBe(false);
+    f.srv.stop(true);
+  });
+
   test("guidePush off → disabled, no traffic at all", async () => {
     const f = fakePlugin();
     const out = await pushGuide({ ...f.server, guidePush: false }, { now: NOW });
@@ -145,5 +154,61 @@ describe("pushOrRefreshDownstream", () => {
     push.srv.stop(true);
     refresh.srv.stop(true);
     await setSetting("epg.downstream", []);
+  });
+});
+
+describe("pushGuideOnly", () => {
+  test("pushes servers with guidePush, sends the refresh-only server NO requests at all", async () => {
+    const push = fakePlugin(); _resetGuidePushState(push.server.id);
+    const refresh = fakePlugin();
+    const refreshOnlyServer: DownstreamServer = { ...refresh.server, guidePush: false };
+    await setSetting("epg.downstream", [push.server, refreshOnlyServer]);
+
+    await pushGuideOnly();
+
+    expect(push.posts().length).toBeGreaterThanOrEqual(1);
+    expect(push.seen.some((s) => s.path.startsWith("/ScheduledTasks/Running/"))).toBe(false);
+
+    // The refresh-only server is never touched by an event-driven push — no
+    // Ping, no Guide POST, no RefreshGuide. The 6-hourly cycle covers it instead.
+    expect(refresh.seen.length).toBe(0);
+
+    push.srv.stop(true);
+    refresh.srv.stop(true);
+    await setSetting("epg.downstream", []);
+  });
+
+  test("plugin unreachable on a guidePush server → fallback mode, zero RefreshGuide hits", async () => {
+    const f = fakePlugin({ ping: false }); _resetGuidePushState(f.server.id); _resetFallbackLog(f.server.id);
+    await setSetting("epg.downstream", [f.server]);
+
+    const out = await pushGuideOnly();
+
+    expect(out).toHaveLength(1);
+    expect(out[0]!.mode).toBe("fallback");
+    expect(f.posts().length).toBe(0);
+    expect(f.seen.some((s) => s.path.startsWith("/ScheduledTasks/Running/"))).toBe(false);
+
+    f.srv.stop(true);
+    await setSetting("epg.downstream", []);
+  });
+});
+
+describe("fallback logging", () => {
+  test("logs once per server per hour, not on every unreachable call", async () => {
+    const f = fakePlugin({ ping: false }); _resetGuidePushState(f.server.id); _resetFallbackLog(f.server.id);
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...args: unknown[]) => { lines.push(String(args[0])); };
+    try {
+      await pushGuide(f.server, { now: NOW });
+      await pushGuide(f.server, { now: NOW });
+      await pushGuide(f.server, { now: NOW });
+    } finally {
+      console.log = orig;
+    }
+    const fallbackLines = lines.filter((l) => l.includes("plugin not reachable"));
+    expect(fallbackLines.length).toBe(1);
+    f.srv.stop(true);
   });
 });
