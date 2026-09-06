@@ -10,6 +10,8 @@
 #                   over HTTP if it can't be read from inside the container
 #                   (default: http://localhost:8096)
 #   EMBY_CONTAINER  Docker container name for Emby (default: embyserver)
+#
+# Requires: python3 (parses the JSON from the /System/Info/Public fallback).
 set -euo pipefail
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -24,6 +26,8 @@ Env vars:
                   over HTTP if it can't be read from inside the container
                   (default: http://localhost:8096)
   EMBY_CONTAINER  Docker container name for Emby (default: embyserver)
+
+Requires: python3 (parses the JSON from the /System/Info/Public fallback).
 USAGE
   exit 0
 fi
