@@ -16,6 +16,7 @@ bin/
 
 # agent / editor / OS cruft
 .claude/
+.superpowers/
 .design-import/
 .vscode/
 .idea/

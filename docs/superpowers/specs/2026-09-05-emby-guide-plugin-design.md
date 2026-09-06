@@ -210,6 +210,11 @@ Answers whether this Emby build serves the guide from SQLite.
 - Program images / icons (v1 pushes none; the refresh fills them nightly).
 - Jellyfin.
 - Recordings, timers.
+- A second M3U tuner sharing tvg-ids: the plugin maps a tvg-id to any Emby
+  M3U channel whose `ExternalId` ends with that tvg-id, so a second tuner
+  publishing the same tvg-ids would be written to and pruned within the
+  pushed window too. Phospharr's push assumes it is the only XMLTV source
+  for the channels it manages.
 
 ## Milestones
 
