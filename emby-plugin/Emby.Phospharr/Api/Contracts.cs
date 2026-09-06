@@ -4,6 +4,7 @@ using MediaBrowser.Model.Services;
 namespace Emby.Phospharr.Api
 {
     [Route("/Phospharr/Ping", "GET", Summary = "Plugin liveness + version")]
+    [MediaBrowser.Controller.Net.Authenticated(Roles = "Admin")]
     public class PingRequest : IReturn<PingResult> { }
 
     public class PingResult
