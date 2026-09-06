@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { sqlite } from "../src/db/index.ts";
 import type { DownstreamServer } from "../src/settings.ts";
-import { pushGuide, fingerprint, _resetGuidePushState } from "../src/sync/embyguide.ts";
+import { setSetting } from "../src/settings.ts";
+import { pushGuide, pushOrRefreshDownstream, fingerprint, _resetGuidePushState } from "../src/sync/embyguide.ts";
 
 const NOW = 1_800_000_000;
 const A = 994001, B = 994002;
@@ -10,10 +11,11 @@ sqlite.exec(`INSERT INTO channels (id,name,is_hidden,number,canonical_id,categor
   (${B},'EG LOOP',0,99402,'eg.loop.test','24/7 Comedy','Comedy','tv')`);
 sqlite.exec(`INSERT INTO programs (canonical_id,title,start_time,end_time,category,epg_source) VALUES
   ('eg.news.test','Show',${NOW - 600},${NOW + 3000},'News','t')`);
-afterAll(() => {
+afterAll(async () => {
   sqlite.exec(`DELETE FROM programs WHERE canonical_id='eg.news.test'`);
   sqlite.exec(`DELETE FROM channels WHERE id IN (${A},${B})`);
   sqlite.exec(`DELETE FROM guide_push_state WHERE server_id LIKE 'eg-%'`);
+  await setSetting("epg.downstream", []);
 });
 
 type Seen = { method: string; path: string; body?: any };
@@ -24,11 +26,11 @@ function fakePlugin(opts: { ping?: boolean; skip?: string[] } = {}) {
     async fetch(req) {
       const u = new URL(req.url);
       const rec: Seen = { method: req.method, path: u.pathname };
-      if (req.method === "POST") rec.body = await req.json();
+      if (req.method === "POST") rec.body = await req.json().catch(() => undefined);
       seen.push(rec);
       if (u.pathname === "/Phospharr/Ping") return opts.ping === false ? new Response("nope", { status: 404 }) : Response.json({ Version: "0.1.0.0", EmbyVersion: "4.9.5.0" });
       if (u.pathname === "/Phospharr/Guide") {
-        const chans = (rec.body.Channels as any[]).map((c) =>
+        const chans = ((rec.body?.Channels ?? []) as any[]).map((c) =>
           opts.skip?.includes(c.TvgId) ? { TvgId: c.TvgId, Skipped: true, Reason: "channel not found" }
                                         : { TvgId: c.TvgId, Created: c.Programs.length, Updated: 0, Deleted: 0, Skipped: false });
         return Response.json({ Channels: chans });
@@ -122,5 +124,26 @@ describe("pushGuide", () => {
     expect(f.posts().length).toBeGreaterThanOrEqual(2);
     expect(f.posts().every((p) => p.body.Channels.length === 1)).toBe(true);
     f.srv.stop(true);
+  });
+});
+
+describe("pushOrRefreshDownstream", () => {
+  test("pushes servers with guidePush, refreshes only the ones without it", async () => {
+    const push = fakePlugin(); _resetGuidePushState(push.server.id);
+    const refresh = fakePlugin();
+    const refreshOnlyServer: DownstreamServer = { ...refresh.server, guidePush: false };
+    await setSetting("epg.downstream", [push.server, refreshOnlyServer]);
+
+    await pushOrRefreshDownstream();
+
+    expect(push.posts().length).toBeGreaterThanOrEqual(1);
+    expect(push.seen.some((s) => s.path.startsWith("/ScheduledTasks/Running/"))).toBe(false);
+
+    expect(refresh.posts().length).toBe(0);
+    expect(refresh.seen.some((s) => s.path.startsWith("/ScheduledTasks/Running/"))).toBe(true);
+
+    push.srv.stop(true);
+    refresh.srv.stop(true);
+    await setSetting("epg.downstream", []);
   });
 });

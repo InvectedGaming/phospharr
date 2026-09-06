@@ -3,7 +3,7 @@ import { db } from "../db/index.ts";
 import { guidePushState } from "../db/schema.ts";
 import { getSetting, type DownstreamServer } from "../settings.ts";
 import { guideRows, type GuideProgram } from "../epg/guide.ts";
-import { refreshDownstreamGuides } from "../epg/downstream.ts";
+import { refreshOne } from "../epg/downstream.ts";
 
 /**
  * Push guide programmes into Emby through the Phospharr plugin, so a change is
@@ -28,7 +28,7 @@ const PING_TIMEOUT_MS = 8_000;
 const PUSH_TIMEOUT_MS = 120_000;
 
 function headers(s: DownstreamServer): Record<string, string> {
-  return { "X-Emby-Token": s.apiKey, "X-MediaBrowser-Token": s.apiKey, Authorization: `MediaBrowser Token="${s.apiKey}"`, Accept: "application/json", "Content-Type": "application/json" };
+  return { "X-Emby-Token": s.apiKey, "X-MediaBrowser-Token": s.apiKey, Authorization: `MediaBrowser Token="${s.apiKey}"`, Accept: "application/json" };
 }
 const iso = (unixSec: number) => new Date(unixSec * 1000).toISOString();
 
@@ -46,34 +46,13 @@ async function ping(s: DownstreamServer): Promise<boolean> {
   } catch { return false; }
 }
 
-/**
- * Trigger THIS server's RefreshGuide scheduled task directly — same two calls
- * `refreshGuide()` (src/sync/embyClient.ts) makes, targeted at `s` instead of
- * going through `refreshDownstreamGuides()`, which re-reads epg.downstream
- * settings and would nudge every enabled server rather than just this one.
- * Sends a small JSON body on the start-task POST (Emby ignores it) rather than
- * an empty one, so a strict body-parsing peer never sees a malformed request.
- * Best-effort, mirrors `refreshOne`'s never-throws contract.
- */
-async function fallbackRefreshGuide(s: DownstreamServer): Promise<void> {
-  try {
-    const base = s.url.replace(/\/+$/, "");
-    const h = headers(s);
-    const listRes = await fetch(`${base}/ScheduledTasks?isHidden=false`, { headers: h, signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) });
-    if (!listRes.ok) return;
-    const tasks = (await listRes.json()) as { Id: string; Key?: string; Name?: string }[];
-    const task = tasks.find((t) => t.Key === "RefreshGuide") ?? tasks.find((t) => /guide/i.test(t.Name ?? ""));
-    if (!task) return;
-    await fetch(`${base}/ScheduledTasks/Running/${task.Id}`, { method: "POST", headers: h, body: "{}", signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) });
-  } catch { /* best-effort fallback — never blocks the caller */ }
-}
-
 export async function pushGuide(s: DownstreamServer, opts: { now?: number; chunk?: number } = {}): Promise<PushOutcome> {
   const out: PushOutcome = { serverId: s.id, mode: "pushed", channelsSent: 0, created: 0, updated: 0, deleted: 0, skipped: 0 };
   if (!s.guidePush || !s.enabled || !s.url || !s.apiKey) return { ...out, mode: "disabled" };
   if (!(await ping(s))) {
-    // No plugin → the old path. One line, not one per tick: this is a steady state, not an incident.
-    await fallbackRefreshGuide(s);
+    // No plugin → the old path, targeted at just this server (never throws).
+    // One line, not one per tick: this is a steady state, not an incident.
+    await refreshOne(s);
     return { ...out, mode: "fallback", error: "plugin not reachable — fell back to RefreshGuide" };
   }
 
@@ -104,7 +83,7 @@ export async function pushGuide(s: DownstreamServer, opts: { now?: number; chunk
     };
     let res: { Channels?: { TvgId: string; Created?: number; Updated?: number; Deleted?: number; Skipped?: boolean; Reason?: string }[]; Error?: string };
     try {
-      const r = await fetch(`${s.url.replace(/\/+$/, "")}/Phospharr/Guide`, { method: "POST", headers: headers(s), body: JSON.stringify(body), signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) });
+      const r = await fetch(`${s.url.replace(/\/+$/, "")}/Phospharr/Guide`, { method: "POST", headers: { ...headers(s), "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       res = (await r.json()) as typeof res;
       if (res.Error) throw new Error(res.Error);
@@ -133,13 +112,18 @@ export async function pushGuide(s: DownstreamServer, opts: { now?: number; chunk
   return out;
 }
 
-/** Every enabled downstream server: push where guidePush is on, else the old refresh. */
+/** Every enabled downstream server: push where guidePush is on, else the old refresh —
+ *  only for the servers NOT being pushed to, so a push is never immediately followed
+ *  by the 15-minute RefreshGuide it exists to avoid. */
 export async function pushOrRefreshDownstream(): Promise<PushOutcome[]> {
-  const servers = (await getSetting("epg.downstream")) ?? [];
-  const pushing = servers.filter((s) => s.enabled && s.guidePush);
-  const results = await Promise.all(pushing.map((s) => pushGuide(s)));
-  if (pushing.length < servers.filter((s) => s.enabled).length) await refreshDownstreamGuides().catch(() => []);
-  return results;
+  const servers = ((await getSetting("epg.downstream")) ?? []).filter((s) => s.enabled && s.url && s.apiKey);
+  const pushing = servers.filter((s) => s.guidePush);
+  const refreshing = servers.filter((s) => !s.guidePush);
+  const [pushed] = await Promise.all([
+    Promise.all(pushing.map((s) => pushGuide(s))),
+    Promise.all(refreshing.map((s) => refreshOne(s).catch(() => undefined))),
+  ]);
+  return pushed;
 }
 
 /** Test-only: forget one server's fingerprints. */
