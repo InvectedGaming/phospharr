@@ -45,3 +45,7 @@ Both scripts shell out to `python3` to parse JSON (`install.sh` counts active
 playback sessions and reads the `Ping` response; `fetch-sdk.sh` parses the
 `/System/Info/Public` fallback to read the Emby version). `docker` and `curl`
 are also required.
+
+## Field mapping note
+
+`ProgramDto.Subtitle` is accepted for wire-contract stability but intentionally not persisted: Emby 4.9's `LiveTvProgram` has no per-programme episode-title field (the API's `EpisodeTitle` simply mirrors `Name`), so there is nothing to write it to.
