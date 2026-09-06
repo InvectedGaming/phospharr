@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { sqlite } from "../src/db/index.ts";
 import { exportXmltv } from "../src/epg/export.ts";
 
@@ -32,19 +32,29 @@ afterAll(() => {
   sqlite.exec(`DELETE FROM channels WHERE id IN (${A},${B},${C},${D})`);
 });
 
-// Mock time so the fixture's absolute times fall inside exportXmltv's window
-// (it reads Date.now() internally) and the golden is stable across runs.
-const realNow = Date.now;
-Date.now = () => NOW * 1000;
-afterAll(() => { Date.now = realNow; });
-
-const only = (xml: string) => xml.split("\n").filter((l) => /gr\.(news|loop|twitch|alpha)\.test/.test(l)).join("\n");
+const only = (xml: string) => xml.split("\n").filter((l) => /gr\.(news|loop|twitch|alpha)\.test|phospharr\.mosaic/.test(l)).join("\n");
 
 describe("exportXmltv characterisation", () => {
+  // Mock time so the fixture's absolute times fall inside exportXmltv's window
+  // (it reads Date.now() internally) and the golden is stable across runs.
+  // Scoped to this describe's beforeAll/afterAll (not module scope) so other
+  // test files sharing this process never see the patched clock.
+  const realNow = Date.now;
+  beforeAll(() => { Date.now = () => NOW * 1000; });
+  afterAll(() => { Date.now = realNow; });
+
   test("golden: the fixture renders exactly as before the guideRows refactor", async () => {
     const xml = only(await exportXmltv(undefined, undefined));
-    await Bun.write("/tmp/guiderows.golden.xml", xml); // written on the FIRST run, pre-refactor
-    const golden = await Bun.file("tests/fixtures/guiderows.golden.xml").text().catch(() => xml);
+    // Always write the actual output so a deliberate regeneration is one `cp` away.
+    await Bun.write("/tmp/guiderows.golden.xml", xml);
+    const golden = await Bun.file("tests/fixtures/guiderows.golden.xml").text().catch(() => {
+      throw new Error(
+        "tests/fixtures/guiderows.golden.xml is missing. This must be regenerated deliberately, not " +
+          "silently treated as a pass: run this test once (it writes the actual output to " +
+          "/tmp/guiderows.golden.xml), copy that file over tests/fixtures/guiderows.golden.xml, then " +
+          "re-run this test to confirm it now passes.",
+      );
+    });
     expect(xml).toBe(golden);
   });
 });
