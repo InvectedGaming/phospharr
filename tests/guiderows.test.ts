@@ -2,10 +2,11 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { sqlite } from "../src/db/index.ts";
 import { exportXmltv } from "../src/epg/export.ts";
 
-// Deterministic fixture: one channel with real programmes, one with none (gets
+// Deterministic fixture: two channels with real programmes (canonical_id order
+// deliberately reversed from DB/list order — see below), one with none (gets
 // synthetic 4h filler), one custom "live" channel whose filler title is customNow.
 const NOW = 1_800_000_000; // 2027-01-15T08:00:00Z — hour-aligned so filler blocks are stable
-const A = 993001, B = 993002, C = 993003;
+const A = 993001, B = 993002, C = 993003, D = 993004;
 sqlite.exec(`INSERT INTO channels (id,name,is_hidden,number,canonical_id,category,genre,kind) VALUES
   (${A},'GR NEWS',0,99301,'gr.news.test','USA News','News','tv'),
   (${B},'GR LOOP',0,99302,'gr.loop.test','24/7 Comedy','Comedy','tv'),
@@ -14,9 +15,21 @@ sqlite.exec(`UPDATE channels SET custom_now='Live now: chess' WHERE id=${C}`);
 sqlite.exec(`INSERT INTO programs (canonical_id,title,subtitle,description,start_time,end_time,category,epg_source) VALUES
   ('gr.news.test','Morning Show','Ep 1','desc',${NOW - 1800},${NOW + 1800},'News','t'),
   ('gr.news.test','Noon Report',NULL,NULL,${NOW + 1800},${NOW + 5400},'News','t')`);
+// A second real-programme channel, inserted AFTER the three above (so it is
+// last in DB/list order) but whose canonical_id ('gr.alpha.test') sorts
+// BEFORE 'gr.news.test'. The old exporter emitted real programmes in one pass
+// ordered by canonical_id across all channels; a per-channel-in-list-order
+// renderer would interleave them differently. Only with two real-programme
+// channels whose canonical_id order diverges from DB/list order can the
+// golden actually distinguish the two renderings.
+sqlite.exec(`INSERT INTO channels (id,name,is_hidden,number,canonical_id,category,genre,kind) VALUES
+  (${D},'GR ALPHA',0,99304,'gr.alpha.test','USA News','News','tv')`);
+sqlite.exec(`INSERT INTO programs (canonical_id,title,subtitle,description,start_time,end_time,category,epg_source) VALUES
+  ('gr.alpha.test','Alpha Early',NULL,NULL,${NOW - 1800},${NOW + 1800},'News','t'),
+  ('gr.alpha.test','Alpha Late',NULL,NULL,${NOW + 1800},${NOW + 5400},'News','t')`);
 afterAll(() => {
-  sqlite.exec(`DELETE FROM programs WHERE canonical_id IN ('gr.news.test')`);
-  sqlite.exec(`DELETE FROM channels WHERE id IN (${A},${B},${C})`);
+  sqlite.exec(`DELETE FROM programs WHERE canonical_id IN ('gr.news.test','gr.alpha.test')`);
+  sqlite.exec(`DELETE FROM channels WHERE id IN (${A},${B},${C},${D})`);
 });
 
 // Mock time so the fixture's absolute times fall inside exportXmltv's window
@@ -25,7 +38,7 @@ const realNow = Date.now;
 Date.now = () => NOW * 1000;
 afterAll(() => { Date.now = realNow; });
 
-const only = (xml: string) => xml.split("\n").filter((l) => /gr\.(news|loop|twitch)\.test/.test(l)).join("\n");
+const only = (xml: string) => xml.split("\n").filter((l) => /gr\.(news|loop|twitch|alpha)\.test/.test(l)).join("\n");
 
 describe("exportXmltv characterisation", () => {
   test("golden: the fixture renders exactly as before the guideRows refactor", async () => {
