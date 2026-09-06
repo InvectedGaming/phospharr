@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>Emby.Phospharr</AssemblyName>
+    <RootNamespace>Emby.Phospharr</RootNamespace>
+    <Version>0.1.0</Version>
+    <!-- Set by build.sh from lib/VERSION; default matches the server this was written against. -->
+    <EmbySdkDir Condition="'$(EmbySdkDir)' == ''">$(MSBuildThisFileDirectory)../lib/emby-4.9.5</EmbySdkDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="MediaBrowser.Common"><HintPath>$(EmbySdkDir)/MediaBrowser.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="MediaBrowser.Controller"><HintPath>$(EmbySdkDir)/MediaBrowser.Controller.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="MediaBrowser.Model"><HintPath>$(EmbySdkDir)/MediaBrowser.Model.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
