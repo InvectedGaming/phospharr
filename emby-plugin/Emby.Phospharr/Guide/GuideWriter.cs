@@ -38,22 +38,35 @@ namespace Emby.Phospharr.Guide
                 {
                     var r = new ChannelResult { TvgId = batch.TvgId };
                     result.Channels.Add(r);
-                    try
+
+                    if (string.IsNullOrEmpty(batch.TvgId))
                     {
-                        if (string.IsNullOrEmpty(batch.TvgId) || !channels.TryGetValue(batch.TvgId, out var targets))
+                        r.Skipped = true; r.Reason = "missing TvgId"; continue;
+                    }
+                    if (!channels.TryGetValue(batch.TvgId, out var targets))
+                    {
+                        r.Skipped = true; r.Reason = "channel not found"; continue;
+                    }
+
+                    // The same tvg-id can exist under more than one tuner (e.g. a channel
+                    // moved between phospharr tuner groups before Emby dropped the old
+                    // one). Write to every match — they are the same logical channel. Each
+                    // target is isolated so one channel's failure can't skip an attempt on
+                    // its sibling; ChannelResultFolder combines the per-target outcomes.
+                    var outcomes = new List<TargetOutcome>();
+                    foreach (var ch in targets)
+                    {
+                        try
                         {
-                            r.Skipped = true; r.Reason = "channel not found"; continue;
+                            outcomes.Add(ApplyToChannel(ch, batch));
                         }
-                        // The same tvg-id can exist under more than one tuner (e.g. a channel
-                        // moved between phospharr tuner groups before Emby dropped the old
-                        // one). Write to every match — they are the same logical channel.
-                        foreach (var ch in targets) ApplyToChannel(ch, batch, r);
+                        catch (Exception ex)
+                        {
+                            outcomes.Add(TargetOutcome.Failed(ex.GetType().Name + ": " + ex.Message));
+                            _log.ErrorException("Phospharr guide push failed for {0}", ex, batch.TvgId);
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        r.Skipped = true; r.Reason = ex.GetType().Name + ": " + ex.Message;
-                        _log.ErrorException("Phospharr guide push failed for {0}", ex, batch.TvgId);
-                    }
+                    ChannelResultFolder.Fold(r, outcomes);
                 }
             }
             return result;
@@ -74,7 +87,7 @@ namespace Emby.Phospharr.Guide
             return map;
         }
 
-        private void ApplyToChannel(LiveTvChannel ch, ChannelBatch batch, ChannelResult r)
+        private TargetOutcome ApplyToChannel(LiveTvChannel ch, ChannelBatch batch)
         {
             var existingItems = _lib.GetItemList(new InternalItemsQuery
             {
@@ -93,13 +106,14 @@ namespace Emby.Phospharr.Guide
 
             var diff = GuideDiff.Compute(ch.ExternalId, batch, existing);
             var now = DateTimeOffset.UtcNow;
+            int created = 0, updated = 0, deleted = 0;
 
             var creates = diff.Create.Select(p => (BaseItem)Fill(new LiveTvProgram(), p, batch.TvgId, ch, now)).ToList();
             if (creates.Count > 0)
             {
                 // Parent null + ParentId set is exactly what LiveTvManager does on refresh.
                 _lib.CreateItems(creates, null, null, null, false, CancellationToken.None);
-                r.Created += creates.Count;
+                created = creates.Count;
             }
 
             var updates = new List<BaseItem>();
@@ -112,14 +126,16 @@ namespace Emby.Phospharr.Guide
             if (updates.Count > 0)
             {
                 _lib.UpdateItems(updates, ch, ItemUpdateType.MetadataImport, null, CancellationToken.None);
-                r.Updated += updates.Count;
+                updated = updates.Count;
             }
 
             foreach (var d in diff.Delete)
             {
                 _lib.DeleteItem(byId[d.InternalId], new DeleteOptions { DeleteFileLocation = false, DeleteFromExternalProvider = false }, false);
-                r.Deleted++;
+                deleted++;
             }
+
+            return TargetOutcome.Ok(created, updated, deleted);
         }
 
         private static LiveTvProgram Fill(LiveTvProgram item, ProgramDto p, string tvgId, LiveTvChannel ch, DateTimeOffset now)
