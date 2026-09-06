@@ -13,7 +13,11 @@ import { makeCategoryFilter } from "../content/filter.ts";
  * the push relies on — anything pushed is also exported — so Emby's nightly
  * refresh finds exactly what the push wrote and reconciles instead of pruning.
  */
-export const WINDOW_BEHIND = 2 * 3600;
+// Emby's own guide refresh keeps only programmes ending after roughly now-1h
+// and prunes the rest, so pushing further behind than that just hands Emby
+// rows it will immediately trim. 1h keeps its nightly refresh an exact no-op
+// on channels we push (it finds nothing to add or remove).
+export const WINDOW_BEHIND = 1 * 3600;
 export const WINDOW_AHEAD = 48 * 3600;
 const FILL_BLOCK = 4 * 3600;
 
