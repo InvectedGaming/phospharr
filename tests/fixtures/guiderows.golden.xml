@@ -1,0 +1,34 @@
+<channel id="gr.news.test"><display-name>GR NEWS</display-name></channel>
+<channel id="gr.loop.test"><display-name>GR LOOP</display-name></channel>
+<channel id="gr.twitch.test"><display-name>GR TWITCH</display-name></channel>
+<channel id="gr.alpha.test"><display-name>GR ALPHA</display-name></channel>
+<programme start="20270115073000 +0000" stop="20270115083000 +0000" channel="gr.alpha.test"><title>Alpha Early</title><category>News</category></programme>
+<programme start="20270115083000 +0000" stop="20270115093000 +0000" channel="gr.alpha.test"><title>Alpha Late</title><category>News</category></programme>
+<programme start="20270115073000 +0000" stop="20270115083000 +0000" channel="gr.news.test"><title>Morning Show</title><sub-title>Ep 1</sub-title><desc>desc</desc><category>News</category></programme>
+<programme start="20270115083000 +0000" stop="20270115093000 +0000" channel="gr.news.test"><title>Noon Report</title><category>News</category></programme>
+<programme start="20270115040000 +0000" stop="20270115080000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270115080000 +0000" stop="20270115120000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270115120000 +0000" stop="20270115160000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270115160000 +0000" stop="20270115200000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270115200000 +0000" stop="20270116000000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270116000000 +0000" stop="20270116040000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270116040000 +0000" stop="20270116080000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270116080000 +0000" stop="20270116120000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270116120000 +0000" stop="20270116160000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270116160000 +0000" stop="20270116200000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270116200000 +0000" stop="20270117000000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270117000000 +0000" stop="20270117040000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270117040000 +0000" stop="20270117080000 +0000" channel="gr.loop.test"><title>GR LOOP</title><category>Series</category><category>24/7</category></programme>
+<programme start="20270115040000 +0000" stop="20270115080000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270115080000 +0000" stop="20270115120000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270115120000 +0000" stop="20270115160000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270115160000 +0000" stop="20270115200000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270115200000 +0000" stop="20270116000000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270116000000 +0000" stop="20270116040000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270116040000 +0000" stop="20270116080000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270116080000 +0000" stop="20270116120000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270116120000 +0000" stop="20270116160000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270116160000 +0000" stop="20270116200000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270116200000 +0000" stop="20270117000000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270117000000 +0000" stop="20270117040000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>
+<programme start="20270117040000 +0000" stop="20270117080000 +0000" channel="gr.twitch.test"><title>Live now: chess</title><category>Sports</category><category>24/7</category></programme>

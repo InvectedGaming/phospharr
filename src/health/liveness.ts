@@ -30,9 +30,10 @@
  * excluded from the main export, which keeps the churn where it belongs.
  */
 
-import { inArray, isNotNull } from "drizzle-orm";
+import { eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { streams } from "../db/schema.ts";
+import { channels, streams } from "../db/schema.ts";
+import { pushGuideOnly } from "../sync/embyguide.ts";
 import { registerLoop } from "./watchdog.ts";
 
 const CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
@@ -54,15 +55,19 @@ export function twitchLogin(url: string): string | null {
   return m ? m[1]!.toLowerCase() : null;
 }
 
+/** Whether a login is broadcasting, and its stream title while it is. */
+export type LiveState = { live: boolean; title: string | null };
+
 /** Ask Twitch which of these logins are broadcasting.
- *  Returns a map login → live. A login missing from the result is one Twitch
- *  did not answer for; callers must leave those alone rather than guess. */
-export async function fetchLiveness(logins: string[]): Promise<Map<string, boolean>> {
-  const out = new Map<string, boolean>();
+ *  Returns a map login → { live, title }. A login missing from the result is
+ *  one Twitch did not answer for; callers must leave those alone rather than
+ *  guess. */
+export async function fetchLiveness(logins: string[]): Promise<Map<string, LiveState>> {
+  const out = new Map<string, LiveState>();
   for (let i = 0; i < logins.length; i += BATCH) {
     const chunk = logins.slice(i, i + BATCH);
-    const query = `query { ${chunk.map((l, n) => `u${n}: user(login: ${JSON.stringify(l)}) { login stream { id } }`).join(" ")} }`;
-    let data: Record<string, { login: string; stream: unknown } | null> | undefined;
+    const query = `query { ${chunk.map((l, n) => `u${n}: user(login: ${JSON.stringify(l)}) { login stream { id title } }`).join(" ")} }`;
+    let data: Record<string, { login: string; stream: { title: string | null } | null } | null> | undefined;
     try {
       const r = await fetch(GQL, {
         method: "POST",
@@ -77,62 +82,98 @@ export async function fetchLiveness(logins: string[]): Promise<Map<string, boole
     }
     for (const u of Object.values(data ?? {})) {
       if (!u?.login) continue; // deleted/banned channel — no verdict
-      out.set(u.login.toLowerCase(), u.stream != null);
+      out.set(u.login.toLowerCase(), { live: u.stream != null, title: u.stream?.title ?? null });
     }
   }
   return out;
 }
 
-/** One pass: read the resolver-backed streams, ask Twitch, write health.
- *  Returns counts for the log/tests. */
+/** One pass: read the resolver-backed streams, ask Twitch, write health and
+ *  the "Live now: <title>" guide filler. Returns counts for the log/tests. */
 export async function pollOnce(
-  fetcher: (logins: string[]) => Promise<Map<string, boolean>> = fetchLiveness,
-): Promise<{ live: number; offline: number; skipped: number }> {
-  const rows = db.select({ id: streams.id, url: streams.url, health: streams.health })
+  fetcher: (logins: string[]) => Promise<Map<string, LiveState>> = fetchLiveness,
+): Promise<{ live: number; offline: number; skipped: number; changed: boolean }> {
+  const rows = db.select({ id: streams.id, channelId: streams.channelId, url: streams.url, health: streams.health })
     .from(streams).where(isNotNull(streams.resolver)).all();
 
-  const byLogin = new Map<string, { id: number; health: string }[]>();
+  const byLogin = new Map<string, { id: number; channelId: number; health: string }[]>();
   let skipped = 0;
   for (const r of rows) {
     const login = twitchLogin(r.url);
     if (!login) { skipped++; continue; } // not a Twitch channel URL — not ours to judge
     let list = byLogin.get(login);
     if (!list) { list = []; byLogin.set(login, list); }
-    list.push({ id: r.id, health: r.health });
+    list.push({ id: r.id, channelId: r.channelId, health: r.health });
   }
-  if (!byLogin.size) return { live: 0, offline: 0, skipped };
+  if (!byLogin.size) return { live: 0, offline: 0, skipped, changed: false };
 
   const state = await fetcher([...byLogin.keys()]);
 
   // Group the writes by target health so this is two statements, not one per row.
   const toLive: number[] = [], toDead: number[] = [];
+  const wantNow = new Map<number, string | null>(); // channelId -> desired customNow
   for (const [login, entries] of byLogin) {
-    const isLive = state.get(login);
-    if (isLive === undefined) continue; // Twitch didn't answer — keep the last known state
+    const s = state.get(login);
+    if (s === undefined) continue; // Twitch didn't answer — keep the last known state
+    const desired = s.live ? `Live now: ${s.title ?? "streaming"}` : null;
     for (const e of entries) {
-      const want = isLive ? "live" : "dead";
-      if (e.health !== want) (isLive ? toLive : toDead).push(e.id);
+      const want = s.live ? "live" : "dead";
+      if (e.health !== want) (s.live ? toLive : toDead).push(e.id);
+      wantNow.set(e.channelId, desired);
     }
   }
   const now = new Date();
   if (toLive.length) await db.update(streams).set({ health: "live", lastProbedAt: now }).where(inArray(streams.id, toLive));
   if (toDead.length) await db.update(streams).set({ health: "dead", lastProbedAt: now }).where(inArray(streams.id, toDead));
 
+  let changed = toLive.length > 0 || toDead.length > 0;
+  if (wantNow.size) {
+    const channelIds = [...wantNow.keys()];
+    const current = db.select({ id: channels.id, customNow: channels.customNow })
+      .from(channels).where(inArray(channels.id, channelIds)).all();
+    for (const c of current) {
+      const desired = wantNow.get(c.id) ?? null;
+      if (c.customNow !== desired) {
+        await db.update(channels).set({ customNow: desired }).where(eq(channels.id, c.id));
+        changed = true;
+      }
+    }
+  }
+
   let live = 0, offline = 0;
-  for (const v of state.values()) v ? live++ : offline++;
+  for (const v of state.values()) v.live ? live++ : offline++;
   if (toLive.length || toDead.length) {
     console.log(`[liveness] ${live} live, ${offline} offline (${toLive.length} came up, ${toDead.length} went down)`);
   }
-  return { live, offline, skipped };
+  return { live, offline, skipped, changed };
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let watchdogRegistered = false;
 let beat: () => void = () => {};
 
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+/** Coalesce a burst of liveness changes into one push, ~10s later.
+ *  Push-only: a Twitch title change must never start Emby's 15-minute
+ *  RefreshGuide on a server that has no plugin (or has it unreachable) — the
+ *  6-hourly EPG cycle already covers those servers via pushOrRefreshDownstream. */
+function scheduleGuidePush(): void {
+  if (pushTimer) return;
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    void pushGuideOnly()
+      .then((r) => {
+        if (r.length) console.log(`[liveness] guide push: ${r.map((x) => `${x.serverId}:${x.mode} ${x.channelsSent}ch`).join(", ")}`);
+      })
+      .catch((e) => console.error("[liveness] guide push failed:", e));
+  }, 10_000);
+  if (typeof pushTimer.unref === "function") pushTimer.unref();
+}
+
 async function tick(): Promise<void> {
   try {
-    await pollOnce();
+    const r = await pollOnce();
+    if (r.changed) scheduleGuidePush();
   } catch (e) {
     console.error("[liveness] poll failed:", e);
   }

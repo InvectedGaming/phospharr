@@ -32,6 +32,9 @@ afterAll(() => {
 const healthOf = (ch: number): string =>
   (sqlite.query(`SELECT health FROM streams WHERE channel_id = ${ch}`).get() as { health: string }).health;
 
+const nowOf = (ch: number): string | null =>
+  (sqlite.query(`SELECT custom_now FROM channels WHERE id = ${ch}`).get() as { custom_now: string | null }).custom_now;
+
 describe("twitchLogin", () => {
   test("extracts the login from a channel URL", () => {
     expect(twitchLogin("https://twitch.tv/LofiGirl")).toBe("lofigirl");
@@ -47,40 +50,80 @@ describe("twitchLogin", () => {
 
 describe("liveness poll", () => {
   test("a broadcasting channel is marked live so it enters the lineup", async () => {
-    await pollOnce(async () => new Map([["liveone", true], ["offone", true]]));
+    await pollOnce(async () => new Map([["liveone", { live: true, title: null }], ["offone", { live: true, title: null }]]));
     expect(healthOf(ON)).toBe("live");
   });
 
   test("an offline channel is marked dead, which is what removes it from the lineup", async () => {
-    await pollOnce(async () => new Map([["liveone", true], ["offone", false]]));
+    await pollOnce(async () => new Map([["liveone", { live: true, title: null }], ["offone", { live: false, title: null }]]));
     expect(healthOf(OFF)).toBe("dead");
     expect(healthOf(ON)).toBe("live");
   });
 
   test("it comes back on its own when the stream returns", async () => {
-    await pollOnce(async () => new Map([["offone", false]]));
+    await pollOnce(async () => new Map([["offone", { live: false, title: null }]]));
     expect(healthOf(OFF)).toBe("dead");
-    await pollOnce(async () => new Map([["offone", true]]));
+    await pollOnce(async () => new Map([["offone", { live: true, title: null }]]));
     expect(healthOf(OFF)).toBe("live");
   });
 
   test("a login Twitch did not answer for keeps its last state, never guessed dead", async () => {
-    await pollOnce(async () => new Map([["liveone", true]]));
+    await pollOnce(async () => new Map([["liveone", { live: true, title: null }]]));
     expect(healthOf(ON)).toBe("live");
     await pollOnce(async () => new Map()); // API returned nothing at all
     expect(healthOf(ON)).toBe("live"); // unchanged, not condemned
   });
 
   test("a network failure marks nothing dead", async () => {
-    await pollOnce(async () => new Map([["liveone", true]]));
+    await pollOnce(async () => new Map([["liveone", { live: true, title: null }]]));
     await pollOnce(async () => { throw new Error("network down"); }).catch(() => {});
     expect(healthOf(ON)).toBe("live");
   });
 
   test("leaves provider streams and non-Twitch resolvers alone", async () => {
-    const r = await pollOnce(async () => new Map([["liveone", false], ["offone", false]]));
+    const r = await pollOnce(async () => new Map([["liveone", { live: false, title: null }], ["offone", { live: false, title: null }]]));
     expect(healthOf(PROVIDER)).toBe("live"); // never selected: no resolver
     expect(healthOf(YT)).toBe("live");       // selected but not a Twitch URL
     expect(r.skipped).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("live title → guide text", () => {
+  test("a broadcasting channel's customNow becomes 'Live now: <title>'", async () => {
+    await pollOnce(async () => new Map([["liveone", { live: true, title: "Speedrun marathon" }]]));
+    expect(nowOf(ON)).toBe("Live now: Speedrun marathon");
+  });
+
+  test("going offline clears customNow so the filler falls back to the channel name", async () => {
+    await pollOnce(async () => new Map([["liveone", { live: true, title: "x" }]]));
+    await pollOnce(async () => new Map([["liveone", { live: false, title: null }]]));
+    expect(nowOf(ON)).toBeNull();
+  });
+
+  test("a title change alone counts as a change (so the guide is re-pushed)", async () => {
+    await pollOnce(async () => new Map([["liveone", { live: true, title: "a" }]]));
+    const r = await pollOnce(async () => new Map([["liveone", { live: true, title: "b" }]]));
+    expect(r.changed).toBe(true);
+    expect(nowOf(ON)).toBe("Live now: b");
+  });
+
+  test("no change → no push trigger", async () => {
+    await pollOnce(async () => new Map([["liveone", { live: true, title: "a" }]]));
+    const r = await pollOnce(async () => new Map([["liveone", { live: true, title: "a" }]]));
+    expect(r.changed).toBe(false);
+  });
+
+  test("a login Twitch did not answer for keeps its customNow — never cleared on silence", async () => {
+    await pollOnce(async () => new Map([["liveone", { live: true, title: "kept" }]]));
+    expect(nowOf(ON)).toBe("Live now: kept");
+    const r = await pollOnce(async () => new Map()); // Twitch answered for nobody
+    expect(nowOf(ON)).toBe("Live now: kept");
+    expect(r.changed).toBe(false);
+  });
+
+  test("a network failure leaves customNow untouched", async () => {
+    await pollOnce(async () => new Map([["liveone", { live: true, title: "kept" }]]));
+    await pollOnce(async () => { throw new Error("network down"); }).catch(() => {});
+    expect(nowOf(ON)).toBe("Live now: kept");
   });
 });

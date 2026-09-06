@@ -1,5 +1,5 @@
 import { providerEpgUrls, syncEpgFromUrls } from "./merge.ts";
-import { refreshDownstreamGuides } from "./downstream.ts";
+import { pushOrRefreshDownstream } from "../sync/embyguide.ts";
 import { convergeAll } from "../sync/converge.ts";
 import { getSetting } from "../settings.ts";
 import { registerLoop } from "../health/watchdog.ts";
@@ -31,8 +31,9 @@ async function runOnce(): Promise<void> {
     lastRunMs = Date.now();
     const bound = results.reduce((n, r) => n + r.programmesBound, 0);
     console.log(`[epg] auto-refresh: ${bound} programmes from ${urls.length} feed(s) in ${Date.now() - t0}ms`);
-    // Our guide is fresh — nudge downstream media servers to reload theirs...
-    await refreshDownstreamGuides().catch(() => { /* best-effort, never blocks */ });
+    // Our guide is fresh — push it straight into servers running the Phospharr
+    // plugin, nudge the rest to reload theirs...
+    await pushOrRefreshDownstream().catch(() => { /* best-effort, never blocks */ });
     // ...then run the convergence ladder, which catches the case where Emby's
     // cached lineup did NOT follow and escalates (src/sync/converge.ts).
     await convergeAll().catch((e) => console.error("[sync] converge", e));
