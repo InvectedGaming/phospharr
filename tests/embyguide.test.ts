@@ -26,11 +26,11 @@ function fakePlugin(opts: { ping?: boolean; skip?: string[] } = {}) {
     async fetch(req) {
       const u = new URL(req.url);
       const rec: Seen = { method: req.method, path: u.pathname };
-      if (req.method === "POST") rec.body = await req.json().catch(() => undefined);
+      if (req.method === "POST" && !u.pathname.startsWith("/ScheduledTasks/Running/")) rec.body = await req.json();
       seen.push(rec);
       if (u.pathname === "/Phospharr/Ping") return opts.ping === false ? new Response("nope", { status: 404 }) : Response.json({ Version: "0.1.0.0", EmbyVersion: "4.9.5.0" });
       if (u.pathname === "/Phospharr/Guide") {
-        const chans = ((rec.body?.Channels ?? []) as any[]).map((c) =>
+        const chans = (rec.body.Channels as any[]).map((c) =>
           opts.skip?.includes(c.TvgId) ? { TvgId: c.TvgId, Skipped: true, Reason: "channel not found" }
                                         : { TvgId: c.TvgId, Created: c.Programs.length, Updated: 0, Deleted: 0, Skipped: false });
         return Response.json({ Channels: chans });
