@@ -79,7 +79,10 @@ export async function refreshOne(s: DownstreamServer): Promise<SyncResult> {
   }
 }
 
-function record(r: SyncResult): SyncResult {
+/** Record a result for `downstreamResults()` / `GET /api/epg/downstream`.
+ *  Exported so other sync paths (e.g. src/sync/embyguide.ts's guide push) can
+ *  post their own outcome instead of leaving a stale refresh result in place. */
+export function record(r: SyncResult): SyncResult {
   lastResults.set(r.id, r);
   return r;
 }
