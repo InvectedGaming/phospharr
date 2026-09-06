@@ -14,6 +14,7 @@ import { vpnProxyUrl } from "../net/tunnel.ts";
 import { nordCountries, nordRecommend, isNordConfig, setNordServer, setLocationComment, parseNordInfo } from "../net/nordvpn.ts";
 import { syncEpgFromUrls, nowNext, providerEpgUrls } from "../epg/merge.ts";
 import { refreshDownstreamGuides, refreshOne, downstreamResults, scanDownstreamLibraries } from "../epg/downstream.ts";
+import { pushOrRefreshDownstream } from "../sync/embyguide.ts";
 import { convergeAll, syncStates, resetAttention } from "../sync/converge.ts";
 import { VOD_MIRROR_ID } from "../sync/reconciler.ts";
 import { rebuildVodLibrary } from "../ingest/vodlibrary.ts";
@@ -1400,8 +1401,9 @@ app.post("/api/epg/sync", async (c) => {
   const urls: string[] = body.urls?.length ? body.urls : await providerEpgUrls(body.providerId ? Number(body.providerId) : undefined);
   if (urls.length === 0) return c.json({ error: "no EPG sources available" }, 400);
   const results = await syncEpgFromUrls(urls);
-  // Ours is fresh — nudge downstream media servers (Emby/Plex/Jellyfin) to reload.
-  const downstream = await refreshDownstreamGuides().catch(() => []);
+  // Ours is fresh — push it straight into servers running the Phospharr plugin,
+  // nudge the rest (Emby/Plex/Jellyfin without it) to reload theirs.
+  const downstream = await pushOrRefreshDownstream().catch(() => []);
   return c.json({ results, downstream });
 });
 
