@@ -92,7 +92,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CONTAINER="${EMBY_CONTAINER:-embyserver}"
 VER=$(docker exec "$CONTAINER" sh -c 'cat /system/version.txt 2>/dev/null' || true)
 if [[ -z "$VER" ]]; then
-  VER=$(curl -s -m 10 "${EMBY_URL:-http://10.125.52.230:8096}/System/Info/Public" | python3 -c 'import sys,json;print(json.load(sys.stdin)["Version"])')
+  VER=$(curl -s -m 10 "${EMBY_URL:-http://<emby-host>:8096}/System/Info/Public" | python3 -c 'import sys,json;print(json.load(sys.stdin)["Version"])')
 fi
 DEST="$HERE/lib/emby-$VER"
 mkdir -p "$DEST"
@@ -243,7 +243,7 @@ Expected: `SDK 4.9.5.0 → …/lib/emby-4.9.5.0` then `out/Emby.Phospharr.dll` l
 # so refuse while anyone is watching unless --force.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-EMBY="${EMBY_URL:-http://10.125.52.230:8096}"
+EMBY="${EMBY_URL:-http://<emby-host>:8096}"
 KEY="${EMBY_API_KEY:?set EMBY_API_KEY}"
 PLUGINS="${EMBY_PLUGINS_DIR:-/mnt/networked/docker/arrg/emby-config/plugins}"
 CONTAINER="${EMBY_CONTAINER:-embyserver}"
@@ -894,7 +894,7 @@ Expected: `Passed: 12` and `out/Emby.Phospharr.dll` rebuilt.
 Run: `EMBY_API_KEY=<key> emby-plugin/install.sh`
 Then push one program on a low-traffic channel and query it back **without any refresh**:
 ```bash
-K=<key>; E=http://10.125.52.230:8096; U=74a613fc42df42bb8b03993e23e7d61a
+K=<key>; E=http://<emby-host>:8096; U=<user-id>
 NOW=$(date -u +%s)
 S=$(date -u -d @$((NOW-300)) +%Y-%m-%dT%H:%M:%SZ); T=$(date -u -d @$((NOW+1800)) +%Y-%m-%dT%H:%M:%SZ)
 WS=$(date -u -d @$((NOW-3600)) +%Y-%m-%dT%H:%M:%SZ); WE=$(date -u -d @$((NOW+7200)) +%Y-%m-%dT%H:%M:%SZ)
